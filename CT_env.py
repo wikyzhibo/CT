@@ -12,7 +12,7 @@ class CT(EnvBase):
     def __init__(self, device='cpu',seed=None):
 
         super().__init__(device=device)
-        self.net = Petri(csv_path='N4p20t16.csv')
+        self.net = Petri(csv_path='N1p21t16.CSV', n_t=16)
         self._make_spec()
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
@@ -23,9 +23,9 @@ class CT(EnvBase):
         n_t = self.net.T
 
         self.observation_spec = Composite(
-            observation=Bounded(low=0, high=10, shape=(n_p,), dtype=torch.int64, device=self.device),
+            observation=Bounded(low=0, high=20, shape=(n_p,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=n_t, dtype=torch.bool),
-            phi_s = Unbounded(shape=(1,), dtype=torch.float32),
+            #phi_s = Unbounded(shape=(1,), dtype=torch.float32),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
             shape=()
         )
@@ -34,6 +34,7 @@ class CT(EnvBase):
         self.state_spec = Composite(shape=())
         self.done_spec = Composite(
             terminated=Unbounded(shape=(1,), dtype=torch.bool),
+            deadlock_type=Bounded(low=0,high=4,shape=(1,), dtype=torch.int64, device=self.device),
             #truncated =Unbounded(shape=(), dtype=torch.bool),
         )
 
@@ -41,49 +42,61 @@ class CT(EnvBase):
         self.net.reset()
         obs = self.net.m0.copy()
         action_mask = self.net.mask_t(obs)
-        phi_s = self.net.residual_process_time(self.net.m)
+        #phi_s = self.net.residual_process_time(self.net.m)
         out = TensorDict({"observation": torch.as_tensor(obs, dtype=torch.int64),
                           "action_mask": torch.as_tensor(action_mask, dtype=torch.bool),
-                          "phi_s": torch.tensor([phi_s], dtype=torch.float32),
+                          #"phi_s": torch.tensor([phi_s], dtype=torch.float32),
                           "time": torch.tensor([0], dtype=torch.int64),
                           })
         return out
 
     def _step(self, tensordict=None):
         action = tensordict["action"].item()
-        phi_s = tensordict["phi_s"].item()
+        #phi_s = tensordict["phi_s"].item()
         time = tensordict["time"].item()
 
         #Petri网子类交互
-        new_obs, mask_next, done,deadlock, phi_sp, info = self.net.step(action)
+        new_obs, mask_next, done,deadlock, _, info = self.net.step(action)
         new_time = info["time"]
 
+        #r1_t_ids = [0,1,2,3,4,13,14,15]
+        #r2_t_ids = [5,6,7,8,9,10,11,12,13]
+        #r1_mask = mask_next[r1_t_ids]
+        #r2_mask = mask_next[r2_t_ids]
+        #r1_src = new_obs[17].item()
+        #r2_src = new_obs[18].item()
+
+        # ---死锁大惩罚 ---
+        if deadlock:
+            r_dead = -10000.
+            # 死锁标识
+            deadlock_type = 1
+        #elif (r1_src==0 and r1_mask.sum()== 0)  or (r2_src==0 and r2_mask.sum() == 0):
+        #    r_dead = -10000.
+            # 坏标识类型1
+        #    deadlock_type = 1
+        else:
+            r_dead = 0.
+            #好标识
+            deadlock_type = 0
+
         # --- PBRS：Φ(s)-Φ(s') ---
-        r_pbrs = 0.1 * (phi_s - phi_sp)  # 越减少越正
+        #r_pbrs = 0.1 * (phi_s - phi_sp)  # 越减少越正
 
         # -- 时间增加惩罚
         r_time = - 0.1 * (new_time - time)
 
-        # --- 每步惩罚 + 死锁大惩罚 ---
-        c_dead = 10000.
-        if deadlock:
-            r_dead = -c_dead
-        else:
-            r_dead = 0.0
-
         reward =  r_dead + int(r_time)
-        terminated = bool(done or deadlock)
-        if 0:
-            print("obs", new_obs)
-            print("reward", reward)
+        terminated = bool(done or deadlock_type)
 
         out = TensorDict({
             "observation": torch.as_tensor(new_obs, dtype=torch.int64),
             "action_mask": torch.as_tensor(mask_next,dtype=torch.bool),
             "time":torch.tensor([new_time], dtype=torch.int64),
-            "phi_s": torch.tensor([phi_sp],dtype=torch.float32),
+            #"phi_s": torch.tensor([phi_sp],dtype=torch.float32),
             "reward": torch.tensor([reward],dtype=torch.float32),
             "terminated": torch.tensor(terminated, dtype=torch.bool),
+            "deadlock_type": torch.tensor(deadlock_type,dtype=torch.int64),
         }, batch_size=[])
         return out
 
