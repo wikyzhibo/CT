@@ -1,3 +1,17 @@
+## 文件
+- 网文件
+  - N1p21t16.CSV "25届两道工序，第一道5个并行腔体"
+  - N4p20t16.csv "毕设案例一网"
+- 程序文件
+  - net.py "Petri网文件"
+  - CT_env.py "组合设备环境文件"
+  - train_CT.py "ppo训练文件"
+  - tmp.py "随机森林识别死锁"
+  - markbuffer.py "获取标识文件"
+- out.csv "输出(变迁时间，变迁序列），matlab那边的程序绘制甘特图"
+- CT.pt "policy模型文件"
+
+
 ## Log
 
 15日 基础环境
@@ -44,6 +58,8 @@
 ![img_1.png](img_1.png)
 ![img_2.png](img_2.png)
 
+22日
+- **新思路**：假设我们把动作更换成从工序i到工序i+1
 
 
 

@@ -1,3 +1,4 @@
+import numpy as np
 from torchrl.data import Bounded, Unbounded, Categorical, Composite,Binary
 from torchrl.envs import EnvBase
 import torch
@@ -23,7 +24,7 @@ class CT(EnvBase):
         n_t = self.net.T
 
         self.observation_spec = Composite(
-            observation=Bounded(low=0, high=20, shape=(n_p,), dtype=torch.int64, device=self.device),
+            observation=Bounded(low=0, high=20, shape=(n_p-2,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=n_t, dtype=torch.bool),
             #phi_s = Unbounded(shape=(1,), dtype=torch.float32),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
@@ -35,6 +36,7 @@ class CT(EnvBase):
         self.done_spec = Composite(
             terminated=Unbounded(shape=(1,), dtype=torch.bool),
             deadlock_type=Bounded(low=0,high=4,shape=(1,), dtype=torch.int64, device=self.device),
+            finish= Unbounded(shape=(1,), dtype=torch.bool),
             #truncated =Unbounded(shape=(), dtype=torch.bool),
         )
 
@@ -43,7 +45,7 @@ class CT(EnvBase):
         obs = self.net.m0.copy()
         action_mask = self.net.mask_t(obs)
         #phi_s = self.net.residual_process_time(self.net.m)
-        out = TensorDict({"observation": torch.as_tensor(obs, dtype=torch.int64),
+        out = TensorDict({"observation": torch.as_tensor(np.delete(obs,[0,14]), dtype=torch.int64),
                           "action_mask": torch.as_tensor(action_mask, dtype=torch.bool),
                           #"phi_s": torch.tensor([phi_s], dtype=torch.float32),
                           "time": torch.tensor([0], dtype=torch.int64),
@@ -54,9 +56,10 @@ class CT(EnvBase):
         action = tensordict["action"].item()
         #phi_s = tensordict["phi_s"].item()
         time = tensordict["time"].item()
-
+        #if action == 15 or action == 14:
+            #print("pause")
         #Petri网子类交互
-        new_obs, mask_next, done,deadlock, _, info = self.net.step(action)
+        new_obs, mask_next, finish ,deadlock, _, info = self.net.step(action)
         new_time = info["time"]
 
         #r1_t_ids = [0,1,2,3,4,13,14,15]
@@ -84,15 +87,16 @@ class CT(EnvBase):
         #r_pbrs = 0.1 * (phi_s - phi_sp)  # 越减少越正
 
         # -- 时间增加惩罚
-        r_time = - 0.1 * (new_time - time)
+        r_time = - 0.2 * (new_time - time)
 
         reward =  r_dead + int(r_time)
-        terminated = bool(done or deadlock_type)
+        terminated = bool(finish or deadlock_type)
 
         out = TensorDict({
-            "observation": torch.as_tensor(new_obs, dtype=torch.int64),
+            "observation": torch.as_tensor(np.delete(new_obs,[0,14]), dtype=torch.int64),
             "action_mask": torch.as_tensor(mask_next,dtype=torch.bool),
             "time":torch.tensor([new_time], dtype=torch.int64),
+            "finish":torch.tensor(finish, dtype=torch.bool),
             #"phi_s": torch.tensor([phi_sp],dtype=torch.float32),
             "reward": torch.tensor([reward],dtype=torch.float32),
             "terminated": torch.tensor(terminated, dtype=torch.bool),

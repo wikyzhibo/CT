@@ -22,6 +22,9 @@ from torchrl.envs.utils import check_env_specs
 from torchrl.modules import MaskedCategorical
 from collections import defaultdict
 import warnings
+
+from CT.net import init_marks_from_m
+
 warnings.filterwarnings(
     "ignore",
     message=".*size_average.*reduce.*",
@@ -82,8 +85,9 @@ def train(
 
     # 策略与价值网络
     n_actions = 16
-    n_m = 21
+    n_m = 19
     n_hidden = 256
+
     policy_backbone = MaskedPolicyHead(obs_dim=n_m, hidden=n_hidden, n_actions=n_actions)
     td_module = TensorDictModule(
         policy_backbone, in_keys=["observation_f"], out_keys=["logits"]
@@ -91,7 +95,7 @@ def train(
     policy = ProbabilisticActor(
         module=td_module,
         in_keys={"logits": "logits", "mask": "action_mask"},
-        out_keys = ["action"],
+        out_keys=["action"],
         distribution_class=MaskedCategorical,
         return_log_prob=True,
     ).to(device)
@@ -129,7 +133,7 @@ def train(
         actor=policy,
         critic=value_module,
         clip_epsilon=clip_epsilon,
-        entropy_coeff=0.04,
+        entropy_coeff=0.02,
         critic_coeff=0.5,
         normalize_advantage=True,
     )
@@ -146,15 +150,22 @@ def train(
     DEAD_THRESHOLD = 100
     APPEND_MODE = True
     n_deadlock = 0
+
+    base_env = CT(device=device)
+    transform = Compose([ActionMask(),
+                         DTypeCastTransform(dtype_in=torch.int64, dtype_out=torch.float32,
+                                            in_keys="observation", out_keys="observation_f"), ])
+    eval_env = TransformedEnv(base_env, transform)
+
     with ((set_exploration_type(ExplorationType.RANDOM))):
         for batch_idx, tensordict_data in enumerate(collector):
-
-
-            data_view = tensordict_data.reshape(-1).to("cpu")
-
             gae_vals = gae(tensordict_data)
             tensordict_data.set("advantage", gae_vals.get("advantage"))
             tensordict_data.set("value_target", gae_vals.get("value_target"))
+
+            data_view = tensordict_data.reshape(-1).to("cpu")
+            #replay_buffer.empty()
+            replay_buffer.extend(data_view)
 
             '''
             live_X, dead_X, _ = collect_markings_env(tensordict_data, keep_deadlock_mid=False)
@@ -190,8 +201,6 @@ def train(
             '''
 
             for _ in range(num_epochs):
-                replay_buffer.extend(data_view)
-
                 for _ in range(frames_per_batch // sub_batch_size):
                     subdata = replay_buffer.sample(sub_batch_size)
                     # PPO 损失
@@ -205,35 +214,57 @@ def train(
                     optim.step()
 
             # 统计
+            if batch_idx > 150 and batch_idx % 10 == 0:
+                ev(eval_env,batch_idx,policy)
+
 
             frame_count += int(tensordict_data.numel())
             ep_ret = tensordict_data["next","reward"].sum().item()
+            makespan = torch.where(
+                tensordict_data["next", "finish"],
+                tensordict_data["next", "time"],
+                100000
+            ).min().item()
+
             n_deadlock += tensordict_data["next","deadlock_type"].sum().item()
             if batch_idx % 1 ==0 and batch_idx != 0:
-                print(f"batch {batch_idx:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| deadlock={n_deadlock}")
+                print(f"batch {batch_idx:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| deadlock={n_deadlock}| makespan={makespan}")
                 log['deadlock'].append(n_deadlock)
                 n_deadlock = 0
             log['reward'].append(ep_ret)
+            log['makespan'].append(makespan)
 
     print("Training done.")
     torch.save(policy, "CT.pt")
     return log
 
-def ev(env, policy=None):
+def ev(env,epoch, policy=None):
     if policy is None:
         policy = torch.load("CT.pt",weights_only=False)
-    out = env.rollout(300, policy)
+    policy.eval()
+    with torch.no_grad():
+        out = env.rollout(300, policy)
+    if out["next","finish"].sum().item() <= 0:
+        return
     actions = out["action"].tolist()
     time = out["time"].squeeze().tolist()
     time.append(out["next","time"][-1].item())
-    out = time.pop(0)
-    df = pd.DataFrame({"time":time, "actions":actions})
-    df.to_csv("out.csv")
+    time.pop(0)
+    name = mapping(actions)
+    df = pd.DataFrame({"actions":actions,"transition":name,"time":time, },index=None)
+    fname = f"gantt/batch{epoch}.csv" if epoch is not None else "gantt/ev.csv"
+    df.to_csv(fname)
+    #makespan = torch.where(out["next","finish"], out["next","time"]).tolist()
+    #print("makspan:",out["next","time"][-1])
 
-    print("makspan:",time[-1])
-
-
-
+def mapping(path):
+    transition = ["u1","t1","u2","t2","u3","t3",
+                  "u4","t4","u5","t5","u6","t6",
+                  "u7","t7","u8","t8"]
+    s = []
+    for k in path:
+        s.append(transition[k])
+    return s
 
 import matplotlib.pyplot as plt
 if __name__ == "__main__":
@@ -245,13 +276,14 @@ if __name__ == "__main__":
                          DTypeCastTransform(dtype_in=torch.int64,dtype_out=torch.float32,
                                             in_keys="observation",out_keys="observation_f"),])
     env = TransformedEnv(base_env,transform)
-    print("="*40,"\n observation_spec:",env.observation_spec)
-    print("="*40,"\n action_spec:",env.action_spec)
-    print("="*40,"\n done_spec:",env.done_spec)
 
-    check_env_specs(env)
+    #print("="*40,"\n observation_spec:",env.observation_spec)
+    #print("="*40,"\n action_spec:",env.action_spec)
+    #print("="*40,"\n done_spec:",env.done_spec)
 
-    mode = 1
+    #check_env_specs(env)
+
+    mode = 0
     import os
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     if mode == 0:
@@ -259,23 +291,24 @@ if __name__ == "__main__":
         log = train(
             env,
             frames_per_batch=256,
-            total_batch=100,
+            total_batch=500,
             live_ratio=0.8,
             gamma=0.99,
             sub_batch_size=64,
-            num_epochs=10,
+            num_epochs=3,
             device="cpu",
         )
         print("training time:",time.time()-start_time)
         fig, ax = plt.subplots(1,2)
-        ax[0].plot(log["reward"][::10],)
-        ax[0].set_ylim(-10000, 0)
+        ax[0].plot(log["makespan"],)
+        ax[0].set_ylim(8000, 30000)
         ax[1].plot(log["deadlock"])
         plt.show()
 
-        ev(env)
+        #ev(env)
 
     elif mode == 1:
-        for _ in range(10):
-            ev(env)
+        for _ in range(1):
+            print("1")
+            #ev(env)
 

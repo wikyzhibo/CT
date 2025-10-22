@@ -166,11 +166,13 @@ class Petri:
     def step(self, t: int):
         te, tf = self.fire(t)
         mask = self.mask_t(self.m)
-        done = bool((self.m == self.md).all())
-        deadlock = (not done) and  (not mask.any())
+        #if self.m[14] == 6:
+            #print("pause")
+        finish = bool((self.m == self.md).all())
+        deadlock = (not finish) and  (not mask.any())
         res_load = self.residual_process_time(self.m)
         info = {"te_time": te, "finish_time": tf, "time": self.time}
-        return self.m.copy(), mask, done, deadlock, res_load, info
+        return self.m.copy(), mask, finish, deadlock, res_load, info
 
     # ---------- 辅助：查看某库所的 tokens（enter_time, id） ----------
     def place_tokens(self, p: int) -> np.ndarray:
