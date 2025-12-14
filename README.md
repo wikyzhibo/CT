@@ -15,13 +15,13 @@
       - net.ndr 加上控制库所
     - N3：一个判断死锁的简单案例
     - N4：离散作业中的网，它可以作为检测坏标识的案例
-- 程序文件
-  - net.py "Petri网文件"
-  - CT_env.py "组合设备环境文件"
-  - train_CT.py "ppo训练文件"
-  - solutions/PPO/data_collector.py "自定义的PPO采样器，避免SyncDataCollector遇到死锁时截断"
-  - tmp.py "随机森林识别死锁"
-  - markbuffer.py "获取标识文件"
+  - 程序文件
+    - net.py "Petri网文件"
+    - CT_env.py "组合设备环境文件"
+    - train_CT.py "ppo训练文件"
+    - solutions/PPO/data_collector.py "自定义的PPO采样器，避免SyncDataCollector遇到死锁时截断（详见 solutions/PPO/data_collector.md）"
+    - tmp.py "随机森林识别死锁"
+    - markbuffer.py "获取标识文件"
 - out.csv "输出(变迁时间，变迁序列），matlab那边的程序绘制甘特图"
 - CT.pt "policy模型文件"
 
