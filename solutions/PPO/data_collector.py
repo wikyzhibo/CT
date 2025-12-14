@@ -30,14 +30,20 @@ class DeadlockSafeCollector:
 
         self._frames = 0
         self._pending_td = None
+        self._state_stack = []
 
     def __iter__(self):
         self._frames = 0
         self._pending_td = None
+        self._state_stack = []
         return self
 
     def _env_reset(self):
         self._pending_td = self.env.reset().to(self.device)
+        if hasattr(self.env, "_snapshot"):
+            self._state_stack = [self.env._snapshot()]
+        else:
+            self._state_stack = []
 
     def _is_done(self, next_td: TensorDict) -> bool:
         terminated = next_td.get("terminated")
@@ -72,6 +78,40 @@ class DeadlockSafeCollector:
             steps.append(step_td)
 
             self._frames += 1
-            self._pending_td = None if self._is_done(next_td) else next_td.to(self.device)
+
+            deadlock_flag = bool(next_td.get("deadlock_type", torch.tensor(0)).view(-1).any().item())
+            done = self._is_done(next_td)
+
+            if hasattr(self.env, "_snapshot"):
+                # Keep history for possible backtracking
+                self._state_stack.append(self.env._snapshot())
+
+            if deadlock_flag and hasattr(self.env, "_restore"):
+                # Drop deadlocked state and backtrack to the latest viable snapshot
+                if self._state_stack:
+                    self._state_stack.pop()
+                restored = self._backtrack()
+                self._pending_td = restored
+            elif done:
+                self._pending_td = None
+                self._state_stack = []
+            else:
+                self._pending_td = next_td.to(self.device)
 
         return TensorDict.stack(steps, dim=0)
+
+    def _backtrack(self):
+        """Restore the most recent non-deadlocked Petri state."""
+        while self._state_stack:
+            snapshot = self._state_stack.pop()
+            restored_td = self.env._restore(snapshot)
+            if restored_td.get("action_mask", None) is None:
+                return restored_td.to(self.device)
+            if bool(restored_td["action_mask"].any().item()):
+                # push back the restored snapshot so deeper deadlocks can keep rewinding
+                self._state_stack.append(snapshot)
+                return restored_td.to(self.device)
+
+        # fallback to a clean reset if nothing to backtrack to
+        self._env_reset()
+        return self._pending_td

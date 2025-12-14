@@ -4,6 +4,7 @@ from torchrl.envs import EnvBase
 import torch
 from tensordict import TensorDict
 from solutions.pdr.net import Petri
+import copy
 
 class CT(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
@@ -40,16 +41,34 @@ class CT(EnvBase):
             #truncated =Unbounded(shape=(), dtype=torch.bool),
         )
 
+    def _build_state_td(self, obs, action_mask, time):
+        return TensorDict({
+            "observation": torch.as_tensor(obs, dtype=torch.int64),
+            "action_mask": torch.as_tensor(action_mask, dtype=torch.bool),
+            "time": torch.tensor([time], dtype=torch.int64),
+        })
+
+    def _snapshot(self):
+        """Capture Petri net state for backtracking."""
+        return {
+            "m": self.net.m.copy(),
+            "marks": [copy.deepcopy(mk) for mk in self.net.marks],
+            "time": self.net.time,
+        }
+
+    def _restore(self, snapshot):
+        self.net.m = snapshot["m"].copy()
+        self.net.marks = [copy.deepcopy(mk) for mk in snapshot["marks"]]
+        self.net.time = snapshot["time"]
+        obs = self.net.m.copy()
+        action_mask = self.net.mask_t(obs, self.net.marks)
+        return self._build_state_td(obs, action_mask, self.net.time)
+
     def _reset(self,td_params):
         self.net.reset()
         obs = self.net.m0.copy()
         action_mask = self.net.mask_t(obs)
-        out = TensorDict({"observation": torch.as_tensor(obs, dtype=torch.int64),
-                          "action_mask": torch.as_tensor(action_mask, dtype=torch.bool),
-                          #"phi_s": torch.tensor([phi_s], dtype=torch.float32),
-                          "time": torch.tensor([0], dtype=torch.int64),
-                          })
-        return out
+        return self._build_state_td(obs, action_mask, time=0)
 
     def _step(self, tensordict=None):
         action = tensordict["action"].item()
