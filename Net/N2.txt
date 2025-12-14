@@ -1,0 +1,107 @@
+t 110.0 130.0 u1 0 w n
+t 370.0 330.0 t6 0 w n
+p 865.0 130.0 p2 0 n
+p 870.0 330.0 p4 0 n
+p 865.0 230.0 k2 2 n
+t 800.0 330.0 u5 0 w n
+t 930.0 330.0 t4 0 w n
+t 930.0 130.0 u3 0 w n
+p 995.0 130.0 d3 0 n
+p 35.0 130.0 L1 12 n
+t 1065.0 130.0 t3 0 w n
+p 995.0 330.0 d4 0 n
+t 1065.0 330.0 u4 0 w n
+p 1065.0 230.0 p3 0 e
+p 175.0 130.0 d1 0 n
+t 240.0 130.0 t1 0 w n
+p 305.0 130.0 p1 0 n
+t 370.0 130.0 u8 0 w n
+p 30.0 330.0 L2 0 n
+t 105.0 330.0 t7 0 w n
+p 175.0 230.0 r1 1 n
+t 240.0 330.0 u7 0 w n
+p 305.0 230.0 k1 2 n
+p 440.0 330.0 d6 0 n
+t 505.0 330.0 u6 0 w n
+p 440.0 130.0 d8 0 n
+p 450.0 230.0 r2 1 n
+p 730.0 330.0 d5 0 n
+t 645.0 330.0 t5 0 w n
+p 575.0 330.0 p5 0 n
+t 645.0 190.0 u9 0 w n
+p 645.0 130.0 p7 0 n
+t 550.0 130.0 t8 0 w n
+t 370.0 50.0 u2 0 w n
+p 440.0 50.0 d2 0 n
+p 995.0 230.0 r3 1 n
+t 550.0 50.0 t2 0 w n
+p 175.0 330.0 d7 0 n
+p 305.0 330.0 p6 0 n
+p 645.0 260.0 d9 0 n
+t 575.0 260.0 t9 0 w n
+e t9 r2 1 n
+e t9 p5 1 n
+e d9 t9 1 n
+e u9 d9 1 n
+e r2 u2 1 n
+e u2 k1 1 n
+e p1 u2 1 n
+e u2 d2 1 n
+e d2 t2 1 n
+e u5 d5 1 n
+e r2 u5 1 n
+e t2 r2 1 n
+e t6 r2 1 n
+e r2 u6 1 n
+e t5 r2 1 n
+e r2 u9 1 n
+e t8 r2 1 n
+e r2 u8 1 n
+e d6 t6 1 n
+e u6 d6 1 n
+e p5 u6 1 n
+e t5 p5 1 n
+e d5 t5 1 n
+e p7 u9 1 n
+e t8 p7 1 n
+e d8 t8 1 n
+e u7 k1 1 n
+e k1 t6 1 n
+e u8 k1 1 n
+e k1 t1 1 n
+e t7 r1 1 n
+e r1 u7 1 n
+e t1 r1 1 n
+e r1 u1 1 n
+e t7 L2 1 n
+e d7 t7 1 n
+e u7 d7 1 n
+e p6 u7 1 n
+e t6 p6 1 n
+e u8 d8 1 n
+e p1 u8 1 n
+e t1 p1 1 n
+e d1 t1 1 n
+e u1 d1 1 n
+e L1 u1 1 n
+e t4 r3 1 n
+e r3 u4 1 n
+e t3 r3 1 n
+e r3 u3 1 n
+e u5 k2 1 n
+e k2 t4 1 n
+e u3 k2 1 n
+e k2 t2 1 n
+e p4 u5 1 n
+e t4 p4 1 n
+e d4 t4 1 n
+e u4 d4 1 n
+e p3 u4 1 n
+e t3 p3 1 n
+e d3 t3 1 n
+e u3 d3 1 n
+e p2 u3 1 n
+e t2 p2 1 n
+h N2
+
+
