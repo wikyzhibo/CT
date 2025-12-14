@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch.optim import Adam
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
-from torchrl.collectors import SyncDataCollector
 from torchrl.envs import (Compose, StepCounter, DTypeCastTransform,
                           TransformedEnv,ActionMask,RewardSum)
 from torchrl.envs.utils import ExplorationType, set_exploration_type
@@ -24,6 +23,7 @@ from collections import defaultdict
 import warnings
 
 #from CT_env import init_marks_from_m
+from solutions.PPO.data_collector import DeadlockSafeCollector
 from solutions.PPO.enviroment import CT
 
 warnings.filterwarnings(
@@ -114,14 +114,13 @@ def train(
 
     optim = Adam(list(policy.parameters()) + list(value_module.parameters()), lr=lr)
 
-    # 收集器
-    collector = SyncDataCollector(
+    # 收集器：自定义版本，记录死锁终止后继续采样
+    collector = DeadlockSafeCollector(
         env,
         policy,
         frames_per_batch=frames_per_batch,
         total_frames=frames_per_batch * total_batch,
         device=device,
-        split_trajs=False,
     )
 
     # relaybuffer
