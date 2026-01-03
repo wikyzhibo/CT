@@ -5,10 +5,11 @@ from torch.optim import Adam
 import torch.nn as nn
 from torchrl.modules import MaskedCategorical, ProbabilisticActor
 from tensordict.nn import TensorDictModule
+import torch
+from tensordict import TensorDict
 
-
-from solutions.pdr.net import Petri
-from models import MaskedPolicyHead
+#from solutions.PDR.net import Petri
+from solutions.PPO.network.models import MaskedPolicyHead
 
 import numpy as np
 from collections import defaultdict
@@ -172,7 +173,7 @@ def main():
     obs,actions,mask = env.collect_expert_data()
 
     # 3) 预处理：低维表示/压平等
-    from enviroment import impress_m,low_dim
+    from enviroment import impress_m
     tmp = [impress_m(o,env.idle_idx) for o in obs]
     #tmp = [low_dim(o,env.low_dim_idx) for o in tmp]
 

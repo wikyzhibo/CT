@@ -1,31 +1,24 @@
 import matplotlib.pyplot as plt
 import numpy as np
-
 import torch
-
-from enviroment import CT
-from Train_CT import train,ev
+from enviroment import CT2,CT_v2
+from train import train
+from torchrl.envs import (Compose, DTypeCastTransform,TransformedEnv, ActionMask)
 import time
-from torchrl.envs import (Compose, StepCounter, DTypeCastTransform,
-                          TransformedEnv,ActionMask,RewardSum)
 
+from data.config.params_N8 import params_N8
 
 if __name__ == "__main__":
 
-    # 任务b
-    from config.params_N8 import params_N8
-
     # 环境
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_env1 = CT(device=device,allow_idle=False,**params_N8)
-    params_N8['n_wafer'] = 75
-    base_env2 = CT(device=device,allow_idle=False, **params_N8)
+    base_env1 = CT_v2(device=device)
+    base_env2 = CT_v2(device=device)
 
     transform = Compose([ActionMask(),
                          DTypeCastTransform(dtype_in=torch.int64,dtype_out=torch.float32,
                                             in_keys="observation",out_keys="observation_f"),])
-    env = TransformedEnv(base_env1,transform)
-
+    train_env = TransformedEnv(base_env1,transform)
     eval_env = TransformedEnv(base_env2,transform)
 
     #check_env_specs(env)
@@ -35,16 +28,22 @@ if __name__ == "__main__":
 
     start_time = time.time()
     log,policy = train(
-        env,
+        train_env,
         eval_env,
         device="cpu",
-        with_pretrain=True
+        with_pretrain=False
     )
     print("training time:", time.time() - start_time)
 
     y1 = np.asarray(log["reward"], dtype=float)
     x = np.arange(1, len(y1)+1)  # 更稳：按实际长度画
 
+    #out = eval_env.rollout(max_steps=1300,policy=policy)
+    #time = out['next','time'][-1].item()
+    #n_wafer = out['next','reward'].sum().item()/200
+    #print('step',len(out))
+    #print("makespan",time)
+    #print("n_wafer:",n_wafer)
     #env.reset()
     #log,_ = train(env,eval_env,device="cpu",with_pretrain=False)
 
@@ -54,7 +53,7 @@ if __name__ == "__main__":
     plt.plot(x, y1, marker="o")
     #plt.plot(x, y2, marker="s")
     plt.xlabel("Epoch")
-    plt.ylabel("Makespan")
+    plt.ylabel("reward")
     plt.title("PPO")
 
     #best_makespan = 12000  # <- 这里填你想对比的“最优/基准”值
@@ -62,5 +61,5 @@ if __name__ == "__main__":
     #plt.text(x[-1], best_makespan, f"  best={best_makespan:.0f}", va="center")
 
     #plt.legend(["bc","without bc", "GREEDY"])
-    #plt.savefig(r"C:\User\khand\OneDrive\code\dqn\CT\res\PPO without BC.png")
+    #plt.savefig(r"C:\User\khand\OneDrive\code\dqn\CT\results\PPO without BC.png")
     plt.show()

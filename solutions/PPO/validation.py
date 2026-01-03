@@ -3,45 +3,18 @@ import torch
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 from tensordict.nn import TensorDictModule
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
-
-from solutions.PPO.enviroment import CT2
+from torchrl.envs.utils import set_exploration_type, ExplorationType
+from solutions.PPO.enviroment import CT2, CT_v2
 from solutions.PPO.network.models import MaskedPolicyHead
+from visualization.plot import plot_gantt_hatched_residence,Op
 
+def load_policy(model_path, env, device="cpu"):
+    state_dict = torch.load(model_path, map_location=device)
 
-def load_policy(model_path, env, device="cpu", n_hidden=128):
-    """
-    加载训练好的策略模型
-    
-    Args:
-        model_path: 模型文件路径
-        env: 环境对象（用于获取动作和观察空间维度）
-        device: 设备（cpu/cuda）
-        n_hidden: 隐藏层大小（需与训练时一致）
-    
-    Returns:
-        policy: 加载的策略模型
-    """
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
-    
-    # 尝试直接加载整个模型对象
-    try:
-        policy = torch.load(model_path, map_location=device)
-        if isinstance(policy, ProbabilisticActor):
-            policy = policy.to(device)
-            policy.eval()
-            print(f"成功加载模型（完整对象）: {model_path}")
-            return policy
-    except Exception as e:
-        print(f"尝试直接加载失败: {e}，尝试加载 state_dict...")
-    
-    # 如果直接加载失败，尝试加载 state_dict
-    # 获取环境参数
     n_actions = env.action_spec.space.n
-    in_dim = env.net.low_dim
-    
-    # 构建策略网络结构（需与训练时一致）
-    policy_backbone = MaskedPolicyHead(hidden=n_hidden, n_obs=in_dim, n_actions=n_actions)
+    n_m = env.observation_spec["observation"].shape[0]
+
+    policy_backbone = MaskedPolicyHead(hidden=256, n_obs=n_m, n_actions=n_actions)
     td_module = TensorDictModule(
         policy_backbone, in_keys=["observation_f"], out_keys=["logits"]
     )
@@ -52,16 +25,13 @@ def load_policy(model_path, env, device="cpu", n_hidden=128):
         distribution_class=MaskedCategorical,
         return_log_prob=True,
     ).to(device)
-    
-    # 加载模型权重
-    state_dict = torch.load(model_path, map_location=device)
-    if isinstance(state_dict, dict):
-        policy.load_state_dict(state_dict)
-        print(f"成功加载模型（state_dict）: {model_path}")
-    else:
-        raise ValueError(f"无法识别的模型格式: {type(state_dict)}")
-    
+
+    policy.load_state_dict(state_dict)
+    policy.eval()
     return policy
+
+
+
 
 
 def ev(env, policy=None, max_steps=1500):
@@ -80,10 +50,9 @@ def ev(env, policy=None, max_steps=1500):
         raise ValueError("policy 不能为 None")
     
     policy.eval()
-    env.reset()
-    
     with torch.no_grad():
-        out = env.rollout(max_steps, policy)
+        with set_exploration_type(ExplorationType.RANDOM):
+            out = env.rollout(max_steps, policy)
     
     # 检查是否完成任务
     if out["next", "finish"].sum().item() <= 0:
@@ -92,17 +61,13 @@ def ev(env, policy=None, max_steps=1500):
         return None
     
     # 计算 makespan
-    time = out["time"].squeeze().tolist()
-    time.append(out["next", "time"][-1].item())
-    
-    makespan = time[-1]
-    n_wafer = out["next", "reward"].sum().item() / 200 if "reward" in out["next"] else None
-    
-    env.reset()
-    
+    makespan = torch.where(
+        out["next", "finish"],
+        out["next", "time"],
+        100000
+    ).min().item()
+
     print(f"评估结果 - Makespan: {makespan:.2f}", end="")
-    if n_wafer is not None:
-        print(f" | 完成晶圆数: {n_wafer:.0f}", end="")
     print(f" | 步数: {len(out)}")
     
     return makespan
@@ -121,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default="N8",
+        default="N7",
         choices=["N2", "N5", "N6", "N7", "N8"],
         help="使用的配置文件（默认: N8）"
     )
@@ -147,8 +112,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_runs",
         type=int,
-        default=1,
-        help="运行次数（默认: 1）"
+        default=50,
+        help="运行次数（默认: 5）"
     )
     
     args = parser.parse_args()
@@ -160,24 +125,24 @@ if __name__ == "__main__":
     # 导入配置
     config_module = f"config.params_{args.config}"
     if args.config == "N8":
-        from config.params_N8 import params_N8 as params
+        from data.config.params_N8 import params_N8 as params
     elif args.config == "N7":
-        from config.params_N7 import params_N7 as params
+        from data.config.params_N7 import params_N7 as params
     elif args.config == "N6":
-        from config.params_N6 import params_N6 as params
+        from data.config.params_N6 import params_N6 as params
     elif args.config == "N5":
-        from config.params_N5 import params_N5 as params
+        from data.config.params_N5 import params_N5 as params
     elif args.config == "N2":
-        from config.params_N2 import params_N2 as params
+        from data.config.params_N2 import params_N2 as params
     else:
         raise ValueError(f"不支持的配置: {args.config}")
     
     # 设置晶圆数量
-    params['n_wafer'] = args.n_wafer
+    #params['n_wafer'] = args.n_wafer
     
     # 创建环境
     print(f"创建环境 - 配置: {args.config}, 晶圆数: {args.n_wafer}")
-    base_env = CT2(device=device, allow_idle=False, **params)
+    base_env = CT_v2(device=device)
     
     transform = Compose([
         ActionMask(),
@@ -203,13 +168,47 @@ if __name__ == "__main__":
     # 运行评估
     print(f"\n开始评估 (运行 {args.n_runs} 次)...")
     makespans = []
-    
+
+    min_makespan = 10**5
     for run in range(args.n_runs):
         print(f"\n--- 运行 {run + 1}/{args.n_runs} ---")
+        env.reset()
         makespan = ev(env, policy, max_steps=args.max_steps)
+        if makespan < min_makespan:
+            min_makespan = makespan
+            ops2 = []
+            net = env.net
+            tmp_p = ['p3', 'p4', 'p5', 'p6', 'p7']
+            tmpid = [net.id2p_name.index(i) for i in tmp_p]
+            for i, id in enumerate(tmpid):
+                for j in range(net.stage_c[i + 1]):
+                    machine = j
+                    p_occ = net.place_times[id][machine]
+                    for oc in p_occ:
+                        job = oc.tok_key
+                        start = oc.start
+                        end = oc.end
+                        proc = net.proc[i + 1]
+                        ops2.append(
+                            Op(job=job, stage=i + 1, machine=machine, start=start, proc_end=start + proc, end=end))
         if makespan is not None:
             makespans.append(makespan)
-    
+
+    # 绘制甘特图
+
+    net = env.net
+    out_path = r"C:\Users\khand\OneDrive\code\dqn\CT\results\\"
+
+
+    arm_info = {'ARM1': ["t3", "u3", "t4", "u6", "t7", "u31", 'u7', 't8'],
+                'ARM2': ["u4", "t5", "u5", "t6"],
+                'STAGE2ACT': {1: ("t3", "u3"), 2: ("t4", "u4"), 3: ("t5", "u5"), 4: ("t6", "u6"), 5: ('t7', 'u7')}}
+    n_job = net.n_wafer[0] + net.n_wafer[1]
+    plot_gantt_hatched_residence(ops=ops2, proc_time=net.proc,
+                                 capacity=net.stage_c, n_jobs=n_job,
+                                 out_path=out_path, with_label=True,
+                                 arm_info=arm_info,policy=2,no_arm=False)
+
     # 统计结果
     if makespans:
         print(f"\n{'='*50}")

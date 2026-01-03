@@ -1,30 +1,27 @@
-from solutions.DFS.plot import plot_gantt_hatched_residence
-from solutions.DFS.ops2tran import ops_to_actions
+from visualization.plot import *
+#from solutions.DFS.ops2tran import ops_to_actions
 import tomllib
 import bisect
 from typing import Dict, List, Tuple
-from dataclasses import dataclass
 
 Interval = Tuple[float, float]  # [l, r], r>l
 INF = 10**18
 
+# ====== 机械手：动作集合（按你定义） ======
+ARM1 = ["t3", "u3", "u6", "t7", "u7", "t8"]
+ARM2 = ["t5", "u6", "t6"]
 
-@dataclass
-class Op:
-    job: int
-    stage: int
-    machine: int
-    start: float
-    proc_end: float
-    end: float  # occupied until end (includes residence)
+# stage -> (start_action, end_action)
+STAGE2ACT = {
+    1: ("t3", "u3"),
+    2: ("t5", "u5"),
+    3: ("t6", "u6"),
+    4: ("t7", "u7"),
+    5: ("t8", "u8"),
+}
 
 
-def _num_stages(proc_time: Dict[int, float]) -> int:
-    S = max(proc_time.keys())
-    for s in range(1, S + 1):
-        if s not in proc_time:
-            raise ValueError(f"proc_time missing stage {s}")
-    return S
+
 
 def _insert_interval_sorted(busy: List[Interval], itv: Interval) -> None:
     l, _ = itv
@@ -53,18 +50,7 @@ def _earliest_non_overlapping_start(busy: List[Interval], s: float, dur: float) 
     return t
 
 
-# ====== 机械手：动作集合（按你定义） ======
-ARM1 = set(["t3", "u3", "u6", "t7", "u7", "t8"])
-ARM2 = set(["t5", "u6", "t6"])
 
-# stage -> (start_action, end_action)
-STAGE2ACT = {
-    1: ("t3", "u3"),
-    2: ("t5", "u5"),
-    3: ("t6", "u6"),
-    4: ("t7", "u7"),
-    5: ("t8", "u8"),
-}
 
 
 def _which_arm(act: str, prefer_arm1_on_overlap: bool = True) -> str | None:
@@ -144,11 +130,16 @@ def schedule_shift_search_window0_with_arrivals(
       - u: unload -> 手上 +1
       - t: load   -> 手上 -1
     """
+    eps = 1e-12
+
     # ====== 机器 busy（按 stage, machine） ======
     machine_busy: Dict[int, List[List[Interval]]] = {
         s: [[] for _ in range(capacity[s])]
         for s in capacity.keys()
     }
+
+    # ====== round-robin 指针（按 stage） ======
+    rr_ptr: Dict[int, int] = {s: 0 for s in capacity.keys()}
 
     # ====== 机械手持有区间记录器 ======
     # arm_intervals[arm] = sorted list of holding intervals [u_time, t_time)
@@ -178,6 +169,8 @@ def schedule_shift_search_window0_with_arrivals(
         chosen_m: Dict[int, int] = {}
         chosen_s: Dict[int, float] = {}
 
+        # 记录本 job 最终采用的 RR tie（只在 commit 后推进 rr_ptr）
+        rr_used: Dict[int, bool] = {}
         # 外层：同时满足“机器层面 + 机械手层面”
         while True:
             # ====== A) 先在机器层面做 shift search，得到一组机器可行的 starts ======
@@ -190,12 +183,26 @@ def schedule_shift_search_window0_with_arrivals(
                     want = base_start[s] + delta
                     dur = proc_time[s]
 
+                    # --- round-robin tie-break ---
                     best_t = INF
                     best_m = -1
+                    cands = []
                     for m in range(capacity[s]):
                         t = _earliest_non_overlapping_start(machine_busy[s][m], want, dur)
+                        cands.append((t,m))
                         if t < best_t:
-                            best_t, best_m = t, m
+                            best_m,best_t = m,t
+
+                    cands.sort()
+                    best_t = cands[0][0]
+                    ties = [m for t, m in cands if abs(t - best_t) <= eps]
+                    if len(ties) > 1:
+                        idx = rr_ptr[s] % len(ties)
+                        best_m = ties[idx]
+                        rr_used[s] = True
+                    else:
+                        best_m = cands[0][1]
+                        rr_used[s] = False
 
                     chosen_m[s] = best_m
                     chosen_s[s] = best_t
@@ -249,6 +256,11 @@ def schedule_shift_search_window0_with_arrivals(
             ops.append(Op(job, s, m, start[s], proc_end[s], end[s]))
             _insert_interval_sorted(machine_busy[s][m], (start[s], end[s]))
 
+        # ✅ 只有在最终 commit 后，才推进 rr_ptr（避免 delta 回滚污染）
+        for s in R:
+            if rr_used.get(s, False):
+                rr_ptr[s] += 1
+
         # 更新 arm_intervals（持有区间）
         for k in range(L - 1):
             u, v = R[k], R[k + 1]
@@ -285,11 +297,10 @@ if __name__ == "__main__":
         u, w = k.split("->")
         W[(int(u), int(w))] = v
 
-
     routes = {i: (A if i <= N_JOB1 else B) for i in range(1, N_JOB + 1)}
     arrivals = {i:30*(i-1) for i in range(1,N_JOB+1)}
     ops = schedule_shift_search_window0_with_arrivals(proc_time, capacity,tau=tau,routes=routes,t1_min=0,arrivals=arrivals)
-    out_path = "../../res/wxt.png"
+    out_path = "../../results/taskC_jobA24.png"
     plot_gantt_hatched_residence(ops, proc_time, capacity, N_JOB, out_path,with_label=False)
     print("saved:", out_path)
 
@@ -298,4 +309,4 @@ if __name__ == "__main__":
         if o.job == 2:
             tmp.append(o)
 
-    seq = ops_to_actions(ops)
+    #seq = ops_to_actions(ops)

@@ -3,15 +3,36 @@ from dataclasses import dataclass, field
 from time import process_time
 from typing import Deque, List, Optional, Tuple
 
-@dataclass
-class Token:
-    job_id: int
-    enter_time: int
-    wafer_type: int = -1
-    deadline: int = None
 
-    def clone(self) -> "Token":
-        return Token(job_id=self.job_id, enter_time=self.enter_time,wafer_type=self.wafer_type)
+from dataclasses import dataclass, field
+
+_uid_counter = 0
+def _next_uid():
+    global _uid_counter
+    _uid_counter += 1
+    return _uid_counter
+
+@dataclass
+class BasedToken:
+    enter_time: int
+
+    def clone(self):
+        return BasedToken(
+            enter_time=self.enter_time,
+        )
+
+@dataclass
+class WaferToken(BasedToken):
+    job_id: int
+    path: List[List[int]]
+
+    def clone(self) -> "WaferToken":
+        return WaferToken(
+            job_id=self.job_id,
+            enter_time=self.enter_time,
+            path=self.path,
+        )
+
 
 
 @dataclass
@@ -21,28 +42,21 @@ class Place:
     processing_time: int
     type: int  # 1 for manipulator place, 2 for delivery place, 3 for idle place, 4 for source place
 
-
-    tokens: Deque[Token] = field(default_factory=deque)
+    tokens: Deque[BasedToken] = field(default_factory=deque)
 
     def clone(self) -> "Place":
         cloned = Place(name=self.name, capacity=self.capacity, processing_time=self.processing_time,type=self.type)
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned
 
-    def head(self) -> Token:
+    def head(self):
         return self.tokens[0]
 
-    def pop_head(self) -> Token:
+    def pop_head(self):
         return self.tokens.popleft()
 
-    def remove(self):
-        token = self.pop_head()
-        if self.type in [1,2,4]:
-            return token.job_id
-        else:
-            return None
 
-    def append(self, token: Token) -> None:
+    def append(self, token) -> None:
         self.tokens.append(token)
 
     def res_time(self, current_time: int) -> int:
