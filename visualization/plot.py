@@ -13,6 +13,8 @@ class Op:
     start: float
     proc_end: float
     end: float  # occupied until end (includes residence)
+    is_arm: bool = False
+    kind: int = -1
 
 
 def _num_stages(proc_time: Dict[int, float]) -> int:
@@ -64,7 +66,22 @@ def plot_gantt_hatched_residence(
     for op in ops:
         idx = lane_index[(op.stage, op.machine)]
         y0 = idx * (lane_h + lane_gap)
-        color = job_color[op.job]
+
+        coset = ['green','blue']
+        if op.is_arm:
+            color = coset[op.kind]
+            ax.add_patch(Rectangle(
+                (op.start, y0),
+                max(0.0, op.proc_end - op.start),
+                lane_h,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0,
+                alpha=0.5,
+            ))
+            continue
+        else:
+            color = job_color[op.job]
 
         # processing (dark)
         ax.add_patch(Rectangle(

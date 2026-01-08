@@ -32,10 +32,12 @@ warnings.filterwarnings(
 )
 
 n_hidden = 256
-total_batch=150
-frames_per_batch=250*5
-sub_batch_size = 100
-num_epochs=16
+total_batch=200
+
+sub_batch_size = 400
+num_epochs= 5
+frames_per_batch= sub_batch_size * (num_epochs+1)
+
 gamma=0.99
 gae_lambda=0.95
 clip_epsilon=0.2
@@ -215,11 +217,12 @@ def train(
                 tensordict_data["next", "finish"]
             ]
             mean_makespan = makespan.float().mean()
+            finish_times = len(makespan)
 
             #n_deadlock += tensordict_data["next","deadlock_type"].sum().item()
 
             if batch_idx % 1 ==0:
-                print(f"batch {batch_idx+1:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| overtime={overtime}|makespan={mean_makespan:.2f}")
+                print(f"batch {batch_idx+1:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| circle={finish_times}|makespan={mean_makespan:.2f}")
 
                 n_deadlock=0
             #if batch_idx % 3 == 0 and batch_idx >0:

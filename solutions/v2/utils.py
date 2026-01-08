@@ -11,6 +11,7 @@ class Interval:
     start: int
     end: int          # 可为 INF_OCC 表示占用中
     tok_key: int
+    kind: int = -1
 
 @dataclass
 class Message:

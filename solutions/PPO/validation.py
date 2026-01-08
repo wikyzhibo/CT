@@ -178,7 +178,7 @@ if __name__ == "__main__":
             min_makespan = makespan
             ops2 = []
             net = env.net
-            tmp_p = ['p3', 'p4', 'p5', 'p6', 'p7']
+            tmp_p = ['PM7', 'LLC', 'PM1', 'LLD', 'PM9']
             tmpid = [net.id2p_name.index(i) for i in tmp_p]
             for i, id in enumerate(tmpid):
                 for j in range(net.stage_c[i + 1]):
@@ -203,11 +203,11 @@ if __name__ == "__main__":
     arm_info = {'ARM1': ["t3", "u3", "t4", "u6", "t7", "u31", 'u7', 't8'],
                 'ARM2': ["u4", "t5", "u5", "t6"],
                 'STAGE2ACT': {1: ("t3", "u3"), 2: ("t4", "u4"), 3: ("t5", "u5"), 4: ("t6", "u6"), 5: ('t7', 'u7')}}
-    n_job = net.n_wafer[0] + net.n_wafer[1]
+    n_job = net.n_wafer
     plot_gantt_hatched_residence(ops=ops2, proc_time=net.proc,
                                  capacity=net.stage_c, n_jobs=n_job,
                                  out_path=out_path, with_label=True,
-                                 arm_info=arm_info,policy=2,no_arm=False)
+                                 arm_info=arm_info,policy=2,no_arm=True)
 
     # 统计结果
     if makespans:

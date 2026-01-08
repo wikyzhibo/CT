@@ -7,6 +7,8 @@ from tensordict import TensorDict
 import copy
 
 from solutions.v2.net_v2 import PetriNet
+from solutions.v3.net_v3 import PetriV3
+from solutions.Td_petri.tdpn import TimedPetri
 from data.config.params_N7 import params_N7
 
 def impress_m(m, idle):
@@ -28,10 +30,8 @@ class CT_v2(EnvBase):
 
         super().__init__(device=device)
 
-        self.net = PetriNet(with_controller=True,
-                       with_capacity_controller=True,
-                       with_zhiliu_controller=False,
-                       **params_N7)
+        #self.net = PetriV3(with_controller=True)
+        self.net = TimedPetri()
         self.n_actions = self.net.T
 
 
@@ -44,14 +44,17 @@ class CT_v2(EnvBase):
         n_p = self.net.P
         n_t = self.net.T
 
+        obs_dim = self.net.obs_dim
+        act_dim = self.net.A
+
         # 使用 self.n_actions，按 allow_idle 决定动作数量
         self.observation_spec = Composite(
-            observation=Bounded(low=0, high=76, shape=(n_p,), dtype=torch.int64, device=self.device),
+            observation=Bounded(low=0, high=76, shape=(obs_dim,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
             shape=()
         )
-        self.action_spec = Categorical(n=self.n_actions,shape=(1,),dtype=torch.int64)
+        self.action_spec = Categorical(n=act_dim,shape=(1,),dtype=torch.int64)
         self.reward_spec = Unbounded(shape=(1,), dtype=torch.float32)
         self.state_spec = Composite(shape=())
         self.done_spec = Composite(
@@ -78,13 +81,16 @@ class CT_v2(EnvBase):
         action = tensordict["action"].item()
         last_time = tensordict["time"].item()
 
-        mask_next, new_obs, time, qtime_violation, over_time, finish = self.net.step(action)
+        mask_next, new_obs, time, finish = self.net.step(action)
 
+        '''
         r_over = 0
         if qtime_violation:
             r_over = -100
         if over_time:
             r_over = -5000
+        '''
+
 
         delta_time = time - last_time
         if delta_time > 0:
@@ -92,9 +98,10 @@ class CT_v2(EnvBase):
         else:
             r_time = 0
 
-        reward = int(r_time) + r_over
+        reward = int(r_time) #+ r_over
 
         terminated = finish
+
 
         out = TensorDict({
             "observation": torch.as_tensor(new_obs, dtype=torch.int64),
@@ -103,7 +110,7 @@ class CT_v2(EnvBase):
             "finish": torch.tensor(finish, dtype=torch.bool),
             "reward": torch.tensor([reward], dtype=torch.float32),
             "terminated": torch.tensor(terminated, dtype=torch.bool),
-            "overtime": torch.tensor(qtime_violation+over_time, dtype=torch.int64),
+            "overtime": torch.tensor(0, dtype=torch.int64),
         }, batch_size=[])
 
         return out

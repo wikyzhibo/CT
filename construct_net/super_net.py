@@ -2,6 +2,7 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union, Set, Optional
+from solutions.model.pn_models import WaferToken,Place,BasedToken
 
 # 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
 Stage = Union[str, List[str]]
@@ -161,22 +162,14 @@ class SuperPetriBuilder:
         shared_groups: 共享容量组（如 LLA/LLB, LLC/LLD）
         """
         shared_groups = shared_groups or []
-        #controller = {"bm1":{},
-        #              "bm2":{},
-        #              "f":[]}
+        self._modules = modules
 
-        # 0) 建模块 place（ptime/capacity 手动给）
         for m, spec in modules.items():
             self.add_place(m, tokens=spec.tokens, ptime=spec.ptime, capacity=spec.capacity)
 
         # 1) 建机器人资源 place：capacity=tokens；ptime=0
         for rname, rspec in robots.items():
-            self.add_place(
-                f"r_{rname}",
-                tokens=rspec.tokens,
-                ptime=0,
-                capacity=rspec.tokens,
-            )
+            self.add_place(name=f"r_{rname}",tokens=rspec.tokens,ptime=0,capacity=rspec.tokens)
 
         # 2) 建共享容量资源库所 k，并建立 place->k 的映射
         group_of_place: Dict[str, str] = {}
@@ -209,7 +202,7 @@ class SuperPetriBuilder:
             self.add_transition(t, ttime=self.default_ttime)
 
             # d 库所：ptime=3（统一），capacity=INF
-            self.add_place(d, tokens=0, ptime=self.d_ptime, capacity=INF)
+            self.add_place(d, tokens=0, ptime=self.d_ptime, capacity=2)
 
             # 基本弧：
             # A + r -> u -> d -> t -> B + r
@@ -230,9 +223,9 @@ class SuperPetriBuilder:
                 self.add_arc(u, group_of_place[a], 1)
 
         # 5) 创建控制容量库所
-        self.add_place(name="w1", tokens=4, ptime=0, capacity=4)
-        self.add_arc(src="w1",dst="t_LLA",w=1)
-        self.add_arc(src="u_LLB_LP_done",dst="w1",w=1)
+        #self.add_place(name="w1", tokens=4, ptime=0, capacity=4)
+        #self.add_arc(src="w1",dst="t_LLA",w=1)
+        #self.add_arc(src="u_LLB_LP_done",dst="w1",w=1)
 
         return self.finalize()
 
@@ -247,13 +240,14 @@ class SuperPetriBuilder:
             if nd["type"] == "p":
                 m0[nd["id"]] = nd["tokens"]
 
-        idle_idx = {'L1':self.id2p_name.index('LP1'),
-                    'L2':self.id2p_name.index('LP_done'),}
+        idle_idx = {'start':[self.id2p_name.index('LP1'),self.id2p_name.index('LP2')],
+                    'end':self.id2p_name.index('LP_done'),}
 
         md = m0.copy()
-        n_wafer = m0[self.id2p_name.index("LP1")]
+        n_wafer = m0[self.id2p_name.index("LP1")]+m0[self.id2p_name.index("LP2")]
         md[self.id2p_name.index("LP_done")] = n_wafer
         md[self.id2p_name.index("LP1")] = 0
+        md[self.id2p_name.index("LP2")] = 0
 
         # pre/pst
         pre = np.zeros((P, T), dtype=int)
@@ -283,6 +277,37 @@ class SuperPetriBuilder:
         capacity = np.array(self._cap_by_pid, dtype=int)
         ttime = np.array(self._ttime_by_tid, dtype=int)
 
+        marks = []
+        job_id = 1
+        for i in range(P):
+            pname = self.id2p_name[i]
+            if pname.startswith('LP') and pname in getattr(self, '_modules', {}):
+                ptype = 3
+            elif pname.startswith('d'):
+                ptype = 2
+            elif pname in getattr(self, '_modules', {}):
+                ptype = 1
+            else:
+                ptype = 4
+            
+            place = Place(
+                name=pname,
+                capacity=int(capacity[i]),
+                processing_time=int(ptime[i]),
+                type=ptype
+            )
+            
+            cnt = m0[i]
+            if cnt > 0:
+                if ptype == 3:
+                    for _ in range(cnt):
+                        place.append(WaferToken(enter_time=0, job_id=job_id, path=[]))
+                        job_id += 1
+                else:
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0))
+            marks.append(place)
+
         return {
             "m0": m0,
             "md":md,
@@ -297,6 +322,8 @@ class SuperPetriBuilder:
             "id2t_name": self.id2t_name,
             "idle_idx": idle_idx,
             "module_x": module_x,
+            "marks": marks,
+            "n_wafer": n_wafer
         }
 
 
