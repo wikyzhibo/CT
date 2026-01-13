@@ -32,13 +32,13 @@ warnings.filterwarnings(
 )
 
 n_hidden = 256
-total_batch=200
+total_batch=450
 
-sub_batch_size = 400
-num_epochs= 5
-frames_per_batch= sub_batch_size * (num_epochs+1)
+sub_batch_size = 128
+num_epochs= 10
+frames_per_batch= sub_batch_size * (num_epochs)
 
-gamma=0.99
+gamma=0.999
 gae_lambda=0.95
 clip_epsilon=0.2
 lr=1e-4

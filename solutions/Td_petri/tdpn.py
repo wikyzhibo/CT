@@ -236,51 +236,165 @@ class TimedPetri:
         for i,name in enumerate(self.id2p_name):
              if name.startswith('P_READY'):
                  self.obs_place_idx.append(i)
-        self.obs_dim = len(self.obs_place_idx)
+
+        self.his_len = 50
+        self.his_a = [0] * self.his_len  # 用 -1 代表"无历史"
+        # his_par_a_by_stage 和 his_par_total_len 在 _build_rl_action_space 中初始化
+        # 现在更新 obs_dim（需要 obs_place_idx 和 his_par_total_len）
+        self.obs_dim = 2 * len(self.obs_place_idx) + self.his_len
+
+    def _mark2obs(self):
+        obs1 = np.zeros(16)
+        obs2 = np.zeros(16)
+        for k, idx in enumerate(self.obs_place_idx):
+            p = self.marks[idx]
+            for tok in p.tokens:
+                if tok.type == 1:
+                    obs1[k] += 1
+                elif tok.type == 2:
+                    obs2[k] += 1
+
+        # 将所有stage的历史记录摊平成一维
+        # 按pstage顺序排列（从小到大）
+        #his_par_list = []
+        #for pstage in sorted(self.his_par_a_by_stage.keys()):
+        #    his_par_list.extend(self.his_par_a_by_stage[pstage])
+        #his_par = np.array(his_par_list, dtype=np.float32)
+        his_a = np.array(self.his_a)
+        
+        obs = np.concatenate([obs1, obs2, his_a])
+        return obs
+
+
 
     def _build_rl_action_space(self):
-        pathD = [[['ARM1_PICK__LP1__TO__AL', 'ARM1_MOVE__LP1__TO__AL','ARM1_LOAD__LP1__TO__AL','PROC__AL']], #LP1->AL
-                 [['ARM1_PICK__AL__TO__LLA_S2', 'ARM1_MOVE__AL__TO__LLA_S2', 'ARM1_LOAD__AL__TO__LLA_S2', 'PROC__LLA_S2']],#AL->LLA
-                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7', 'PROC__PM7','ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10','PROC__PM10'],
-                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8','PROC__PM8','ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9','PROC__PM9']],#LLA->PM7/PM8->PM9/PM10
-                 [['ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1','PROC__LLB_S1'],
-                  ['ARM2_PICK__PM10__TO__LLB_S1','ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1','PROC__LLB_S1']], #PM9-PM10->LLB
-                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done','PROC__LP_done']]] #LLB->LP_done
+        # ... 你的 pathD / pathC 保持不变 ...
+        pathD = [[['ARM1_PICK__LP1__TO__AL', 'ARM1_MOVE__LP1__TO__AL', 'ARM1_LOAD__LP1__TO__AL', 'PROC__AL']],
+                 # LP1->AL
+                 [['ARM1_PICK__AL__TO__LLA_S2', 'ARM1_MOVE__AL__TO__LLA_S2', 'ARM1_LOAD__AL__TO__LLA_S2',
+                   'PROC__LLA_S2']],  # AL->LLA
+                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7',
+                   'PROC__PM7', 'ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10',
+                   'PROC__PM10'],
+                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8',
+                   'PROC__PM8', 'ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9',
+                   'PROC__PM9']],  # LLA->PM7/PM8->PM9/PM10
+                 [['ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1',
+                   'PROC__LLB_S1'],
+                  ['ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1',
+                   'PROC__LLB_S1']],  # PM9-PM10->LLB
+                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done',
+                   'PROC__LP_done']]]  # LLB->LP_done
 
-        pathC = [[['ARM1_PICK__LP2__TO__AL', 'ARM1_MOVE__LP2__TO__AL','ARM1_LOAD__LP2__TO__AL','PROC__AL']], #LP2->AL
-                 [['ARM1_PICK__AL__TO__LLA_S2', 'ARM1_MOVE__AL__TO__LLA_S2', 'ARM1_LOAD__AL__TO__LLA_S2', 'PROC__LLA_S2']], #AL->LLA
-                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7','PROC__PM7','ARM2_PICK__PM7__TO__LLC', 'ARM2_MOVE__PM7__TO__LLC', 'ARM2_LOAD__PM7__TO__LLC','PROC__LLC'],
-                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8','PROC__PM8','ARM2_PICK__PM8__TO__LLC', 'ARM2_MOVE__PM8__TO__LLC', 'ARM2_LOAD__PM8__TO__LLC','PROC__LLC']], #LLA->PM7/PM8->LLC
-                 [['ARM3_PICK__LLC__TO__PM1', 'ARM3_MOVE__LLC__TO__PM1', 'ARM3_LOAD__LLC__TO__PM1','PROC__PM1','ARM3_PICK__PM1__TO__LLD', 'ARM3_MOVE__PM1__TO__LLD', 'ARM3_LOAD__PM1__TO__LLD','PROC__LLD'],
-                  ['ARM3_PICK__LLC__TO__PM2', 'ARM3_MOVE__LLC__TO__PM2', 'ARM3_LOAD__LLC__TO__PM2','PROC__PM2','ARM3_PICK__PM2__TO__LLD', 'ARM3_MOVE__PM2__TO__LLD', 'ARM3_LOAD__PM2__TO__LLD','PROC__LLD'],
-                  ['ARM3_PICK__LLC__TO__PM3', 'ARM3_MOVE__LLC__TO__PM3', 'ARM3_LOAD__LLC__TO__PM3','PROC__PM3','ARM3_PICK__PM3__TO__LLD', 'ARM3_MOVE__PM3__TO__LLD', 'ARM3_LOAD__PM3__TO__LLD','PROC__LLD'],
-                  ['ARM3_PICK__LLC__TO__PM4', 'ARM3_MOVE__LLC__TO__PM4', 'ARM3_LOAD__LLC__TO__PM4','PROC__PM4','ARM3_PICK__PM4__TO__LLD', 'ARM3_MOVE__PM4__TO__LLD', 'ARM3_LOAD__PM4__TO__LLD','PROC__LLD']], #LLC->PM1-PM4->LLD
-                 [['ARM2_PICK__LLD__TO__PM10','ARM2_MOVE__LLD__TO__PM10','ARM2_LOAD__LLD__TO__PM10','PROC__PM10','ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1', 'PROC__LLB_S1'],
-                  ['ARM2_PICK__LLD__TO__PM9', 'ARM2_MOVE__LLD__TO__PM9', 'ARM2_LOAD__LLD__TO__PM9','PROC__PM9','ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1','PROC__LLB_S1']], #LLD->PM9-PM10->LLB
-                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done','PROC__LP_done']]] #LLB->LP_done
+        pathC = [[['ARM1_PICK__LP2__TO__AL', 'ARM1_MOVE__LP2__TO__AL', 'ARM1_LOAD__LP2__TO__AL', 'PROC__AL']],
+                 # LP2->AL
+                 [['ARM1_PICK__AL__TO__LLA_S2', 'ARM1_MOVE__AL__TO__LLA_S2', 'ARM1_LOAD__AL__TO__LLA_S2',
+                   'PROC__LLA_S2']],  # AL->LLA
+                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7',
+                   'PROC__PM7', 'ARM2_PICK__PM7__TO__LLC', 'ARM2_MOVE__PM7__TO__LLC', 'ARM2_LOAD__PM7__TO__LLC',
+                   'PROC__LLC'],
+                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8',
+                   'PROC__PM8', 'ARM2_PICK__PM8__TO__LLC', 'ARM2_MOVE__PM8__TO__LLC', 'ARM2_LOAD__PM8__TO__LLC',
+                   'PROC__LLC']],  # LLA->PM7/PM8->LLC
+                 [['ARM3_PICK__LLC__TO__PM1', 'ARM3_MOVE__LLC__TO__PM1', 'ARM3_LOAD__LLC__TO__PM1', 'PROC__PM1',
+                   'ARM3_PICK__PM1__TO__LLD', 'ARM3_MOVE__PM1__TO__LLD', 'ARM3_LOAD__PM1__TO__LLD', 'PROC__LLD'],
+                  ['ARM3_PICK__LLC__TO__PM2', 'ARM3_MOVE__LLC__TO__PM2', 'ARM3_LOAD__LLC__TO__PM2', 'PROC__PM2',
+                   'ARM3_PICK__PM2__TO__LLD', 'ARM3_MOVE__PM2__TO__LLD', 'ARM3_LOAD__PM2__TO__LLD', 'PROC__LLD'],
+                  ['ARM3_PICK__LLC__TO__PM3', 'ARM3_MOVE__LLC__TO__PM3', 'ARM3_LOAD__LLC__TO__PM3', 'PROC__PM3',
+                   'ARM3_PICK__PM3__TO__LLD', 'ARM3_MOVE__PM3__TO__LLD', 'ARM3_LOAD__PM3__TO__LLD', 'PROC__LLD'],
+                  ['ARM3_PICK__LLC__TO__PM4', 'ARM3_MOVE__LLC__TO__PM4', 'ARM3_LOAD__LLC__TO__PM4', 'PROC__PM4',
+                   'ARM3_PICK__PM4__TO__LLD', 'ARM3_MOVE__PM4__TO__LLD', 'ARM3_LOAD__PM4__TO__LLD', 'PROC__LLD']],
+                 # LLC->PM1-PM4->LLD
+                 [['ARM2_PICK__LLD__TO__PM10', 'ARM2_MOVE__LLD__TO__PM10', 'ARM2_LOAD__LLD__TO__PM10', 'PROC__PM10',
+                   'ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1',
+                   'PROC__LLB_S1'],
+                  ['ARM2_PICK__LLD__TO__PM9', 'ARM2_MOVE__LLD__TO__PM9', 'ARM2_LOAD__LLD__TO__PM9', 'PROC__PM9',
+                   'ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1',
+                   'PROC__LLB_S1']],  # LLD->PM9-PM10->LLB
+                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done',
+                   'PROC__LP_done']]]  # LLB->LP_done
 
-        allowed = []
-        # 路线 D
-        for stage in pathD:
-            for chain in stage:
-                allowed.append(("D", tuple(chain)))
-        # 路线 C
-        for stage in pathC:
-            for chain in stage:
-                allowed.append(("C", tuple(chain)))
+        allowed = []  # [(tag, chain_tuple), ...] 仅用于收集
+        chain_meta = {}  # ch -> {"is_parallel":bool, "pstage":int, "tags":set()}
 
-        # 去重（如果你确实存在完全相同的 chain）
+        pstage_id = 0  # 并行阶段计数器（跨 C/D 共用，方便统一编码）
+
+        def add_path(tag, path):
+            nonlocal pstage_id
+            for stage in path:
+                is_parallel = (len(stage) > 1)
+                cur_pstage = pstage_id if is_parallel else -1
+                if is_parallel:
+                    pstage_id += 1
+
+                for chain in stage:
+                    ch = tuple(chain)
+                    allowed.append((tag, ch))
+
+                    if ch not in chain_meta:
+                        chain_meta[ch] = {"is_parallel": is_parallel,
+                                          "pstage": cur_pstage,
+                                          "tags": set([tag])}
+                    else:
+                        # 同一条 chain 可能在别的路线也出现：共用 meta，但 tags 合并
+                        chain_meta[ch]["tags"].add(tag)
+                        # 如果任一路线认为它是并行选择的一部分，就当并行（更安全）
+                        if is_parallel and not chain_meta[ch]["is_parallel"]:
+                            chain_meta[ch]["is_parallel"] = True
+                            chain_meta[ch]["pstage"] = cur_pstage
+
+        add_path("D", pathD)
+        add_path("C", pathC)
+
+        # 关键：按 chain 去重（相同 chain 共用 id）
+        uniq_chains = []
         seen = set()
-        uniq = []
-        for tag, ch in allowed:
-            if (tag, ch) in seen:
+        for _, ch in allowed:
+            if ch in seen:
                 continue
-            seen.add((tag, ch))
-            uniq.append((tag, ch))
+            seen.add(ch)
+            uniq_chains.append(ch)
 
-        self.aid2chain = uniq  # [(tag, chain_tuple), ...]
-        self.chain2aid = {ch: i for i, (_, ch) in enumerate(uniq)}
-        self.A = len(self.aid2chain)  # RL 动作维度
+        self.aid2chain = uniq_chains  # [chain_tuple,...]
+        self.chain2aid = {ch: i for i, ch in enumerate(uniq_chains)}
+        self.A = len(self.aid2chain)
+
+        # 重要：建立 aid -> 是否并行/并行阶段
+        self.aid_is_parallel = np.zeros(self.A, dtype=bool)
+        self.aid_pstage = -np.ones(self.A, dtype=np.int32)
+        self.aid2tags = [set() for _ in range(self.A)]  # 可选调试：属于哪些路线
+
+        for aid, ch in enumerate(self.aid2chain):
+            meta = chain_meta.get(ch, None)
+            if meta is None:
+                continue
+            self.aid_is_parallel[aid] = bool(meta["is_parallel"])
+            self.aid_pstage[aid] = int(meta["pstage"])
+            self.aid2tags[aid] = meta["tags"]
+
+        # 计算每个stage的并行chain数量，并初始化历史记录队列
+        # pstage -> count of parallel chains in that stage
+        stage_chain_count = {}
+        for aid in range(self.A):
+            if self.aid_is_parallel[aid]:
+                pstage = self.aid_pstage[aid]
+                if pstage >= 0:  # 有效的并行阶段
+                    if pstage not in stage_chain_count:
+                        stage_chain_count[pstage] = set()
+                    # 记录该stage的所有并行chain的aid（用于去重）
+                    stage_chain_count[pstage].add(aid)
+        
+        # 为每个stage创建历史记录队列，长度为并行chain数量+1
+        self.his_par_a_by_stage = {}
+        self.stage_chain_counts = {}
+        for pstage, aid_set in stage_chain_count.items():
+            chain_count = len(aid_set)
+            self.stage_chain_counts[pstage] = chain_count
+            queue_len = chain_count + 1
+            self.his_par_a_by_stage[pstage] = [-1] * queue_len
+        
+        # 计算总的obs维度（所有stage的历史记录摊平后的长度）
+        self.his_par_total_len = sum(len(q) for q in self.his_par_a_by_stage.values())
 
     def _init_path(self):
         # 并行腔体
@@ -342,6 +456,11 @@ class TimedPetri:
 
         self.open_mod_occ = {}
 
+        self.his_a = [0] * self.his_len  # 用 -1 代表"无历史"
+        # 重置所有stage的历史记录
+        for pstage in self.his_par_a_by_stage:
+            queue_len = len(self.his_par_a_by_stage[pstage])
+            self.his_par_a_by_stage[pstage] = [-1] * queue_len
 
         # --- 可选：仅当你仍需要这些（否则删掉） ---
         # self.ops = []  # 训练不画图可删
@@ -371,10 +490,26 @@ class TimedPetri:
                 t=item[0], fire_times=fire_times, t_name=item[2], chain=item[3]
             )
 
-        obs = self.m[self.obs_place_idx].copy()
+        obs = self._mark2obs()
         return obs, mask
 
     def step(self, action: int, record=False):
+
+
+        self.his_a.pop(0)
+        self.his_a.append(int(action))
+        '''
+                if self.aid_is_parallel[action]:
+            pstage = self.aid_pstage[action]
+            if pstage >= 0 and pstage in self.his_par_a_by_stage:
+                # 更新对应stage的历史记录
+                self.his_par_a_by_stage[pstage].pop(0)
+                self.his_par_a_by_stage[pstage].append(int(action))
+        '''
+
+
+        #dense1 = self.calc_tool_utilization()
+
         ainfo = self._cache_action_info[action]
         chain, fire_times = ainfo.chain, ainfo.fire_times
 
@@ -382,6 +517,8 @@ class TimedPetri:
         self.m = info["m"]
         self.marks = info["marks"]
         #self.time = info["time"]  # 建议更新
+
+        #dense2 = self.calc_tool_utilization()
 
         # 重新算 mask
         tran_queue = self.get_enable_t(self.m, self.marks)
@@ -399,9 +536,52 @@ class TimedPetri:
                 t=item[0], fire_times=fire_times, t_name=item[2], chain=item[3]
             )
 
-        obs = self.m[self.obs_place_idx].copy()
+        obs = self._mark2obs()
         done = info["finish"]
-        return mask, obs, self.time, done
+        return mask, obs, self.time, done, 0
+
+    def _tool_keys(self):
+        # 只算机台，不算机械手；按你 _init_resources 里的命名来
+        return [k for k in self.res_occ.keys() if not k.startswith("ARM")]
+
+    def calc_tool_utilization(self, window=None, tool_keys=None):
+        """
+        window=None: [0, self.time] 的累计利用率
+        window=W   : [self.time-W, self.time] 的滑窗利用率
+        返回:
+          util_sys: 系统平均利用率（机台均值，按时间加权等价）
+          util_per: dict[tool] = 该机台利用率
+          busy_sum: 所有机台忙碌总时长
+          denom   : 分母 = N_tools * (t1-t0)
+        """
+        t1 = float(self.time)
+        if window is None:
+            t0 = 0.0
+        else:
+            t0 = max(0.0, t1 - float(window))
+        span = max(t1 - t0, 1e-9)
+
+        if tool_keys is None:
+            tool_keys = self._tool_keys()
+
+        util_per = {}
+        busy_sum = 0.0
+        for k in tool_keys:
+            busy = 0
+            occ = self.res_occ.get(k, [])
+            for itv in occ:
+                if itv.end > 100000:
+                    itvend = t1
+                else:
+                    itvend = itv.end
+                busy_sum += itvend - itv.start
+            util = busy / span
+            util_per[k] = util
+            busy_sum += busy
+
+        denom = max(len(tool_keys) * span, 1e-9)
+        util_sys = busy_sum / span
+        return util_sys
 
     def _parse_to_machine(self, t_name: str):
         # ARM2_PICK__LLA_S2__TO__PM7 -> "PM7"
@@ -1048,7 +1228,7 @@ class TimedPetri:
 
     def get_enable_t(self, m, mark):
         se = self._resource_enable(m)
-        se = self.filter_by_round_robin(se)
+        #se = self.filter_by_round_robin(se)
         se_chain = self._color_enable(se, mark)
         names = [self.id2t_name[t] for t in se]
         transition_queue = []

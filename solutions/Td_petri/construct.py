@@ -321,6 +321,10 @@ class SuperPetriBuilderV3:
         for i in range(P):
             pname = self.id2p_name[i]
 
+            if 'LP1' in pname:
+                type = 1
+            elif 'LP2' in pname:
+                type = 2
             # 把所有 wafer 所在状态 place 设为 type=3（可被 _get_t_info 找到）
             # 中间 HAND/AT 也属于 wafer 状态，设为 type=2 也行；这里统一 <=3
             if pname.startswith("P_"):
@@ -337,7 +341,7 @@ class SuperPetriBuilderV3:
             if cnt > 0:
                 if pname in (start_lp1, start_lp2):
                     for _ in range(cnt):
-                        place.append(WaferToken(enter_time=0, job_id=job_id, path=[]))
+                        place.append(WaferToken(enter_time=0, job_id=job_id, path=[],type=type))
                         job_id += 1
                 else:
                     for _ in range(cnt):

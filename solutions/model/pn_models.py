@@ -25,12 +25,14 @@ class BasedToken:
 class WaferToken(BasedToken):
     job_id: int
     path: List[List[int]]
+    type: int
 
     def clone(self) -> "WaferToken":
         return WaferToken(
             job_id=self.job_id,
             enter_time=self.enter_time,
             path=self.path,
+            type=self.type,
         )
 
 

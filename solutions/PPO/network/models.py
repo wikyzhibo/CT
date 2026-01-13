@@ -9,6 +9,7 @@ class MaskedPolicyHead(nn.Module):
             nn.Linear(n_obs,hidden), nn.ReLU(),
             nn.Linear(hidden,hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
             nn.Linear(hidden,n_actions)
         )
     def forward(self, obs):
