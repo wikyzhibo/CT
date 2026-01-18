@@ -463,6 +463,50 @@ class Petri:
                 result.append(t)
         return result
 
+    def rl_enabled_transitions(self,
+                               time: Optional[int] = None,
+                               m: Optional[np.ndarray] = None,
+                               marks: Optional[List[Place]] = None) -> list[int]:
+        """
+        External RL interface: return transitions enabled at a given time.
+        """
+        query_time = self.time if time is None else int(time)
+        return self.enabled_transitions_at(query_time, m=m, marks=marks)
+
+    def rl_fire_transition(self,
+                           t: int,
+                           time: Optional[int] = None) -> dict:
+        """
+        External RL interface: fire transition t at a given time.
+        Updates self.m, self.marks, and self.time when fired successfully.
+        Returns dict with updated state and success flag.
+        """
+        start_from = self.time if time is None else int(time)
+        earliest_time = self._earliest_enable_time(t, self.m, self.marks, start_from)
+        if earliest_time == -1 or earliest_time > start_from:
+            return {
+                "success": False,
+                "m": self.m,
+                "marks": self.marks,
+                "time": self.time,
+            }
+
+        new_m, new_marks, new_time = self._tpn_fire(
+            t,
+            self.m,
+            self.marks,
+            start_from=start_from,
+        )
+        self.m = new_m
+        self.marks = new_marks
+        self.time = new_time
+        return {
+            "success": True,
+            "m": new_m,
+            "marks": new_marks,
+            "time": new_time,
+        }
+
 
     def _tpn_fire(self,
              t: int,
