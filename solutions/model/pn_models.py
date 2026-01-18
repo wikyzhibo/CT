@@ -23,9 +23,11 @@ class BasedToken:
 
 @dataclass
 class WaferToken(BasedToken):
-    job_id: int
-    path: List[List[int]]
-    type: int
+    job_id: int # ID of the wafer job
+    path: List[List[int]] # Path the wafer needs to follow
+    type: int # type of wafer, different type may have different path
+    where: int = 0 # Current position in the path
+
 
     def clone(self) -> "WaferToken":
         return WaferToken(

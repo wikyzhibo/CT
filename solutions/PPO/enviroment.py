@@ -81,7 +81,7 @@ class CT_v2(EnvBase):
         action = tensordict["action"].item()
         last_time = tensordict["time"].item()
 
-        mask_next, new_obs, time, finish, delta_dense = self.net.step(action)
+        mask_next, new_obs, time, finish, reward1 = self.net.step(action)
 
         '''
         r_over = 0
@@ -97,7 +97,7 @@ class CT_v2(EnvBase):
             r_time = -1 * delta_time
         else:
             r_time = 0
-        reward = r_time
+        reward = reward1 * 100
         #reward = int(-delta_dense*1000)
 
         terminated = finish

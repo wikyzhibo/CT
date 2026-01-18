@@ -73,7 +73,7 @@ def _first_free_time_at(intervals: List[Interval], t: int, t2: int) -> int:
 
 
 
-def res_occ_to_ops(res_occ: dict) -> List[Op]:
+def res_occ_to_ops(res_occ: dict, proc: dict) -> List[Op]:
     """
     将 net.res_occ 转换为 Op 列表
     - 工艺资源：PM / LLC / LLD（is_arm=False）
@@ -105,17 +105,17 @@ def res_occ_to_ops(res_occ: dict) -> List[Op]:
 
     for res_name, intervals in res_occ.items():
         stage, machine, is_arm = map_stage_machine(res_name)
-        if stage == -1:
-            continue
-
         for iv in intervals:
+            proc_end = iv.end
+            if stage > 0:
+                proc_end = proc[stage]
             ops.append(
                 Op(
                     job=int(iv.tok_key),
                     stage=int(stage),
                     machine=int(machine),
                     start=float(iv.start),
-                    proc_end=float(iv.end),
+                    proc_end=float(iv.start + proc_end),
                     end=float(iv.end),
                     is_arm = is_arm,
                     kind = iv.kind
@@ -150,7 +150,7 @@ class TimedPetri:
     def __init__(self) -> None:
 
         modules = {
-            "LP1": ModuleSpec(tokens=50, capacity=100),
+            "LP1": ModuleSpec(tokens=0, capacity=100),
             "LP2": ModuleSpec(tokens=25, capacity=100),
             "AL": ModuleSpec(tokens=0, capacity=1),
             "LLA_S2": ModuleSpec(tokens=0, capacity=1),
@@ -509,6 +509,7 @@ class TimedPetri:
 
 
         #dense1 = self.calc_tool_utilization()
+        reward1 = self.cal_reward(self.marks)
 
         ainfo = self._cache_action_info[action]
         chain, fire_times = ainfo.chain, ainfo.fire_times
@@ -517,7 +518,7 @@ class TimedPetri:
         self.m = info["m"]
         self.marks = info["marks"]
         #self.time = info["time"]  # 建议更新
-
+        reward2 = self.cal_reward(self.marks)
         #dense2 = self.calc_tool_utilization()
 
         # 重新算 mask
@@ -538,7 +539,25 @@ class TimedPetri:
 
         obs = self._mark2obs()
         done = info["finish"]
-        return mask, obs, self.time, done, 0
+
+        #返回：动作掩码，状态，系统当前时间，是否结束，奖励
+
+        return mask, obs, self.time, done, reward2 - reward1
+
+    def cal_reward(self, mark):
+        work_finish = 0
+        xx = [0, 10, 30, 100, 770, 970, 1000]
+        for p in self.obs_place_idx:
+            if p not in self.idle_idx['start']:
+                place = mark[p]
+                for tok in place.tokens:
+                    if isinstance(tok, WaferToken):
+                        ww = tok.where
+                        if tok.type == 1:
+                            return -1
+                        elif tok.type == 2:
+                            work_finish += xx[ww]
+        return work_finish/self.time
 
     def _tool_keys(self):
         # 只算机台，不算机械手；按你 _init_resources 里的命名来
@@ -855,6 +874,7 @@ class TimedPetri:
             if isinstance(marks[p].head(), WaferToken):
                 tok = marks[p].head()
                 tok.path.pop(0)
+                tok.where += 1
 
         # 严格按 times 执行
         for i, t_id in enumerate(t_ids):
@@ -1361,15 +1381,6 @@ class TimedPetri:
         self.expand_mark += 1
         return False
 
-
-
-
-
-
-
-
-
-
 def main():
     sys.setrecursionlimit(10000)
     search_mode = 2
@@ -1389,7 +1400,7 @@ def main():
        return
     out_path = "../../results/"
     ops = [op for op in net.ops if op.stage != -1]
-    ops = res_occ_to_ops(net.res_occ)
+    ops = res_occ_to_ops(net.res_occ,net.proc)
 
     plot_gantt_hatched_residence(ops=ops, proc_time=net.proc,
                                  capacity=net.stage_c, n_jobs=net.n_wafer,
