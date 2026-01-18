@@ -1,5 +1,5 @@
 from construct_net.super_net import ModuleSpec, RobotSpec, SuperPetriBuilder
-from solutions.model.pn_models import Place, BasedToken, WaferToken
+from solutions.model.pn_models import Place, BasedToken
 from collections import deque
 
 import json
@@ -21,19 +21,10 @@ def save_petri_split(result: dict, prefix: str):
     for place in result["marks"]:
         tokens_data = []
         for token in place.tokens:
-            if isinstance(token, WaferToken):
-                tokens_data.append({
-                    "type": "WaferToken",
-                    "enter_time": token.enter_time,
-                    "job_id": token.job_id,
-                    "path": token.path,
-                    "wafer_type": getattr(token, "type", 1),
-                })
-            else:
-                tokens_data.append({
-                    "type": "BasedToken",
-                    "enter_time": token.enter_time
-                })
+            tokens_data.append({
+                "type": "BasedToken",
+                "enter_time": token.enter_time
+            })
         marks_serialized.append({
             "name": place.name,
             "capacity": place.capacity,
@@ -65,17 +56,9 @@ def load_petri_split(prefix: str) -> dict:
     for place_data in meta["marks"]:
         tokens = deque()
         for token_data in place_data["tokens"]:
-            if token_data["type"] == "WaferToken":
-                tokens.append(WaferToken(
-                    enter_time=token_data["enter_time"],
-                    job_id=token_data["job_id"],
-                    path=token_data["path"],
-                    type=token_data.get("wafer_type", 1),
-                ))
-            else:
-                tokens.append(BasedToken(
-                    enter_time=token_data["enter_time"]
-                ))
+            tokens.append(BasedToken(
+                enter_time=token_data["enter_time"]
+            ))
         marks.append(Place(
             name=place_data["name"],
             capacity=place_data["capacity"],
@@ -143,5 +126,4 @@ if __name__ == "__main__":
     print("capacity len =", len(info["capacity"]))
 
     save_petri_split(info, "petri_N8.npz")
-
 

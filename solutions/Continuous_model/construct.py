@@ -1,7 +1,7 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union, Set, Optional
-from solutions.model.pn_models import WaferToken, Place, BasedToken
+from solutions.model.pn_models import Place, BasedToken
 
 # 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
 Stage = Union[str, List[str]]
@@ -46,7 +46,6 @@ class SuperPetriBuilder:
     def __init__(self, d_ptime: int = 3, default_ttime: int = 2):
         self.d_ptime = int(d_ptime)
         self.default_ttime = int(default_ttime)
-        self.init_mode = 0
 
         self.nodes: Dict[str, Dict] = {}
         self.edges: List[Tuple[str, str, int]] = []
@@ -61,28 +60,6 @@ class SuperPetriBuilder:
         self._cap_by_pid: List[int] = []
         self._ttime_by_tid: List[int] = []
 
-    def set_init_mode(self, mode: int) -> None:
-        self.init_mode = int(mode)
-
-    def _init_wafer_types(self, count: int) -> np.ndarray:
-        if count <= 0:
-            return np.array([], dtype=int)
-        if self.init_mode == 1:  # 先完成A，再完成B
-            types = np.repeat(2, count)
-            w = int(count / 3)
-            types[:w] = 1
-            return types
-        if self.init_mode == 2:  # 交替完成
-            types = np.repeat(2, count)
-            types[::2] = 1
-            return types
-        if self.init_mode == 3:  # 先完成B，再完成A
-            types = np.repeat(2, count)
-            w = 2 * int(count / 3)
-            types[w:] = 1
-            return types
-        # 单晶圆模式
-        return np.repeat(1, count)
 
     # ----------------- 基础创建 -----------------
     def add_place(
@@ -276,7 +253,6 @@ class SuperPetriBuilder:
         ttime = np.array(self._ttime_by_tid, dtype=int)
 
         marks = []
-        job_id = 1
         idle_places = set(idle_idx.get("start", [])) if isinstance(idle_idx, dict) else set()
         for i in range(P):
             pname = self.id2p_name[i]
@@ -299,16 +275,8 @@ class SuperPetriBuilder:
             cnt = m0[i]
             if cnt > 0:
                 if i in idle_places:
-                    for wafer_type in self._init_wafer_types(cnt):
-                        place.append(
-                            WaferToken(
-                                enter_time=0,
-                                job_id=job_id,
-                                path=[],
-                                type=int(wafer_type),
-                            )
-                        )
-                        job_id += 1
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0))
                 else:
                     for _ in range(cnt):
                         place.append(BasedToken(enter_time=0))
@@ -331,5 +299,4 @@ class SuperPetriBuilder:
             "marks": marks,
             "n_wafer": n_wafer
         }
-
 

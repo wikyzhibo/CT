@@ -17,24 +17,6 @@ class BasedToken:
         )
 
 @dataclass
-class WaferToken(BasedToken):
-    job_id: int # ID of the wafer job
-    path: List[List[int]] # Path the wafer needs to follow
-    type: int # type of wafer, different type may have different path
-    where: int = 0 # Current position in the path
-
-
-    def clone(self) -> "WaferToken":
-        return WaferToken(
-            job_id=self.job_id,
-            enter_time=self.enter_time,
-            path=self.path,
-            type=self.type,
-        )
-
-
-
-@dataclass
 class Place:
     name: str
     capacity: int
@@ -115,8 +97,6 @@ class Petri:
                     d_ptime=build_info.get("d_ptime", 3),
                     default_ttime=build_info.get("default_ttime", 2),
                 )
-                if "init_mode" in build_info:
-                    builder.set_init_mode(build_info["init_mode"])
                 super_info = builder.build(
                     build_info["modules"],
                     build_info["robots"],
@@ -139,7 +119,7 @@ class Petri:
         if self._init_marks is not None:
             self.marks = self._clone_marks(self._init_marks)
         else:
-            self.marks = self._init_marks_from_m(self.m, two_mode=kwargs.get('two_mode', 0))
+            raise ValueError("Missing marks in super_info; use SuperPetriBuilder to generate marks.")
         self.md = super_info['md']
         self.capacity_xianzhi = kwargs.get('capacity_xianzhi',
                                            None)  # 进入真空区的晶圆数量限制，dict {place_id:transition_id} int->int
@@ -184,68 +164,6 @@ class Petri:
         #bundle = joblib.load("rf_deadlock_v1.joblib")
         #self.clf = bundle["model"]
 
-    def _init_marks_from_m(self, m: np.ndarray, two_mode=0) -> List[Place]:
-        """
-        根据标识向量 m 初始化每个库所的 token 列表。
-        返回 marks: list of arrays, each with shape=(2, n_tokens)
-            row0: enter_time
-            row1: token_id  (1..n_tokens)
-        """
-        idle_place = self.idle_idx['L1']
-        marks: List[Place] = []
-        start_from = 0
-        for i, cnt in enumerate(m.astype(int).tolist()):
-            match self.id2p_name[i][0]:
-                case 'p':
-                    ddd = 1
-                case 'd':
-                    ddd = 2
-                case 'L':
-                    ddd = 3
-                case _:
-                    ddd = 4
-            place = Place(
-                name=self.id2p_name[i],
-                capacity=int(self.k[i]) if self.k is not None else 0,
-                processing_time=int(self.ptime[i]),
-                type = ddd
-            )
-            if cnt > 0:
-                enter = np.repeat(start_from, cnt)
-                ids = np.arange(1, cnt + 1, dtype=int)
-                if  i == idle_place:
-                    match two_mode:
-                        case 1: #先完成A，再完成B
-                            type = np.repeat(2, cnt)
-                            w = int(cnt / 3)
-                            type[:w] = 1
-                        case 2: #交替完成
-                            type = np.repeat(2, cnt)
-                            type[::2] = 1
-                        case 3: #先完成B，再完成A
-                            type = np.repeat(2, cnt)
-                            w = 2 * int(cnt / 3)
-                            type[w:] = 1
-                        case _:
-                            # 单晶圆模式
-                            type = np.repeat(1, cnt) #表示为晶圆
-                else:
-                    type = np.repeat(-1, cnt)
-                for e, id_, tp in zip(enter, ids, type):
-                    if i == self.idle_idx['L1']:
-                        place.append(
-                            WaferToken(
-                                enter_time=int(e),
-                                job_id=int(id_),
-                                path=[],
-                                type=int(tp),
-                            )
-                        )
-                    else:
-                        place.append(BasedToken(enter_time=int(e)))
-            marks.append(place)
-        return marks
-
     def _clone_marks(self, marks: List[Place]) -> List[Place]:
         return [p.clone() for p in marks]
 
@@ -255,7 +173,7 @@ class Petri:
         if self._init_marks is not None:
             self.marks = self._clone_marks(self._init_marks)
         else:
-            self.marks = self._init_marks_from_m(self.m)
+            raise ValueError("Missing marks in super_info; use SuperPetriBuilder to generate marks.")
 
         self.m_record = []
         self.marks_record = []
@@ -326,24 +244,6 @@ class Petri:
             mask = cond_pre & cond_cap
         else:
             mask = cond_pre
-
-        # 多类型晶圆情况下，根据晶圆类型选择加工路径
-        '''
-                if self.branch_info is not None:
-            b1,b2 = self.branch_info['branch']
-            pre_id = self.branch_info['pre']
-            if mask[b1] and mask[b2]:
-                token = marks[pre_id].head()
-                wafer_type = token.wafer_type
-                match wafer_type:
-                    case 1:
-                        mask[b2] = False
-                    case 2:
-                        mask[b1] = False
-                    case _:
-                        raise RuntimeError('wafer type not corrected')
-        '''
-
 
         if with_clf:
             te = np.nonzero(mask)[0]
