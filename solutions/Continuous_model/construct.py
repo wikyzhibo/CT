@@ -1,28 +1,26 @@
-# super_petri_builder.py
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union, Set, Optional
-from solutions.model.pn_models import WaferToken,Place,BasedToken
+from solutions.model.pn_models import WaferToken, Place, BasedToken
 
 # 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
 Stage = Union[str, List[str]]
 
-INF = 10**9
-
+INF = 10 ** 9
 
 @dataclass
 class RobotSpec:
     """机械手资源库所 r__TMx"""
-    tokens: int                 # 初始 token 数量（TM1=1, TM2/TM3=2）
-    reach: Set[str]             # 该机械手可以触达的模块集合（用于自动选 robot）
+    tokens: int  # 初始 token 数量（TM1=1, TM2/TM3=2）
+    reach: Set[str]  # 该机械手可以触达的模块集合（用于自动选 robot）
 
 
 @dataclass
 class ModuleSpec:
     """模块库所（LP/AL/LL*/PM*/BUF...）"""
     tokens: int = 0
-    ptime: int = 0              # 你手动输入的模块 place time
-    capacity: int = 1           # place capacity（PM一般=1；LL可=2；LP按需）
+    ptime: int = 0  # 你手动输入的模块 place time
+    capacity: int = 1  # place capacity（PM一般=1；LL可=2；LP按需）
 
 
 @dataclass
@@ -88,13 +86,13 @@ class SuperPetriBuilder:
 
     # ----------------- 基础创建 -----------------
     def add_place(
-        self,
-        name: str,
-        tokens: int = 0,
-        ptime: int = 0,
-        capacity: int = INF,
-        x: float = 0.0,
-        y: float = 0.0,
+            self,
+            name: str,
+            tokens: int = 0,
+            ptime: int = 0,
+            capacity: int = INF,
+            x: float = 0.0,
+            y: float = 0.0,
     ):
         if name in self.nodes:
             return
@@ -114,11 +112,11 @@ class SuperPetriBuilder:
         self._p_count += 1
 
     def add_transition(
-        self,
-        name: str,
-        ttime: Optional[int] = None,
-        x: float = 0.0,
-        y: float = 0.0,
+            self,
+            name: str,
+            ttime: Optional[int] = None,
+            x: float = 0.0,
+            y: float = 0.0,
     ):
         if name in self.nodes:
             return
@@ -172,12 +170,12 @@ class SuperPetriBuilder:
 
     # ----------------- 构建主流程 -----------------
     def build(
-        self,
-        modules: Dict[str, ModuleSpec],
-        robots: Dict[str, RobotSpec],
-        routes: List[List[Stage]],
-        shared_groups: Optional[List[SharedGroup]] = None,
-        edge_weight: int = 1,
+            self,
+            modules: Dict[str, ModuleSpec],
+            robots: Dict[str, RobotSpec],
+            routes: List[List[Stage]],
+            shared_groups: Optional[List[SharedGroup]] = None,
+            edge_weight: int = 1,
     ):
         """
         modules: 所有模块库所（共享）
@@ -193,15 +191,7 @@ class SuperPetriBuilder:
 
         # 1) 建机器人资源 place：capacity=tokens；ptime=0
         for rname, rspec in robots.items():
-            self.add_place(name=f"r_{rname}",tokens=rspec.tokens,ptime=0,capacity=rspec.tokens)
-
-        # 2) 建共享容量资源库所 k，并建立 place->k 的映射
-        group_of_place: Dict[str, str] = {}
-        for g in shared_groups:
-            kname = f"k_{g.name}"
-            self.add_place(kname, tokens=g.cap, ptime=0, capacity=g.cap)
-            for p in g.places:
-                group_of_place[p] = kname
+            self.add_place(name=f"r_{rname}", tokens=rspec.tokens, ptime=0, capacity=rspec.tokens)
 
         # 3) 汇总所有路线的相邻模块边
         all_edges: Set[Tuple[str, str]] = set()
@@ -231,25 +221,11 @@ class SuperPetriBuilder:
             # 基本弧：
             # A + r -> u -> d -> t -> B + r
             self.add_arc(a, u, edge_weight)
-            self.add_arc(r_place, u, 1)          # 卸载消耗机械手token
+            self.add_arc(r_place, u, 1)  # 卸载消耗机械手token
             self.add_arc(u, d, edge_weight)
             self.add_arc(d, t, edge_weight)
             self.add_arc(t, b, edge_weight)
-            self.add_arc(t, r_place, 1)          # 装载归还机械手token
-
-            # 共享容量组约束：
-            # 进入组内 place（b 属于组）：t 前置消耗 k
-            if b in group_of_place:
-                self.add_arc(group_of_place[b], t, 1)
-
-            # 离开组内 place（a 属于组）：u 后置归还 k
-            if a in group_of_place:
-                self.add_arc(u, group_of_place[a], 1)
-
-        # 5) 创建控制容量库所
-        #self.add_place(name="w1", tokens=4, ptime=0, capacity=4)
-        #self.add_arc(src="w1",dst="t_LLA",w=1)
-        #self.add_arc(src="u_LLB_LP_done",dst="w1",w=1)
+            self.add_arc(t, r_place, 1)  # 装载归还机械手token
 
         return self.finalize()
 
@@ -264,11 +240,11 @@ class SuperPetriBuilder:
             if nd["type"] == "p":
                 m0[nd["id"]] = nd["tokens"]
 
-        idle_idx = {'start':[self.id2p_name.index('LP1'),self.id2p_name.index('LP2')],
-                    'end':self.id2p_name.index('LP_done'),}
+        idle_idx = {'start': [self.id2p_name.index('LP1'), self.id2p_name.index('LP2')],
+                    'end': self.id2p_name.index('LP_done'), }
 
         md = m0.copy()
-        n_wafer = m0[self.id2p_name.index("LP1")]+m0[self.id2p_name.index("LP2")]
+        n_wafer = m0[self.id2p_name.index("LP1")] + m0[self.id2p_name.index("LP2")]
         md[self.id2p_name.index("LP_done")] = n_wafer
         md[self.id2p_name.index("LP1")] = 0
         md[self.id2p_name.index("LP2")] = 0
@@ -291,11 +267,9 @@ class SuperPetriBuilder:
         module_x = {}
         for i in range(P):
             if self.id2p_name[i][0] == 'P':
-                a = np.where(matrix[i,:]>0)[0]
-                b = np.where(matrix[i,:]<0)[0]
-                module_x[self.id2p_name[i]] = (a,b)
-
-
+                a = np.where(matrix[i, :] > 0)[0]
+                b = np.where(matrix[i, :] < 0)[0]
+                module_x[self.id2p_name[i]] = (a, b)
 
         ptime = np.array(self._ptime_by_pid, dtype=int)
         capacity = np.array(self._cap_by_pid, dtype=int)
@@ -314,14 +288,14 @@ class SuperPetriBuilder:
                 ptype = 1
             else:
                 ptype = 4
-            
+
             place = Place(
                 name=pname,
                 capacity=int(capacity[i]),
                 processing_time=int(ptime[i]),
                 type=ptype
             )
-            
+
             cnt = m0[i]
             if cnt > 0:
                 if i in idle_places:
@@ -342,7 +316,7 @@ class SuperPetriBuilder:
 
         return {
             "m0": m0,
-            "md":md,
+            "md": md,
             "pre": pre,
             "pst": pst,
             "ptime": ptime,

@@ -26,7 +26,8 @@ def save_petri_split(result: dict, prefix: str):
                     "type": "WaferToken",
                     "enter_time": token.enter_time,
                     "job_id": token.job_id,
-                    "path": token.path
+                    "path": token.path,
+                    "wafer_type": getattr(token, "type", 1),
                 })
             else:
                 tokens_data.append({
@@ -68,7 +69,8 @@ def load_petri_split(prefix: str) -> dict:
                 tokens.append(WaferToken(
                     enter_time=token_data["enter_time"],
                     job_id=token_data["job_id"],
-                    path=token_data["path"]
+                    path=token_data["path"],
+                    type=token_data.get("wafer_type", 1),
                 ))
             else:
                 tokens.append(BasedToken(
