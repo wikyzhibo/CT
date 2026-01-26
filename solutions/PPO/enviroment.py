@@ -5,9 +5,14 @@ import torch
 from tensordict import TensorDict
 #from solutions.PDR.net import Petri
 import copy
+from typing import Dict, Optional
 
-from solutions.v2.net_v2 import PetriNet
-from data.config.params_N7 import params_N7
+#from solutions.v2.net_v2 import PetriNet
+#from solutions.v3.net_v3 import PetriV3
+#from solutions.Td_petri.tdpn import TimedPetri
+from solutions.Continuous_model.pn import Petri
+#from data.config.params_N7 import params_N7
+from data.petri_configs.env_config import PetriEnvConfig
 
 def impress_m(m, idle):
     m_new = m.copy()
@@ -28,10 +33,8 @@ class CT_v2(EnvBase):
 
         super().__init__(device=device)
 
-        self.net = PetriNet(with_controller=True,
-                       with_capacity_controller=True,
-                       with_zhiliu_controller=False,
-                       **params_N7)
+        #self.net = PetriV3(with_controller=True)
+        self.net = TimedPetri()
         self.n_actions = self.net.T
 
 
@@ -44,14 +47,17 @@ class CT_v2(EnvBase):
         n_p = self.net.P
         n_t = self.net.T
 
+        obs_dim = self.net.obs_dim
+        act_dim = self.net.A
+
         # 使用 self.n_actions，按 allow_idle 决定动作数量
         self.observation_spec = Composite(
-            observation=Bounded(low=0, high=76, shape=(n_p,), dtype=torch.int64, device=self.device),
+            observation=Bounded(low=0, high=76, shape=(obs_dim,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
             shape=()
         )
-        self.action_spec = Categorical(n=self.n_actions,shape=(1,),dtype=torch.int64)
+        self.action_spec = Categorical(n=act_dim,shape=(1,),dtype=torch.int64)
         self.reward_spec = Unbounded(shape=(1,), dtype=torch.float32)
         self.state_spec = Composite(shape=())
         self.done_spec = Composite(
@@ -78,23 +84,27 @@ class CT_v2(EnvBase):
         action = tensordict["action"].item()
         last_time = tensordict["time"].item()
 
-        mask_next, new_obs, time, qtime_violation, over_time, finish = self.net.step(action)
+        mask_next, new_obs, time, finish, reward1 = self.net.step(action)
 
+        '''
         r_over = 0
         if qtime_violation:
             r_over = -100
         if over_time:
             r_over = -5000
+        '''
+
 
         delta_time = time - last_time
         if delta_time > 0:
             r_time = -1 * delta_time
         else:
             r_time = 0
-
-        reward = int(r_time) + r_over
+        reward = reward1 * 100
+        #reward = int(-delta_dense*1000)
 
         terminated = finish
+
 
         out = TensorDict({
             "observation": torch.as_tensor(new_obs, dtype=torch.int64),
@@ -103,7 +113,7 @@ class CT_v2(EnvBase):
             "finish": torch.tensor(finish, dtype=torch.bool),
             "reward": torch.tensor([reward], dtype=torch.float32),
             "terminated": torch.tensor(terminated, dtype=torch.bool),
-            "overtime": torch.tensor(qtime_violation+over_time, dtype=torch.int64),
+            "overtime": torch.tensor(0, dtype=torch.int64),
         }, batch_size=[])
 
         return out
@@ -112,8 +122,7 @@ class CT_v2(EnvBase):
         rng = torch.manual_seed(seed)
         self.rng = rng
 
-<<<<<<< Updated upstream
-=======
+
 class Env_PN(EnvBase):
     # 连续系统的PPO环境
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
@@ -123,7 +132,7 @@ class Env_PN(EnvBase):
                  reward_config: Optional[Dict[str, int]] = None):
         """
         初始化连续 Petri 网环境。
-        
+
         Args:
             device: 计算设备
             seed: 随机种子
@@ -150,16 +159,16 @@ class Env_PN(EnvBase):
         self.net = Petri(config=config)
         self.n_actions = self.net.T + 1  # wait action at index net.T
         self.detailed_reward = detailed_reward  # 是否使用详细奖励模式
-        
+
         # wafer 数量（从 LP 初始 token 数获取）
         self.n_wafer = config.n_wafer
-        
+
         # 计算加工腔室数量（用于增强观测）
         self.chamber_indices = [
             i for i, place in enumerate(self.net.marks) if place.type == 1
         ]
         self.n_chambers = len(self.chamber_indices)
-        
+
         # 存储最近一次的详细奖励信息（用于调试）
         self.last_reward_detail = None
         self.last_scrap_info = None
@@ -200,32 +209,32 @@ class Env_PN(EnvBase):
         """
         构建观测向量：只展示机械手可操作的 wafer 信息
         每个 wafer 包含: (token_id, place_idx, place_type, stay_time, time_to_scrap)
-        
+
         选择逻辑：
         1. 优先收集所有在加工腔室（type=1）和运输位（type=2）中的 wafer
         2. 如果不满 3 个，从 LP（type=3）中取队首的 1 个 wafer
         3. 不够 3 个则用全零的 5 元组补齐
         4. 按 token_id 升序排列后输出
-        
+
         观测维度 = 9 * 5 = 45
         """
         MAX_WAFERS = 7  # 新六步路线最多 9 个晶圆同时可见
-        
+
         # 收集加工区（type=1, 2）的 wafer 信息
         processing_wafers = {}  # token_id -> (place_idx, place_type, stay_time, time_to_scrap)
         lp_wafers = []  # LP 中的 wafer 列表，按队列顺序（队首在前）
-        
+
         for p_idx, place in enumerate(self.net.marks):
             # 跳过资源库所（type=4 且名称以 r_ 开头）和终点（LP_done）
             if place.type == 4:
                 continue
-            
+
             for tok in place.tokens:
                 if tok.token_id < 0:
                     continue  # 跳过无效 token
-                
+
                 stay_time = int(tok.stay_time)
-                
+
                 # 计算距离报废时间
                 if place.type == 1:  # 加工腔室
                     time_to_scrap = 20 - (stay_time - place.processing_time)
@@ -233,24 +242,24 @@ class Env_PN(EnvBase):
                     time_to_scrap = 10 - stay_time
                 else:  # LP 等
                     time_to_scrap = -1  # 无报废风险
-                
+
                 wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap)
-                
+
                 if place.type in (1, 2):  # 加工腔室或运输位
                     processing_wafers[tok.token_id] = wafer_tuple
                 elif place.type == 3:  # LP
                     lp_wafers.append(wafer_tuple)
-        
+
         # 选择要展示的 wafer
         selected_wafers = list(processing_wafers.values())
-        
+
         # 如果加工区 wafer 不满 MAX_WAFERS 个，从 LP 取 1 个队首 wafer
         if len(selected_wafers) < MAX_WAFERS and len(lp_wafers) > 0:
             selected_wafers.append(lp_wafers[0])
-        
+
         # 按 token_id 升序排列
         selected_wafers.sort(key=lambda x: x[0])
-        
+
         # 构建观测向量
         obs = []
         for i in range(MAX_WAFERS):
@@ -260,7 +269,7 @@ class Env_PN(EnvBase):
             else:
                 # 不够 3 个则用全零补齐
                 obs.extend([0, 0, 0, 0, 0])
-        
+
         return np.array(obs, dtype=np.int64)
 
     def _reset(self, td_params):
@@ -317,11 +326,11 @@ class Env_PN(EnvBase):
         }, batch_size=[])
 
         return out
-    
+
     def get_scrap_info(self):
         """获取最近一次报废的详细信息（仅在 detailed_reward=True 时有效）"""
         return self.last_scrap_info
-    
+
     def get_reward_detail(self):
         """获取最近一次的详细奖励分解（仅在 detailed_reward=True 时有效）"""
         return self.last_reward_detail
@@ -334,7 +343,6 @@ class Env_PN(EnvBase):
 
 
 
->>>>>>> Stashed changes
 class CT(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False

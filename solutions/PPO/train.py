@@ -1,10 +1,6 @@
 import os
-<<<<<<< Updated upstream
-=======
 import json
 import time
-import shutil
->>>>>>> Stashed changes
 from datetime import datetime
 
 import numpy as np
@@ -30,42 +26,7 @@ import warnings
 #from CT_env import init_marks_from_m
 from solutions.PPO.network.models import MaskedPolicyHead
 from behavior_clone import pretrain_bc,build_expert_buffer
-
-warnings.filterwarnings(
-    "ignore",
-    message=".*size_average.*reduce.*",
-    category=UserWarning,
-)
-
-n_hidden = 256
-total_batch=150
-frames_per_batch=250*5
-sub_batch_size = 100
-num_epochs=16
-gamma=0.99
-gae_lambda=0.95
-clip_epsilon=0.2
-lr=1e-4
-entropy_start = 0.015
-entropy_end   = 0.001
-
-
-def save_dedup_csv(new_data, filename, append=True):
-    """将新数据写入 CSV 文件；append=True 时会读取旧文件并去重"""
-    if new_data.size == 0:
-        return 0
-    if append:
-        try:
-            old = pd.read_csv(filename, header=None).to_numpy()
-            merged = np.concatenate([old, new_data], axis=0)
-        except FileNotFoundError:
-            merged = new_data
-    else:
-        merged = new_data
-    # 去重
-    merged = np.unique(merged, axis=0)
-    pd.DataFrame(merged).to_csv(filename, index=False, header=False)
-    return len(merged)
+from data.ppo_configs.training_config import PPOTrainingConfig
 
 
 
@@ -73,18 +34,61 @@ def save_dedup_csv(new_data, filename, append=True):
 def train(
     env,
     eval_env,
-    device="cpu",
-    seed=42,
-    with_pretrain=False,
+    config: PPOTrainingConfig = None,
+    checkpoint_path: str = None,
+    config_path: str = None,
 ):
-    torch.manual_seed(seed)
+    """
+    PPO 训练主程序。
+    
+    Args:
+        env: 训练环境
+        eval_env: 评估环境
+        config: PPOTrainingConfig 配置对象
+        checkpoint_path: checkpoint 文件路径，用于加载预训练模型继续训练
+        config_path: 配置文件路径，用于加载配置（如果config为None）
+    
+    Returns:
+        log: 训练日志字典
+        policy: 训练好的策略网络
+    """
+    # 加载或使用默认配置
+    if config is None:
+        if config_path is not None and os.path.exists(config_path):
+            config = PPOTrainingConfig.load(config_path)
+            print(f"从 {config_path} 加载配置")
+        else:
+            config = PPOTrainingConfig()
+            print("使用默认配置")
+    
+    # 打印配置信息
+    print(config)
+    
+    # 保存本次训练使用的配置
+    saved_configs_dir = os.path.join("data", "ppo_configs", "training_runs")
+    os.makedirs(saved_configs_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config_save_path = os.path.join(saved_configs_dir, f"config_phase{config.training_phase}_{timestamp}.json")
+    config.save(config_save_path)
+    
+    torch.manual_seed(config.seed)
+    
+    print(f"\n[Training Phase {config.training_phase}]")
+    if config.training_phase == 1:
+        print("  -> 仅考虑报废惩罚（加工腔室超时）")
+    else:
+        print("  -> 完整奖励（加工腔室超时 + 运输位超时）")
 
     # 策略与价值网络
     n_actions = env.action_spec.space.n
     n_m = env.observation_spec["observation"].shape[0]
 
-
-    policy_backbone = MaskedPolicyHead(hidden=n_hidden,n_obs=n_m, n_actions=n_actions)
+    policy_backbone = MaskedPolicyHead(
+        hidden=config.n_hidden,
+        n_obs=n_m, 
+        n_actions=n_actions,
+        n_layers=config.n_layer
+    )
     td_module = TensorDictModule(
         policy_backbone, in_keys=["observation_f"], out_keys=["logits"]
     )
@@ -94,76 +98,67 @@ def train(
         out_keys=["action"],
         distribution_class=MaskedCategorical,
         return_log_prob=True,
-    ).to(device)
+    ).to(config.device)
 
-    if with_pretrain:
+    # 加载 checkpoint（如果提供）
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        policy.load_state_dict(torch.load(checkpoint_path, map_location=config.device))
+        print("Checkpoint loaded successfully.")
+
+    if config.with_pretrain:
         obs, actions, mask = env.net.collect_expert_data()
         rb = build_expert_buffer(obs, mask, actions)
-        policy = pretrain_bc(policy, td_module, rb, device=device)
+        policy = pretrain_bc(policy, td_module, rb, device=config.device)
         env.net.reset()
     else:
         rb = None
 
     value_module = ValueOperator(
         module=nn.Sequential(
-            nn.Linear(n_m,n_hidden), nn.ReLU(),
-            nn.Linear(n_hidden,n_hidden), nn.ReLU(),
-            nn.Linear(n_hidden,n_hidden), nn.ReLU(),
-            nn.Linear(n_hidden,1),
+            nn.Linear(n_m, config.n_hidden), nn.ReLU(),
+            nn.Linear(config.n_hidden, config.n_hidden), nn.ReLU(),
+            nn.Linear(config.n_hidden, config.n_hidden), nn.ReLU(),
+            nn.Linear(config.n_hidden, 1),
         ),
         in_keys=["observation_f"],
-    ).to(device)
+    ).to(config.device)
 
-    optim = Adam(list(policy.parameters()) + list(value_module.parameters()), lr=lr)
+    optim = Adam(list(policy.parameters()) + list(value_module.parameters()), lr=config.lr)
 
     collector = SyncDataCollector(
         env,
         policy,
-        frames_per_batch=frames_per_batch,
-        total_frames=frames_per_batch * total_batch,
-        device=device,
+        frames_per_batch=config.frames_per_batch,
+        total_frames=config.frames_per_batch * config.total_batch,
+        device=config.device,
     )
 
     # relaybuffer
     replay_buffer = ReplayBuffer(
-        storage=LazyTensorStorage(max_size=frames_per_batch),
+        storage=LazyTensorStorage(max_size=config.frames_per_batch),
         sampler=SamplerWithoutReplacement(),
     )
 
     # GAE + PPO
-    gae = GAE(gamma=gamma, lmbda=gae_lambda, value_network=value_module)
+    gae = GAE(gamma=config.gamma, lmbda=config.gae_lambda, value_network=value_module)
     loss_module = ClipPPOLoss(
         actor=policy,
         critic=value_module,
-        clip_epsilon=clip_epsilon,
-        entropy_coeff=entropy_start,
+        clip_epsilon=config.clip_epsilon,
+        entropy_coeff=config.entropy_start,
         critic_coeff=0.5,
         normalize_advantage=True,
     )
 
     frame_count = 0
     log = defaultdict(list)
-    
-    # 创建本次训练的模型保存目录（用日期时间命名）
-    saved_models_base = os.path.join(os.path.dirname(__file__), "saved_models")
-    saved_models_dir = os.path.join(saved_models_base, timestamp)
-    os.makedirs(saved_models_dir, exist_ok=True)
-    
-    # 最佳模型追踪
-    best_reward = 0.0
-    best_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_best.pt")
-
-    # ====== (B) PPO阶段：可选 BC 正则项衰减 ======
-    lambda_bc0 = 1.0  # 初始 BC 权重（可调 0.1~5）
-    bc_decay_batches = 200  # 多少个 batch 衰减到 0（可调）
-
-
 
     with set_exploration_type(ExplorationType.RANDOM):
         for batch_idx, tensordict_data in enumerate(collector):
 
-            frac = min(1.0, batch_idx / total_batch)
-            val = entropy_start + (entropy_end - entropy_start) * frac
+            frac = min(1.0, batch_idx / config.total_batch)
+            val = config.entropy_start + (config.entropy_end - config.entropy_start) * frac
 
             loss_module.entropy_coeff.copy_(
                 torch.tensor(val, device=loss_module.entropy_coeff.device, dtype=loss_module.entropy_coeff.dtype)
@@ -176,9 +171,9 @@ def train(
             replay_buffer.extend(tensordict_data)
 
             n_deadlock = 0
-            for _ in range(num_epochs):
-                for _ in range(frames_per_batch // sub_batch_size):
-                    subdata = replay_buffer.sample(sub_batch_size).to(device)
+            for _ in range(config.num_epochs):
+                for _ in range(config.frames_per_batch // config.sub_batch_size):
+                    subdata = replay_buffer.sample(config.sub_batch_size).to(config.device)
 
                     loss_vals = loss_module(subdata)
                     ppo_loss = (loss_vals["loss_objective"]
@@ -187,16 +182,14 @@ def train(
 
                     # ---- 加 BC 正则（如果提供专家数据）----
                     if rb is not None:
-                        # 线性衰减：batch_idx=0 -> lambda_bc0, 到 bc_decay_batches 后变 0
-                        frac = max(0.0, 3.0 - batch_idx / float(bc_decay_batches))
-                        #lambda_bc = lambda_bc0 * frac
-                        if batch_idx < 100:
-                            lambda_bc = 2.0
+                        # 使用配置中的BC权重
+                        if batch_idx < config.bc_switch_batch:
+                            lambda_bc = config.bc_weight_early
                         else:
-                            lambda_bc = 0.1
+                            lambda_bc = config.bc_weight_late
 
                         if lambda_bc > 0:
-                            exp_batch = rb.sample(sub_batch_size).to(device)
+                            exp_batch = rb.sample(config.sub_batch_size).to(config.device)
                             td_module(exp_batch)
                             logits = exp_batch["logits"]
                             mask = exp_batch["action_mask"].bool()
@@ -219,83 +212,36 @@ def train(
                     optim.step()
 
             # 统计
-            #if batch_idx > 150 and batch_idx % 10 == 0:
-            #    ev(eval_env,batch_idx,policy)
-
-
             frame_count += int(tensordict_data.numel())
             ep_ret = tensordict_data["next","reward"].sum().item()
-            overtime = tensordict_data["next","overtime"].sum().item()
             makespan = tensordict_data["next", "time"][
                 tensordict_data["next", "finish"]
             ]
             mean_makespan = makespan.float().mean()
-
-            #n_deadlock += tensordict_data["next","deadlock_type"].sum().item()
+            finish_times = len(makespan)
 
             if batch_idx % 1 ==0:
-                print(f"batch {batch_idx+1:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| overtime={overtime}|makespan={mean_makespan:.2f}")
+                print(f"batch {batch_idx+1:04d} | frames={frame_count} | sum_reward={ep_ret:.2f}| circle={finish_times}|makespan={mean_makespan:.2f}")
 
                 n_deadlock=0
-            #if batch_idx % 3 == 0 and batch_idx >0:
-            #    makespan = ev(eval_env,policy=policy)
-            #    log['makespan'].append(makespan)
             log['reward'].append(ep_ret)
-<<<<<<< Updated upstream
-            #log['makespan'].append(makespan)
 
-
-    print("Training done.")
+    print("\nTraining done.")
     # 确保 saved_models 文件夹存在
     saved_models_dir = os.path.join(os.path.dirname(__file__), "saved_models")
     os.makedirs(saved_models_dir, exist_ok=True)
     
-    # 保存模型，使用带时间戳的文件名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = os.path.join(saved_models_dir, f"CT_{timestamp}.pt")
+    # 保存模型，使用带时间戳和训练阶段的文件名
+    model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_{timestamp}.pt")
     torch.save(policy.state_dict(), model_path)
     print(f"Model saved to: {model_path}")
     
-    # 同时保存一个最新的模型副本
-    latest_model_path = os.path.join(saved_models_dir, "CT_latest.pt")
-=======
-            
-            # 保存最佳模型（每次更优时都保存一份带编号的模型）
-            if ep_ret > best_reward and finish_times > 2:
-                best_reward = ep_ret
-                # 保存带 batch 编号和奖励值的模型（用于追踪历史）
-                checkpoint_path = os.path.join(
-                    saved_models_dir, 
-                    f"CT_phase{config.training_phase}_batch{batch_idx+1:04d}_reward{ep_ret:.0f}.pt"
-                )
-                torch.save(policy.state_dict(), checkpoint_path)
-                # 同时更新 best 模型（方便快速找到最佳）
-                torch.save(policy.state_dict(), best_model_path)
-                print(f"  -> 新最佳奖励: {best_reward:.2f}, 模型已保存")
-
-    print("\nTraining done.")
-    print(f"最佳奖励: {best_reward:.2f}, 模型已保存至: {best_model_path}")
-    
-    # 保存最终模型
-    final_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_final.pt")
-    torch.save(policy.state_dict(), final_model_path)
-    print(f"最终模型已保存至: {final_model_path}")
-    
-    # 同时在根目录保存一个最新的模型副本（方便快速访问）
-    latest_model_path = os.path.join(saved_models_base, f"CT_phase{config.training_phase}_latest.pt")
->>>>>>> Stashed changes
+    # 同时保存一个最新的模型副本（按阶段区分）
+    latest_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_latest.pt")
     torch.save(policy.state_dict(), latest_model_path)
-    print(f"最新模型副本: {latest_model_path}")
+    print(f"Latest model saved to: {latest_model_path}")
     
-    # 在根目录保存一份最佳模型副本（方便 Phase 2 加载）
-    if best_reward > 0:
-        best_latest_path = os.path.join(saved_models_base, f"CT_phase{config.training_phase}_best.pt")
-        shutil.copy(best_model_path, best_latest_path)
-        print(f"最佳模型副本: {best_latest_path}")
-    
-    print(f"\n本次训练所有模型保存在: {saved_models_dir}")
-    
-    return log,policy
+    return log, policy
 
 
 

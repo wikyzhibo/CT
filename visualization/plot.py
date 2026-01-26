@@ -13,6 +13,10 @@ class Op:
     start: float
     proc_end: float
     end: float  # occupied until end (includes residence)
+    is_arm: bool = False
+    kind: int = -1
+    from_loc: str = ""   # 取的位置，如 "LLA_S2"
+    to_loc: str = ""     # 放的位置，如 "PM7"
 
 
 def _num_stages(proc_time: Dict[int, float]) -> int:
@@ -31,40 +35,93 @@ def plot_gantt_hatched_residence(
     arm_info: dict,
     with_label = True,
     no_arm = True,
-    policy: int = None
+    policy: int = None,
+    stage_module_names: Dict[int, List[str]] = None
 ):
     S = _num_stages(proc_time)
 
-    # 生成泳道 lanes: S1-M0, S1-M1, ..., S4-Mk
+    # 默认的 stage -> 模块名称映射
+    # stage 1: PM7, PM8; stage 2: LLC; stage 3: PM1-PM4; stage 4: LLD; stage 5: PM9, PM10
+    if stage_module_names is None:
+        stage_module_names = {
+            1: ["PM7", "PM8"],
+            2: ["LLC"],
+            3: ["PM1", "PM2", "PM3", "PM4"],
+            4: ["LLD"],
+            5: ["PM9", "PM10"],
+            6: ["ARM2"],
+            7: ["ARM3"],
+        }
+
+    # 生成泳道 lanes: S1-M0(PM7), S1-M1(PM8), ...
     lanes: List[Tuple[int, int, str]] = []
     for s in range(1, S + 1):
         for m in range(capacity[s]):
-            lanes.append((s, m, f"S{s}-M{m}"))
+            # 获取具体模块名称
+            if s in stage_module_names and m < len(stage_module_names[s]):
+                module_name = stage_module_names[s][m]
+            else:
+                module_name = f"M{m}"
+            lanes.append((s, m, f"S{s}-M{m}({module_name})"))
     lane_index = {(s, m): i for i, (s, m, _) in enumerate(lanes)}
 
     # 完工时间
     t_max = max(op.end for op in ops) if ops else 0.0
 
-    # job 颜色分配
-    fig, ax = plt.subplots(figsize=(12, 6))
+    # 根据时间跨度动态调整图像尺寸和分辨率
+    # 时间越长，图像越宽，以保证短时间动作（如ARM的5s）可见
+    fig_width = max(16, min(30, t_max / 100))  # 宽度在16-60之间
+    fig_height = max(8, len(lanes) * 0.8)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
     cmap = plt.get_cmap("turbo")
     job_color = {j: cmap((j - 1) / max(1, n_jobs - 1)) for j in range(1, n_jobs + 1)}
 
+    # ARM 路径颜色分配：收集所有唯一的 (from_loc, to_loc) 组合
+    arm_paths = set()
+    for op in ops:
+        if op.is_arm and op.from_loc and op.to_loc:
+            arm_paths.add((op.from_loc, op.to_loc))
+    arm_paths = sorted(arm_paths)  # 排序保证颜色一致性
+    arm_cmap = plt.get_cmap("tab20")
+    arm_path_color = {path: arm_cmap(i / max(1, len(arm_paths))) for i, path in enumerate(arm_paths)}
+
     # 泳道参数
-    lane_h, lane_gap = 8, 4
+    lane_h, lane_gap = 4, 1
 
     # 绘制泳道 lanes
     for (s, m, name) in lanes:
         idx = lane_index[(s, m)]
         y0 = idx * (lane_h + lane_gap)
-        ax.add_patch(patches.Rectangle((0, y0), t_max, lane_h, fill=False, linewidth=0.5))
-        ax.text(-5, y0 + lane_h / 2, name, ha="right", va="center", fontsize=9)
+        ax.add_patch(patches.Rectangle((0, y0), t_max, lane_h, fill=False, linewidth=1.2))
+        ax.text(-5, y0 + lane_h / 2, name, ha="right", va="center", fontsize=16)
 
-    # ops: dark processing + light hatched residence
+    # ops: 深色代表加工段 + 浅色斜线代表驻留段
     for op in ops:
         idx = lane_index[(op.stage, op.machine)]
         y0 = idx * (lane_h + lane_gap)
-        color = job_color[op.job]
+
+        if op.is_arm:
+            # 根据取放路径分配颜色
+            path_key = (op.from_loc, op.to_loc)
+            if path_key in arm_path_color:
+                color = arm_path_color[path_key]
+            else:
+                # 回退：使用旧的 kind 逻辑
+                coset = ['green', 'blue']
+                color = coset[op.kind] if 0 <= op.kind < len(coset) else 'gray'
+            ax.add_patch(Rectangle(
+                (op.start, y0),
+                max(0.0, op.proc_end - op.start),
+                lane_h,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+                alpha=1,
+            ))
+            continue
+        else:
+            color = job_color[op.job]
 
         # processing (dark)
         ax.add_patch(Rectangle(
@@ -114,17 +171,32 @@ def plot_gantt_hatched_residence(
 
         ax.set_xlim(0, t_max * 1.02 if t_max > 0 else 1.0)
         ax.set_yticks([])
-        ax.set_xlabel("Time")
+        ax.set_xlabel("Time (s)")
         A = [1, 2, 3, 4, 5]
         B = [1, 4, 5]
-        ax.set_title(f"{len(proc_time)}-Stage Mixed Routes (A:{A}, B:{B})|makespan={t_max}")
-        # ax.grid(True, axis="x", linewidth=0.4)
+        ax.set_title(f"{len(proc_time)}-Stage Mixed Routes (A:{A}, B:{B})|makespan={t_max:.1f}s")
+
+        # 添加 ARM 路径的图例
+        if arm_paths:
+            legend_handles = []
+            for path in arm_paths:
+                from_loc, to_loc = path
+                color = arm_path_color[path]
+                label = f"{from_loc} → {to_loc}"
+                handle = patches.Patch(facecolor=color, edgecolor='black', alpha=0.7, label=label)
+                legend_handles.append(handle)
+            # 图例放在图外右侧
+            ax.legend(handles=legend_handles, title="ARM path", loc='upper left',
+                      bbox_to_anchor=(1.01, 1), fontsize=15, title_fontsize=15)
+
         plt.tight_layout()
 
         policy_dict = {0: 'pdr', 1: 'random', 2: 'rl'}
         out_path = out_path + f"{policy_dict[policy]}_job{n_jobs}.png"
         print("save img in:", out_path)
-        fig.savefig(out_path, dpi=200)
+        # 提高分辨率到 300 dpi
+        fig.savefig(out_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
         return
     # =========================
@@ -210,14 +282,29 @@ def plot_gantt_hatched_residence(
 
     ax.set_xlim(0, t_max * 1.02 if t_max > 0 else 1.0)
     ax.set_yticks([])
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Time (s)")
     A = [1, 2, 3, 4, 5]
     B = [1, 4, 5]
-    ax.set_title(f"{len(proc_time)}-Stage Mixed Routes (A:{A}, B:{B})|makespan={t_max}")
-    #ax.grid(True, axis="x", linewidth=0.4)
+    ax.set_title(f"{len(proc_time)}-Stage Mixed Routes (A:{A}, B:{B})|makespan={t_max:.1f}s")
+
+    # 添加 ARM 路径的图例
+    if arm_paths:
+        legend_handles = []
+        for path in arm_paths:
+            from_loc, to_loc = path
+            color = arm_path_color[path]
+            label = f"{from_loc} → {to_loc}"
+            handle = patches.Patch(facecolor=color, edgecolor='black', alpha=0.7, label=label)
+            legend_handles.append(handle)
+        # 图例放在图外右侧
+        ax.legend(handles=legend_handles, title="ARM 路径", loc='upper left',
+                  bbox_to_anchor=(1.01, 1), fontsize=8, title_fontsize=9)
+
     plt.tight_layout()
 
     policy_dict = {0:'pdr',1:'random',2:'rl'}
     out_path = out_path + f"{policy_dict[policy]}_job{n_jobs}.png"
     print("save img in:",out_path)
-    fig.savefig(out_path, dpi=200)
+    # 提高分辨率到 300 dpi
+    fig.savefig(out_path, dpi=400, bbox_inches='tight')
+    plt.close(fig)

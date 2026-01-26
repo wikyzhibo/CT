@@ -10,12 +10,10 @@ from data.config.params_N8 import params_N8
 
 if __name__ == "__main__":
 
-<<<<<<< Updated upstream
-=======
+
     train_mode = "auto-two"  # 固定为两阶段训练
 
 
->>>>>>> Stashed changes
     # 环境
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_env1 = CT_v2(device=device)
@@ -32,7 +30,7 @@ if __name__ == "__main__":
     import os
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-<<<<<<< Updated upstream
+
     start_time = time.time()
     log,policy = train(
         train_env,
@@ -41,7 +39,7 @@ if __name__ == "__main__":
         with_pretrain=False
     )
     print("training time:", time.time() - start_time)
-=======
+
     # 自动两阶段训练模式
     if train_mode == "auto-two":
         print("=" * 60)
@@ -81,7 +79,7 @@ if __name__ == "__main__":
 
         log = {"phase1": log1, "phase2": log2}
         policy = policy2
->>>>>>> Stashed changes
+
 
     y1 = np.asarray(log["phase2"]["reward"], dtype=float)
     x = np.arange(1, len(y1)+1)  # 更稳：按实际长度画

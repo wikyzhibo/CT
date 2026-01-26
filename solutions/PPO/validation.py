@@ -4,7 +4,7 @@ from torchrl.modules import ProbabilisticActor, MaskedCategorical
 from tensordict.nn import TensorDictModule
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
 from torchrl.envs.utils import set_exploration_type, ExplorationType
-from solutions.PPO.enviroment import CT2, CT_v2
+from solutions.PPO.enviroment import CT2, CT_v2, Env_PN
 from solutions.PPO.network.models import MaskedPolicyHead
 from visualization.plot import plot_gantt_hatched_residence,Op
 
@@ -14,7 +14,7 @@ def load_policy(model_path, env, device="cpu"):
     n_actions = env.action_spec.space.n
     n_m = env.observation_spec["observation"].shape[0]
 
-    policy_backbone = MaskedPolicyHead(hidden=256, n_obs=n_m, n_actions=n_actions)
+    policy_backbone = MaskedPolicyHead(hidden=128, n_obs=n_m, n_actions=n_actions,n_layers=4)
     td_module = TensorDictModule(
         policy_backbone, in_keys=["observation_f"], out_keys=["logits"]
     )
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_path",
         type=str,
-        default="saved_models/CT_latest.pt",
+        default="saved_models/CT_phase2_latest.pt",
         help="模型文件路径（默认: saved_models/CT_latest.pt）"
     )
     parser.add_argument(
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_runs",
         type=int,
-        default=50,
+        default=5,
         help="运行次数（默认: 5）"
     )
     
@@ -142,7 +142,9 @@ if __name__ == "__main__":
     
     # 创建环境
     print(f"创建环境 - 配置: {args.config}, 晶圆数: {args.n_wafer}")
-    base_env = CT_v2(device=device)
+
+    base_env = Env_PN(device=device)
+    #base_env = CT_v2(device=device)
     
     transform = Compose([
         ActionMask(),
@@ -170,44 +172,27 @@ if __name__ == "__main__":
     makespans = []
 
     min_makespan = 10**5
+    ops2 = []
     for run in range(args.n_runs):
         print(f"\n--- 运行 {run + 1}/{args.n_runs} ---")
         env.reset()
         makespan = ev(env, policy, max_steps=args.max_steps)
-        if makespan < min_makespan:
-            min_makespan = makespan
-            ops2 = []
-            net = env.net
-            tmp_p = ['p3', 'p4', 'p5', 'p6', 'p7']
-            tmpid = [net.id2p_name.index(i) for i in tmp_p]
-            for i, id in enumerate(tmpid):
-                for j in range(net.stage_c[i + 1]):
-                    machine = j
-                    p_occ = net.place_times[id][machine]
-                    for oc in p_occ:
-                        job = oc.tok_key
-                        start = oc.start
-                        end = oc.end
-                        proc = net.proc[i + 1]
-                        ops2.append(
-                            Op(job=job, stage=i + 1, machine=machine, start=start, proc_end=start + proc, end=end))
+
+        if makespan is not None:
+            if makespan < min_makespan:
+                min_makespan = makespan
+
+
         if makespan is not None:
             makespans.append(makespan)
 
     # 绘制甘特图
 
     net = env.net
-    out_path = r"C:\Users\khand\OneDrive\code\dqn\CT\results\\"
+    out_path = r'C:\Users\khand\OneDrive\code\dqn\CT\results\\'
+    net.render_gantt(out_path=out_path)
 
 
-    arm_info = {'ARM1': ["t3", "u3", "t4", "u6", "t7", "u31", 'u7', 't8'],
-                'ARM2': ["u4", "t5", "u5", "t6"],
-                'STAGE2ACT': {1: ("t3", "u3"), 2: ("t4", "u4"), 3: ("t5", "u5"), 4: ("t6", "u6"), 5: ('t7', 'u7')}}
-    n_job = net.n_wafer[0] + net.n_wafer[1]
-    plot_gantt_hatched_residence(ops=ops2, proc_time=net.proc,
-                                 capacity=net.stage_c, n_jobs=n_job,
-                                 out_path=out_path, with_label=True,
-                                 arm_info=arm_info,policy=2,no_arm=False)
 
     # 统计结果
     if makespans:

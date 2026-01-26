@@ -37,11 +37,10 @@ class PetriNet(Petri):
         super().__init__(with_controller,with_capacity_controller,**kwargs)
 
         self.machine_pr = {1:0,2:0,3:0,4:0,5:0}
-        self.stage_c = {1:2,2:1,3:4,4:1,5:2}
+        self.stage_c = {1:1,2:1,3:4,4:1,5:1}
         self.stage_start = {1:[],2:[],3:[],4:[],5:[]}
-        self.proc = {1:70,2:0,3:600,4:70,5:200}
+        self.proc = {1:70,2:5,3:600,4:70,5:200}
 
-        self.u0_record = []
 
         self.over_time = 0
         self.qtime_violation = 0
@@ -87,7 +86,7 @@ class PetriNet(Petri):
         self.machine_pr = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
         self.stage_c = {1: 2, 2: 1, 3: 4, 4: 1, 5: 2}
         self.stage_start = {1: [], 2: [], 3: [], 4: [], 5: []}
-        self.proc = {1: 70, 2: 0, 3: 600, 4: 70, 5: 200}
+        self.proc = {1: 70, 2: 5, 3: 600, 4: 70, 5: 200}
 
         self.transition_times = [[] for _ in range(self.T)]
         self.place_times = [[[] for _ in range(int(self.k[p]))] for p in range(self.P)]
@@ -488,8 +487,6 @@ class PetriNet(Petri):
 
         # 记录发射信息
         t_name = self.id2t_name[t]
-        if t_name == 'u0':
-            self.u0_record.append(start_from)
 
         job_id, enter_time, proc_time = self._get_t_info(t,marks)
 
@@ -656,7 +653,7 @@ def main():
                 **params_N7)
     print(f'|p={net.P}|t={net.T}')
 
-    for _ in range(50):
+    for _ in range(1):
         net.reset()
         m = net.m0.copy()
         marks = net.marks.copy()
@@ -690,8 +687,24 @@ def main():
     plot_gantt_hatched_residence(ops=ops2,proc_time=net.proc,
                                  capacity=net.stage_c,n_jobs=n_job,
                                  out_path=out_path,with_label=True,
-                                 arm_info=arm_info,policy=1,no_arm=False)
+                                 arm_info=arm_info,policy=0,no_arm=False)
+
+import cProfile
+import pstats
+
+def run():
+    main()   # 你现在的主调度 / 仿真入口
+
+
 
 
 if __name__ == '__main__':
-    main()
+    cProfile.runctx(
+        "run()",
+        globals(),
+        locals(),
+        "profile.out"
+    )
+
+    p = pstats.Stats("profile.out")
+    p.sort_stats("cumtime").print_stats(30)

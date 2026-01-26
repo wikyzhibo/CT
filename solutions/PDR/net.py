@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 import warnings
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 #from solutions.model.guard import ZeroBufferWindowController
-from solutions.model.pn_models import Place, Token
+#from solutions.model.pn_models import Place, Token
 from solutions.model.guard import ZeroBufferWindowController
 
 def get_pre_pst(net_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -22,26 +22,6 @@ from dataclasses import dataclass
 INF = 10**6
 
 class Petri:
-    """
-    input:
-
-
-    - self.m         : 当前标识 (P,)
-    - self.m0        : 初始标识 (P,)
-    - self.md        : 终止标识 (P,)
-    - self.marks[p]  : 库所 p 的 tokens，Place 对象
-    - self.time      : 当前离散时间（0基）
-    - self.ttime     : 变迁执行时长（标量或 (T,) 向量）
-    - self.k         : 库所容量（(P,) 向量；如无限容量可给很大值）
-
-    - self.visited        : search过程中访问的标识
-    - self.makespan = 0   : 完工时间
-    - self.transitions    : search过程中发射的变迁序列
-    - self.m_record       : search过程中标识序列
-    - self.marks_record   : search过程中token记录序列
-    - self.mark_bad       : search过程中遇到的坏标识
-    - self.expand_mark    : 访问标识数 int
-    """
     def __init__(self, use_super_net=False,
                        with_controller=False,
                        with_capacity_controller=False,

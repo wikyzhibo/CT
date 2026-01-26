@@ -23,14 +23,18 @@ class BasedToken:
 
 @dataclass
 class WaferToken(BasedToken):
-    job_id: int
-    path: List[List[int]]
+    job_id: int # ID of the wafer job
+    path: List[List[int]] # Path the wafer needs to follow
+    type: int # type of wafer, different type may have different path
+    where: int = 0 # Current position in the path
+
 
     def clone(self) -> "WaferToken":
         return WaferToken(
             job_id=self.job_id,
             enter_time=self.enter_time,
             path=self.path,
+            type=self.type,
         )
 
 
@@ -67,9 +71,9 @@ class Place:
             # Type 1 (p_i): Process chamber places with processing time constraint
             # Type 2 (d_i): Delivery/transport places with 30s transport constraint
             if self.type == 1:  # Process chamber (p_i)
-                res_time = self.head().enter_time + self.processing_time + 20 - current_time
+                res_time = self.head().enter_time + self.processing_time + 10 - current_time
             elif self.type == 2:  # Transport place (d_i)
-                res_time = self.head().enter_time + 30 - current_time
+                res_time = self.head().enter_time + 10 - current_time
             else:
                 # Type 3 (idle), Type 4 (other) - no deadline
                 return 10**5

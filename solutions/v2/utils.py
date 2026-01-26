@@ -11,6 +11,9 @@ class Interval:
     start: int
     end: int          # 可为 INF_OCC 表示占用中
     tok_key: int
+    kind: int = -1
+    from_loc: str = ""   # 取的位置，如 "LLA_S2"
+    to_loc: str = ""     # 放的位置，如 "PM7"
 
 @dataclass
 class Message:

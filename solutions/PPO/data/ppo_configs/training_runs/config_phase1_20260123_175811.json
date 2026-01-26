@@ -1,0 +1,22 @@
+{
+  "n_hidden": 256,
+  "n_layer": 4,
+  "total_batch": 150,
+  "sub_batch_size": 256,
+  "num_epochs": 10,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_epsilon": 0.2,
+  "lr": 0.0001,
+  "entropy_start": 0.02,
+  "entropy_end": 0.01,
+  "lambda_bc0": 1.0,
+  "bc_decay_batches": 200,
+  "bc_weight_early": 2.0,
+  "bc_weight_late": 0.1,
+  "bc_switch_batch": 100,
+  "device": "cpu",
+  "seed": 42,
+  "training_phase": 1,
+  "with_pretrain": false
+}
