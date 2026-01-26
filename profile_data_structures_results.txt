@@ -1,0 +1,47 @@
+======================================================================
+数据结构优化性能分析结果
+======================================================================
+
+Baseline (仅 002-sim-speedup):
+  执行时间: 0.147 秒
+  步数/秒: 68,016
+
+Optimized (002-sim-speedup + 数据结构优化):
+  执行时间: 0.154 秒
+  步数/秒: 65,072
+
+性能改进: -4.5%
+加速比: 0.96x
+
+======================================================================
+详细性能分析 (cProfile):
+======================================================================
+
+         33611 function calls in 0.024 seconds
+
+   Ordered by: cumulative time
+   List reduced from 36 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+     1000    0.001    0.000    0.021    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1676(get_enable_t)
+     1000    0.008    0.000    0.020    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1688(_get_enable_t_turbo)
+     2000    0.001    0.000    0.007    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:2611(all)
+     2000    0.002    0.000    0.005    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:89(_wrapreduction_any_all)
+     1017    0.001    0.000    0.004    0.000 D:\anaconda\Lib\site-packages\numpy\_core\numeric.py:666(flatnonzero)
+     1000    0.000    0.000    0.004    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1775(step)
+     1000    0.001    0.000    0.003    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1916(_step_turbo)
+     2000    0.003    0.000    0.003    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+     1017    0.000    0.000    0.001    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:2027(nonzero)
+     1017    0.001    0.000    0.001    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:1913(ravel)
+     1000    0.001    0.000    0.001    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:957(_calc_reward_turbo)
+     1017    0.000    0.000    0.001    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:51(_wrapfunc)
+     1000    0.001    0.000    0.001    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1970(_check_scrap_turbo)
+     1017    0.000    0.000    0.000    0.000 {method 'nonzero' of 'numpy.ndarray' objects}
+     2194    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}
+     2000    0.000    0.000    0.000    0.000 {method 'items' of 'dict' objects}
+     1017    0.000    0.000    0.000    0.000 {method 'ravel' of 'numpy.ndarray' objects}
+       30    0.000    0.000    0.000    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\Continuous_model\pn.py:1555(_fire_turbo)
+     2000    0.000    0.000    0.000    0.000 D:\anaconda\Lib\site-packages\numpy\_core\fromnumeric.py:2606(_all_dispatcher)
+     1000    0.000    0.000    0.000    0.000 {method 'index' of 'list' objects}
+
+

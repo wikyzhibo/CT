@@ -1,4 +1,10 @@
 import os
+<<<<<<< Updated upstream
+=======
+import json
+import time
+import shutil
+>>>>>>> Stashed changes
 from datetime import datetime
 
 import numpy as np
@@ -137,6 +143,15 @@ def train(
 
     frame_count = 0
     log = defaultdict(list)
+    
+    # 创建本次训练的模型保存目录（用日期时间命名）
+    saved_models_base = os.path.join(os.path.dirname(__file__), "saved_models")
+    saved_models_dir = os.path.join(saved_models_base, timestamp)
+    os.makedirs(saved_models_dir, exist_ok=True)
+    
+    # 最佳模型追踪
+    best_reward = 0.0
+    best_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_best.pt")
 
     # ====== (B) PPO阶段：可选 BC 正则项衰减 ======
     lambda_bc0 = 1.0  # 初始 BC 权重（可调 0.1~5）
@@ -226,6 +241,7 @@ def train(
             #    makespan = ev(eval_env,policy=policy)
             #    log['makespan'].append(makespan)
             log['reward'].append(ep_ret)
+<<<<<<< Updated upstream
             #log['makespan'].append(makespan)
 
 
@@ -242,8 +258,42 @@ def train(
     
     # 同时保存一个最新的模型副本
     latest_model_path = os.path.join(saved_models_dir, "CT_latest.pt")
+=======
+            
+            # 保存最佳模型（每次更优时都保存一份带编号的模型）
+            if ep_ret > best_reward and finish_times > 2:
+                best_reward = ep_ret
+                # 保存带 batch 编号和奖励值的模型（用于追踪历史）
+                checkpoint_path = os.path.join(
+                    saved_models_dir, 
+                    f"CT_phase{config.training_phase}_batch{batch_idx+1:04d}_reward{ep_ret:.0f}.pt"
+                )
+                torch.save(policy.state_dict(), checkpoint_path)
+                # 同时更新 best 模型（方便快速找到最佳）
+                torch.save(policy.state_dict(), best_model_path)
+                print(f"  -> 新最佳奖励: {best_reward:.2f}, 模型已保存")
+
+    print("\nTraining done.")
+    print(f"最佳奖励: {best_reward:.2f}, 模型已保存至: {best_model_path}")
+    
+    # 保存最终模型
+    final_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_final.pt")
+    torch.save(policy.state_dict(), final_model_path)
+    print(f"最终模型已保存至: {final_model_path}")
+    
+    # 同时在根目录保存一个最新的模型副本（方便快速访问）
+    latest_model_path = os.path.join(saved_models_base, f"CT_phase{config.training_phase}_latest.pt")
+>>>>>>> Stashed changes
     torch.save(policy.state_dict(), latest_model_path)
-    print(f"Latest model saved to: {latest_model_path}")
+    print(f"最新模型副本: {latest_model_path}")
+    
+    # 在根目录保存一份最佳模型副本（方便 Phase 2 加载）
+    if best_reward > 0:
+        best_latest_path = os.path.join(saved_models_base, f"CT_phase{config.training_phase}_best.pt")
+        shutil.copy(best_model_path, best_latest_path)
+        print(f"最佳模型副本: {best_latest_path}")
+    
+    print(f"\n本次训练所有模型保存在: {saved_models_dir}")
     
     return log,policy
 
