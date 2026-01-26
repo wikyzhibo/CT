@@ -536,10 +536,10 @@ class PetriVisualizer:
     """Petri 网可视化器 - UI/UX 优化版 - 多腔室网格布局"""
     
     # 布局配置
-    WINDOW_WIDTH = 1300
+    WINDOW_WIDTH = 1400
     WINDOW_HEIGHT = 950
     
-    LEFT_PANEL_WIDTH = 260      # 左侧面板
+    LEFT_PANEL_WIDTH = 320      # 左侧面板（扩大以容纳统计信息）
     RIGHT_PANEL_WIDTH = 230     # 右侧面板
     CENTER_PADDING = 15         # 中间区域左右边距
     
@@ -682,19 +682,21 @@ class PetriVisualizer:
         
         # ========== 腔室映射配置 ==========
         # 定义显示名称到实际 Petri 库所的映射
+        # 新路线：LP -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
         self.chamber_config = {
-            # TM2 区域（活跃）
+            # TM2 区域（活跃）- LP/s1/s2放入/s4取出/s5/LP_done
             "LLA": {"source": "LP", "active": True, "proc_time": 0, "robot": "TM2"},
             "LLB": {"source": "LP_done", "active": True, "proc_time": 0, "robot": "TM2"},
-            "PM7": {"source": "PM1", "machine": 0, "active": True, "proc_time": 80, "robot": "TM2"},
-            "PM8": {"source": "PM1", "machine": 1, "active": True, "proc_time": 80, "robot": "TM2"},
-            "PM9": {"source": "PM2", "machine": 0, "active": True, "proc_time": 30, "robot": "TM2"},
-            "PM10": {"source": None, "active": False, "proc_time": 0, "robot": "TM2"},
+            "PM7": {"source": "s1", "machine": 0, "active": True, "proc_time": 70, "robot": "TM2"},
+            "PM8": {"source": "s1", "machine": 1, "active": True, "proc_time": 70, "robot": "TM2"},
+            "PM9": {"source": "s5", "machine": 0, "active": True, "proc_time": 70, "robot": "TM2"},
+            "PM10": {"source": "s5", "machine": 1, "active": True, "proc_time": 70, "robot": "TM2"},
+            # TM3 区域（活跃）- s2取出/s3/s4放入
+            "LLC": {"source": "s2", "active": True, "proc_time": 0, "robot": "TM3"},
+            "LLD": {"source": "s4", "active": True, "proc_time": 70, "robot": "TM3"},
+            "PM1": {"source": "s3", "machine": 0, "active": True, "proc_time": 300, "robot": "TM3"},
+            "PM2": {"source": "s3", "machine": 1, "active": True, "proc_time": 300, "robot": "TM3"},
             # TM3 区域（闲置）
-            "LLC": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
-            "LLD": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
-            "PM1": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
-            "PM2": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
             "PM3": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
             "PM4": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
             "PM5": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
@@ -704,8 +706,12 @@ class PetriVisualizer:
         # 显示腔室列表
         self.display_chambers = list(self.chamber_config.keys())
         
-        # 运输库所（显示在 TM2 机械手区域）
-        self.transports = ["d_PM1", "d_PM2", "d_LP_done"]
+        # 运输库所配置（按机械手分组）
+        # TM2: d_s1, d_s2, d_s5, d_LP_done
+        # TM3: d_s3, d_s4
+        self.transports_tm2 = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
+        self.transports_tm3 = ["d_s3", "d_s4"]
+        self.transports = self.transports_tm2 + self.transports_tm3  # 保持向后兼容
         
         # ========== 计算网格基准坐标 ==========
         center_start = self.LEFT_PANEL_WIDTH + self.CENTER_PADDING
@@ -835,7 +841,21 @@ class PetriVisualizer:
                 btn.enabled = self.policy is not None
     
     def _collect_wafer_info(self) -> Dict[str, List[Dict]]:
-        """收集各库所中晶圆信息 - 映射到显示名称"""
+        """收集各库所中晶圆信息 - 映射到显示名称
+        
+        新路线映射：
+        - LP -> LLA
+        - LP_done -> LLB
+        - s1 -> PM7 (machine=0) / PM8 (machine=1)
+        - s2 -> LLC
+        - s3 -> PM1 (machine=0) / PM2 (machine=1)
+        - s4 -> LLD
+        - s5 -> PM9 (machine=0) / PM10 (machine=1)
+        
+        运输库所：
+        - d_s1, d_s2, d_s5, d_LP_done -> TM2
+        - d_s3, d_s4 -> TM3
+        """
         wafer_info = {}
         
         # 初始化所有显示腔室
@@ -865,41 +885,65 @@ class PetriVisualizer:
                 }
                 
                 # 根据实际库所映射到显示名称
-                if p_name == "PM1":
-                    # PM1 根据 machine 属性分配到 PM7 或 PM8
-                    machine = getattr(tok, 'machine', 0)
-                    display_name = "PM7" if machine == 0 else "PM8"
-                    wafer_info[display_name].append(wafer_data)
-                elif p_name == "PM2":
-                    # PM2 映射到 PM9
-                    wafer_info["PM9"].append(wafer_data)
-                elif p_name == "LP":
+                if p_name == "LP":
                     # LP 映射到 LLA
                     wafer_info["LLA"].append(wafer_data)
                 elif p_name == "LP_done":
                     # LP_done 映射到 LLB
                     wafer_info["LLB"].append(wafer_data)
+                elif p_name == "s1":
+                    # s1 根据 machine 属性分配到 PM7 或 PM8
+                    machine = getattr(tok, 'machine', 0)
+                    display_name = "PM7" if machine == 0 else "PM8"
+                    wafer_info[display_name].append(wafer_data)
+                elif p_name == "s2":
+                    # s2 映射到 LLC
+                    wafer_info["LLC"].append(wafer_data)
+                elif p_name == "s3":
+                    # s3 根据 machine 属性分配到 PM1 或 PM2
+                    machine = getattr(tok, 'machine', 0)
+                    display_name = "PM1" if machine == 0 else "PM2"
+                    wafer_info[display_name].append(wafer_data)
+                elif p_name == "s4":
+                    # s4 映射到 LLD
+                    wafer_info["LLD"].append(wafer_data)
+                elif p_name == "s5":
+                    # s5 根据 machine 属性分配到 PM9 或 PM10
+                    machine = getattr(tok, 'machine', 0)
+                    display_name = "PM9" if machine == 0 else "PM10"
+                    wafer_info[display_name].append(wafer_data)
                 elif p_name.startswith("d_"):
                     # 运输库所保持原名，并记录目标腔室
-                    # 根据运输库所名称确定目标腔室
-                    if p_name == "d_PM1":
-                        # d_PM1 -> PM1 -> PM7 (machine=0) 或 PM8 (machine=1)
+                    if p_name == "d_s1":
+                        # d_s1 -> s1 -> PM7 (machine=0) 或 PM8 (machine=1)
                         machine = getattr(tok, 'machine', 0)
                         wafer_data["target_chamber"] = "PM7" if machine == 0 else "PM8"
-                    elif p_name == "d_PM2":
-                        # d_PM2 -> PM2 -> PM9
-                        wafer_data["target_chamber"] = "PM9"
+                    elif p_name == "d_s2":
+                        # d_s2 -> s2 -> LLC
+                        wafer_data["target_chamber"] = "LLC"
+                    elif p_name == "d_s3":
+                        # d_s3 -> s3 -> PM1 (machine=0) 或 PM2 (machine=1)
+                        machine = getattr(tok, 'machine', 0)
+                        wafer_data["target_chamber"] = "PM1" if machine == 0 else "PM2"
+                    elif p_name == "d_s4":
+                        # d_s4 -> s4 -> LLD
+                        wafer_data["target_chamber"] = "LLD"
+                    elif p_name == "d_s5":
+                        # d_s5 -> s5 -> PM9 (machine=0) 或 PM10 (machine=1)
+                        machine = getattr(tok, 'machine', 0)
+                        wafer_data["target_chamber"] = "PM9" if machine == 0 else "PM10"
                     elif p_name == "d_LP_done":
                         # d_LP_done -> LP_done -> LLB
                         wafer_data["target_chamber"] = "LLB"
                     else:
                         wafer_data["target_chamber"] = None
-                    wafer_info[p_name].append(wafer_data)
+                    if p_name in wafer_info:
+                        wafer_info[p_name].append(wafer_data)
         
         return wafer_info
     
     def _draw_left_panel(self):
-        """绘制左侧面板 - 状态卡片 + 时间轴历史"""
+        """绘制左侧面板 - 状态卡片 + 统计信息 + 时间轴历史"""
         panel_x = 8
         panel_y = 8
         panel_width = self.LEFT_PANEL_WIDTH - 16
@@ -910,75 +954,200 @@ class PetriVisualizer:
         pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=12)
         pygame.draw.rect(self.screen, self.theme.border, rect, 2, border_radius=12)
         
-        y = panel_y + 18
+        y = panel_y + 12
         
         # ===== 系统状态区域 =====
         section_title = self.font_medium.render("SYSTEM STATUS", True, self.theme.accent)
         self.screen.blit(section_title, (panel_x + 12, y))
-        y += 32
+        y += 26
         
-        # 状态卡片
-        card_height = 32
-        card_gap = 6
+        # 状态卡片（紧凑布局）
+        card_height = 26
+        card_gap = 4
         
         stats = [
             ("TIME", f"{self.net.time}s", self.theme.accent),
             ("STEP", str(self.step_count), self.theme.text_primary),
             ("REWARD", f"{self.total_reward:+.1f}", 
              self.theme.success if self.total_reward >= 0 else self.theme.danger),
-            ("LAST", f"{self.last_reward:+.1f}",
-             self.theme.success if self.last_reward >= 0 else self.theme.danger),
         ]
         
         for label, value, color in stats:
-            # 卡片背景
             card_rect = pygame.Rect(panel_x + 8, y, panel_width - 16, card_height)
-            pygame.draw.rect(self.screen, self.theme.bg_surface, card_rect, border_radius=6)
+            pygame.draw.rect(self.screen, self.theme.bg_surface, card_rect, border_radius=4)
             
-            # 标签
-            label_surf = self.font_small.render(label, True, self.theme.text_secondary)
-            self.screen.blit(label_surf, (panel_x + 14, y + 7))
+            label_surf = self.font_tiny.render(label, True, self.theme.text_secondary)
+            self.screen.blit(label_surf, (panel_x + 12, y + 5))
             
-            # 值
-            value_surf = self.font_medium.render(value, True, color)
-            value_rect = value_surf.get_rect(midright=(panel_x + panel_width - 14, y + card_height // 2))
+            value_surf = self.font_small.render(value, True, color)
+            value_rect = value_surf.get_rect(midright=(panel_x + panel_width - 12, y + card_height // 2))
             self.screen.blit(value_surf, value_rect)
             
             y += card_height + card_gap
         
-        # 进度条（假设总共需要处理的晶圆数）
-        y += 8
-        # 查找 LP 和 LP_done 库所
+        # 进度条
+        y += 4
         lp_place = next((p for p in self.net.marks if p.name == "LP"), None)
         lp_done_place = next((p for p in self.net.marks if p.name == "LP_done"), None)
         total_wafers = len(lp_place.tokens) if lp_place else 3
         done_wafers = len(lp_done_place.tokens) if lp_done_place else 0
+        n_wafer = self.net.n_wafer
         
-        progress_label = self.font_small.render(f"PROGRESS: {done_wafers}/{total_wafers + done_wafers}", True, self.theme.text_secondary)
+        progress_label = self.font_tiny.render(f"PROGRESS: {done_wafers}/{n_wafer}", True, self.theme.text_secondary)
         self.screen.blit(progress_label, (panel_x + 12, y))
-        y += 22
+        y += 16
         
-        # 进度条
-        bar_rect = pygame.Rect(panel_x + 12, y, panel_width - 24, 10)
-        pygame.draw.rect(self.screen, self.theme.bg_elevated, bar_rect, border_radius=5)
+        bar_rect = pygame.Rect(panel_x + 12, y, panel_width - 24, 8)
+        pygame.draw.rect(self.screen, self.theme.bg_elevated, bar_rect, border_radius=4)
         
-        progress = done_wafers / max(1, total_wafers + done_wafers)
+        progress = done_wafers / max(1, n_wafer)
         if progress > 0:
             fill_width = int((panel_width - 24) * progress)
-            fill_rect = pygame.Rect(panel_x + 12, y, fill_width, 10)
-            pygame.draw.rect(self.screen, self.theme.success, fill_rect, border_radius=5)
+            fill_rect = pygame.Rect(panel_x + 12, y, fill_width, 8)
+            pygame.draw.rect(self.screen, self.theme.success, fill_rect, border_radius=4)
         
-        y += 22
+        y += 16
         
         # 分隔线
         pygame.draw.line(self.screen, self.theme.border,
                         (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
-        y += 12
+        y += 8
+        
+        # ===== 产能统计区域 =====
+        stats_data = self.net.calc_wafer_statistics()
+        
+        section_title = self.font_small.render("CAPACITY STATS", True, self.theme.accent)
+        self.screen.blit(section_title, (panel_x + 12, y))
+        y += 20
+        
+        # 产能计算：3600s 能产出的晶圆数
+        if stats_data["system_avg"] > 0 and done_wafers > 0:
+            throughput = 3600 / stats_data["system_avg"]
+        else:
+            throughput = 0.0
+        
+        capacity_stats = [
+            ("Throughput (3600s)", f"{throughput:.1f}"),
+            ("Completed", f"{stats_data['completed_count']}"),
+            ("In System", f"{stats_data['in_progress_count']}"),
+        ]
+        
+        for label, value in capacity_stats:
+            label_surf = self.font_tiny.render(label, True, self.theme.text_secondary)
+            self.screen.blit(label_surf, (panel_x + 12, y))
+            value_surf = self.font_tiny.render(value, True, self.theme.text_primary)
+            value_rect = value_surf.get_rect(right=panel_x + panel_width - 12, centery=y + 7)
+            self.screen.blit(value_surf, value_rect)
+            y += 16
+        
+        y += 4
+        pygame.draw.line(self.screen, self.theme.border,
+                        (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
+        y += 8
+        
+        # ===== 系统滞留时间 =====
+        section_title = self.font_small.render("SYSTEM RESIDENCE", True, self.theme.accent)
+        self.screen.blit(section_title, (panel_x + 12, y))
+        y += 18
+        
+        system_stats = [
+            ("Avg", f"{stats_data['system_avg']:.1f}s"),
+            ("Max", f"{stats_data['system_max']}s"),
+            ("Diff", f"{stats_data['system_diff']:.1f}s"),
+        ]
+        
+        # 横向紧凑显示
+        x_offset = panel_x + 12
+        for label, value in system_stats:
+            label_surf = self.font_tiny.render(f"{label}:", True, self.theme.text_muted)
+            self.screen.blit(label_surf, (x_offset, y))
+            x_offset += label_surf.get_width() + 2
+            value_surf = self.font_tiny.render(value, True, self.theme.text_primary)
+            self.screen.blit(value_surf, (x_offset, y))
+            x_offset += value_surf.get_width() + 10
+        y += 18
+        
+        pygame.draw.line(self.screen, self.theme.border,
+                        (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
+        y += 8
+        
+        # ===== 腔室滞留时间 =====
+        section_title = self.font_small.render("CHAMBER RESIDENCE", True, self.theme.accent)
+        self.screen.blit(section_title, (panel_x + 12, y))
+        y += 18
+        
+        chambers_display = ["PM7/8", "PM1/2", "PM9/10"]
+        for chamber_name in chambers_display:
+            chamber_data = stats_data["chambers"].get(chamber_name, {"avg": 0, "max": 0})
+            avg_val = chamber_data.get("avg", 0)
+            max_val = chamber_data.get("max", 0)
+            
+            label_surf = self.font_tiny.render(f"{chamber_name}:", True, self.theme.text_secondary)
+            self.screen.blit(label_surf, (panel_x + 12, y))
+            
+            value_text = f"avg={avg_val:.0f}s max={max_val}s"
+            value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
+            value_rect = value_surf.get_rect(right=panel_x + panel_width - 12, centery=y + 7)
+            self.screen.blit(value_surf, value_rect)
+            y += 16
+        
+        y += 4
+        pygame.draw.line(self.screen, self.theme.border,
+                        (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
+        y += 8
+        
+        # ===== 机械手滞留时间 =====
+        section_title = self.font_small.render("ROBOT RESIDENCE", True, self.theme.accent)
+        self.screen.blit(section_title, (panel_x + 12, y))
+        y += 18
+        
+        # TM2 统计：合并 d_s1, d_s2, d_s5, d_LP_done
+        tm2_times = []
+        for t_name in ["d_s1", "d_s2", "d_s5", "d_LP_done"]:
+            t_data = stats_data["transports_detail"].get(t_name, {})
+            if t_data.get("count", 0) > 0:
+                # 使用单个时间点
+                tm2_times.extend([t_data["avg"]] * t_data["count"])
+        
+        tm2_avg = sum(tm2_times) / len(tm2_times) if tm2_times else 0
+        tm2_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
+                       for t in ["d_s1", "d_s2", "d_s5", "d_LP_done"]])
+        
+        # TM3 统计：合并 d_s3, d_s4
+        tm3_times = []
+        for t_name in ["d_s3", "d_s4"]:
+            t_data = stats_data["transports_detail"].get(t_name, {})
+            if t_data.get("count", 0) > 0:
+                tm3_times.extend([t_data["avg"]] * t_data["count"])
+        
+        tm3_avg = sum(tm3_times) / len(tm3_times) if tm3_times else 0
+        tm3_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
+                       for t in ["d_s3", "d_s4"]])
+        
+        robot_stats = [
+            ("TM2", tm2_avg, tm2_max),
+            ("TM3", tm3_avg, tm3_max),
+        ]
+        
+        for robot_name, avg_val, max_val in robot_stats:
+            label_surf = self.font_tiny.render(f"{robot_name}:", True, self.theme.text_secondary)
+            self.screen.blit(label_surf, (panel_x + 12, y))
+            
+            value_text = f"avg={avg_val:.0f}s max={max_val}s"
+            value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
+            value_rect = value_surf.get_rect(right=panel_x + panel_width - 12, centery=y + 7)
+            self.screen.blit(value_surf, value_rect)
+            y += 16
+        
+        y += 4
+        pygame.draw.line(self.screen, self.theme.border,
+                        (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
+        y += 8
         
         # ===== 图例 =====
-        legend_title = self.font_small.render("LEGEND", True, self.theme.text_muted)
+        legend_title = self.font_tiny.render("LEGEND", True, self.theme.text_muted)
         self.screen.blit(legend_title, (panel_x + 12, y))
-        y += 20
+        y += 14
         
         legends = [
             (self.theme.success, "Normal"),
@@ -986,28 +1155,29 @@ class PetriVisualizer:
             (self.theme.danger, "Critical"),
         ]
         
+        x_offset = panel_x + 12
         for color, text in legends:
-            pygame.draw.circle(self.screen, color, (panel_x + 20, y + 7), 6)
-            text_surf = self.font_small.render(text, True, self.theme.text_primary)
-            self.screen.blit(text_surf, (panel_x + 34, y))
-            y += 20
+            pygame.draw.circle(self.screen, color, (x_offset + 5, y + 5), 4)
+            text_surf = self.font_tiny.render(text, True, self.theme.text_primary)
+            self.screen.blit(text_surf, (x_offset + 14, y))
+            x_offset += 14 + text_surf.get_width() + 8
+        y += 16
         
-        y += 8
         pygame.draw.line(self.screen, self.theme.border,
                         (panel_x + 12, y), (panel_x + panel_width - 12, y), 1)
-        y += 12
+        y += 8
         
         # ===== 动作历史 (时间轴样式) =====
-        history_title = self.font_medium.render("HISTORY", True, self.theme.accent)
+        history_title = self.font_small.render("HISTORY", True, self.theme.accent)
         self.screen.blit(history_title, (panel_x + 12, y))
-        y += 28
+        y += 20
         
         # 时间轴
-        timeline_x = panel_x + 20
-        max_y = panel_y + panel_height - 15
+        timeline_x = panel_x + 16
+        max_y = panel_y + panel_height - 10
         
-        for i, entry in enumerate(reversed(self.action_history[-12:])):  # 最近12条
-            if y >= max_y - 25:
+        for i, entry in enumerate(reversed(self.action_history[-8:])):  # 最近8条
+            if y >= max_y - 20:
                 break
             
             step = entry['step']
@@ -1018,29 +1188,29 @@ class PetriVisualizer:
             node_color = self.theme.success if total > 0 else (
                 self.theme.danger if total < -5 else self.theme.warning
             )
-            pygame.draw.circle(self.screen, node_color, (timeline_x, y + 9), 6)
+            pygame.draw.circle(self.screen, node_color, (timeline_x, y + 7), 4)
             
             # 时间轴线
-            if i < len(self.action_history) - 1 and y + 28 < max_y:
+            if i < len(self.action_history) - 1 and y + 22 < max_y:
                 pygame.draw.line(self.screen, self.theme.border,
-                               (timeline_x, y + 15), (timeline_x, y + 30), 2)
+                               (timeline_x, y + 11), (timeline_x, y + 22), 1)
             
             # 步数和动作
             step_text = f"{step:02d}"
-            step_surf = self.font_mono.render(step_text, True, self.theme.text_secondary)
-            self.screen.blit(step_surf, (timeline_x + 14, y + 1))
+            step_surf = self.font_tiny.render(step_text, True, self.theme.text_secondary)
+            self.screen.blit(step_surf, (timeline_x + 10, y))
             
-            action_surf = self.font_small.render(action_name, True, self.theme.text_primary)
-            self.screen.blit(action_surf, (timeline_x + 42, y + 1))
+            action_surf = self.font_tiny.render(action_name, True, self.theme.text_primary)
+            self.screen.blit(action_surf, (timeline_x + 32, y))
             
             # 奖励
             reward_text = f"{total:+.1f}"
             reward_color = node_color
-            reward_surf = self.font_small.render(reward_text, True, reward_color)
-            reward_rect = reward_surf.get_rect(right=panel_x + panel_width - 12, top=y + 1)
+            reward_surf = self.font_tiny.render(reward_text, True, reward_color)
+            reward_rect = reward_surf.get_rect(right=panel_x + panel_width - 10, top=y)
             self.screen.blit(reward_surf, reward_rect)
             
-            y += 28
+            y += 22
     
     def _draw_right_panel(self):
         """绘制右侧面板 - 按钮分组"""
@@ -1099,15 +1269,24 @@ class PetriVisualizer:
         pygame.draw.polygon(self.screen, self.theme.accent, arrow_points)
     
     def _draw_robot_buffer(self, wafer_info: Dict[str, List[Dict]]):
-        """绘制双机械手缓冲区（TM2 和 TM3）"""
-        # 收集运输中的晶圆（TM2）
-        transport_wafers = []
-        for t_name in self.transports:
-            transport_wafers.extend(wafer_info.get(t_name, []))
+        """绘制双机械手缓冲区（TM2 和 TM3）
+        
+        TM2 负责: d_s1, d_s2, d_s5, d_LP_done
+        TM3 负责: d_s3, d_s4
+        """
+        # 收集 TM2 运输中的晶圆
+        tm2_wafers = []
+        for t_name in self.transports_tm2:
+            tm2_wafers.extend(wafer_info.get(t_name, []))
+        
+        # 收集 TM3 运输中的晶圆
+        tm3_wafers = []
+        for t_name in self.transports_tm3:
+            tm3_wafers.extend(wafer_info.get(t_name, []))
         
         # 收集目标腔室（用于高亮连接线）
         target_chambers = set()
-        for wafer in transport_wafers:
+        for wafer in tm2_wafers + tm3_wafers:
             target = wafer.get("target_chamber")
             if target:
                 target_chambers.add(target)
@@ -1118,14 +1297,15 @@ class PetriVisualizer:
         # ========== 绘制 TM2（活跃） ==========
         self._draw_single_robot(
             self.tm2_pos[0], self.tm2_pos[1], 
-            "TM2", is_busy=len(transport_wafers) > 0, 
-            is_active=True, wafers=transport_wafers
+            "TM2", is_busy=len(tm2_wafers) > 0, 
+            is_active=True, wafers=tm2_wafers
         )
         
-        # ========== 绘制 TM3（闲置） ==========
+        # ========== 绘制 TM3（活跃） ==========
         self._draw_single_robot(
             self.tm3_pos[0], self.tm3_pos[1],
-            "TM3", is_busy=False, is_active=False, wafers=[]
+            "TM3", is_busy=len(tm3_wafers) > 0, 
+            is_active=True, wafers=tm3_wafers
         )
     
     def _draw_single_robot(self, cx: int, cy: int, name: str, 
@@ -1786,7 +1966,7 @@ def main():
             model_path = args.model
         else:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            default_model = os.path.join(current_dir, "..", "PPO", "saved_models", "CT_phase2_latest.pt")
+            default_model = os.path.join(current_dir, "..", "PPO", "saved_models", "CT_phase2_best.pt")
             if os.path.exists(default_model):
                 model_path = default_model
                 print(f"Loading model: {model_path}")
