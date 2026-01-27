@@ -7,7 +7,7 @@ from solutions.Continuous_model.construct import SuperPetriBuilder, ModuleSpec, 
 from data.petri_configs.env_config import PetriEnvConfig
 
 INF = 10**6
-MAX_TIME = 50000  # 例如 300s
+MAX_TIME = 5000  # 例如 300s
 
 @dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 和 release_schedule 是可变字段（deque）
 class Place:

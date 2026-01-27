@@ -187,10 +187,10 @@ class Env_PN(EnvBase):
         self.set_seed(seed)
 
     def _make_spec(self):
-        # 观测维度 = n_wafer * 5 (每个 wafer 的五元组)
-        # 五元组: (token_id, place_idx, place_type, stay_time, time_to_scrap)
-        # 新六步路线：最多 9 个晶圆同时可见（s1:2 + s2:1 + s3:2 + s4:1 + s5:2 + LP:1）
-        obs_dim = 7 * 5
+        # 观测维度 = n_wafer * 6 (每个 wafer 的六元组)
+        # 六元组: (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
+        # 双路线：最多 9 个晶圆同时可见（s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1）
+        obs_dim = 10 * 6
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -216,21 +216,22 @@ class Env_PN(EnvBase):
     def _build_obs(self):
         """
         构建观测向量：只展示机械手可操作的 wafer 信息
-        每个 wafer 包含: (token_id, place_idx, place_type, stay_time, time_to_scrap)
+        每个 wafer 包含: (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
 
         选择逻辑：
-        1. 优先收集所有在加工腔室（type=1）和运输位（type=2）中的 wafer
-        2. 如果不满 3 个，从 LP（type=3）中取队首的 1 个 wafer
-        3. 不够 3 个则用全零的 5 元组补齐
+        1. 优先收集所有在加工腔室（type=1）、运输位（type=2）和无驻留约束腔室（type=5）中的 wafer
+        2. 如果不满 MAX_WAFERS 个，分别从 LP1 和 LP2（type=3）中各取队首的 1 个 wafer
+        3. 不够则用全零的 6 元组补齐
         4. 按 token_id 升序排列后输出
 
-        观测维度 = 9 * 5 = 45
+        观测维度 = 9 * 6 = 54
         """
-        MAX_WAFERS = 7  # 新六步路线最多 9 个晶圆同时可见
+        MAX_WAFERS = 10  # 双路线：s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1
 
-        # 收集加工区（type=1, 2）的 wafer 信息
-        processing_wafers = {}  # token_id -> (place_idx, place_type, stay_time, time_to_scrap)
-        lp_wafers = []  # LP 中的 wafer 列表，按队列顺序（队首在前）
+        # 收集加工区（type=1, 2, 5）的 wafer 信息
+        processing_wafers = {}  # token_id -> (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
+        lp1_wafers = []  # LP1 中的 wafer 列表，按队列顺序（队首在前）
+        lp2_wafers = []  # LP2 中的 wafer 列表，按队列顺序（队首在前）
 
         for p_idx, place in enumerate(self.net.marks):
             # 跳过资源库所（type=4 且名称以 r_ 开头）和终点（LP_done）
@@ -242,41 +243,51 @@ class Env_PN(EnvBase):
                     continue  # 跳过无效 token
 
                 stay_time = int(tok.stay_time)
+                color = getattr(tok, 'color', 0)  # 获取晶圆颜色
 
                 # 计算距离报废时间
-                if place.type == 1:  # 加工腔室
+                if place.type == 1:  # 加工腔室（有驻留约束）
                     time_to_scrap = 20 - (stay_time - place.processing_time)
                 elif place.type == 2:  # 运输位
                     time_to_scrap = 10 - stay_time
-                else:  # LP 等
+                elif place.type == 5:  # 无驻留约束腔室（s2/s4）
+                    time_to_scrap = -1  # 无报废风险
+                else:  # LP1/LP2 等
                     time_to_scrap = -1  # 无报废风险
 
-                wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap)
+                wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap, color)
 
-                if place.type in (1, 2):  # 加工腔室或运输位
+                if place.type in (1, 2, 5):  # 加工腔室、运输位或无驻留约束腔室
                     processing_wafers[tok.token_id] = wafer_tuple
-                elif place.type == 3:  # LP
-                    lp_wafers.append(wafer_tuple)
+                elif place.type == 3:  # LP1 或 LP2
+                    if place.name == "LP1":
+                        lp1_wafers.append(wafer_tuple)
+                    elif place.name == "LP2":
+                        lp2_wafers.append(wafer_tuple)
 
         # 选择要展示的 wafer
         selected_wafers = list(processing_wafers.values())
 
-        # 如果加工区 wafer 不满 MAX_WAFERS 个，从 LP 取 1 个队首 wafer
-        if len(selected_wafers) < MAX_WAFERS and len(lp_wafers) > 0:
-            selected_wafers.append(lp_wafers[0])
+        # 如果加工区 wafer 不满 MAX_WAFERS 个，从 LP1 取 1 个队首 wafer
+        if len(selected_wafers) < MAX_WAFERS and len(lp1_wafers) > 0:
+            selected_wafers.append(lp1_wafers[0])
+
+        # 如果仍不满 MAX_WAFERS 个，从 LP2 取 1 个队首 wafer
+        if len(selected_wafers) < MAX_WAFERS and len(lp2_wafers) > 0:
+            selected_wafers.append(lp2_wafers[0])
 
         # 按 token_id 升序排列
         selected_wafers.sort(key=lambda x: x[0])
 
-        # 构建观测向量
+        # 构建观测向量（6 元组）
         obs = []
         for i in range(MAX_WAFERS):
             if i < len(selected_wafers):
-                tid, p_idx, p_type, stay, scrap_time = selected_wafers[i]
-                obs.extend([tid, p_idx, p_type, stay, scrap_time])
+                tid, p_idx, p_type, stay, scrap_time, color = selected_wafers[i]
+                obs.extend([tid, p_idx, p_type, stay, scrap_time, color])
             else:
-                # 不够 3 个则用全零补齐
-                obs.extend([0, 0, 0, 0, 0])
+                # 不够则用全零补齐
+                obs.extend([0, 0, 0, 0, 0, 0])
 
         return np.array(obs, dtype=np.int64)
 
