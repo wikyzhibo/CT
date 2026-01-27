@@ -129,7 +129,7 @@ class Env_PN(EnvBase):
     batch_locked = False
 
     def __init__(self, device='cpu', seed=None, detailed_reward: bool = False, training_phase: int = 2,
-                 reward_config: Optional[Dict[str, int]] = None):
+                 reward_config: Optional[Dict[str, int]] = None, enable_turbo: bool = True):
         """
         初始化连续 Petri 网环境。
 
@@ -148,6 +148,7 @@ class Env_PN(EnvBase):
                 - 'transport_penalty': 运输位超时惩罚
                 - 'congestion_penalty': 堵塞预测惩罚
                 - 'time_cost': 时间成本
+            enable_turbo: 是否启用 turbo 加速模式（默认 True）
         """
         super().__init__(device=device)
         self.training_phase = training_phase
@@ -155,6 +156,13 @@ class Env_PN(EnvBase):
             config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase1_config.json")
         else:
             config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase2_config.json")
+
+        # 启用 turbo 模式以加速训练
+        if enable_turbo:
+            config.turbo_mode = True
+            config.optimize_state_update = True
+            config.cache_indices = True
+            config.optimize_data_structures = True
 
         self.net = Petri(config=config)
         self.n_actions = self.net.T + 1  # wait action at index net.T
