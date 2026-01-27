@@ -6,6 +6,13 @@ from train import train
 from torchrl.envs import (Compose, DTypeCastTransform, TransformedEnv, ActionMask)
 import time
 from data.ppo_configs.training_config import PPOTrainingConfig
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="size_average and reduce args will be deprecated*",
+    category=UserWarning,
+)
 
 
 def create_env(device, training_phase: int = 1):

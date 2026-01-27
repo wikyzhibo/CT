@@ -73,11 +73,24 @@ def train(
     
     torch.manual_seed(config.seed)
     
+    # 创建保存目录
+    saved_models_dir = os.path.join(os.path.dirname(__file__), "saved_models")
+    os.makedirs(saved_models_dir, exist_ok=True)
+    
+    # 创建带时间戳的备份文件夹
+    backup_dir = os.path.join(saved_models_dir, timestamp)
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    # 初始化最佳奖励追踪
+    best_reward = float('-inf')
+    best_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_best.pt")
+    
     print(f"\n[Training Phase {config.training_phase}]")
     if config.training_phase == 1:
         print("  -> 仅考虑报废惩罚（加工腔室超时）")
     else:
         print("  -> 完整奖励（加工腔室超时 + 运输位超时）")
+    print(f"  -> Backup folder: {backup_dir}")
 
     # 策略与价值网络
     n_actions = env.action_spec.space.n
@@ -225,21 +238,30 @@ def train(
 
                 n_deadlock=0
             log['reward'].append(ep_ret)
+            
+            # 检查是否是最佳模型
+            if ep_ret > best_reward:
+                best_reward = ep_ret
+                torch.save(policy.state_dict(), best_model_path)
+                # 同时备份到时间戳文件夹
+                backup_best_path = os.path.join(backup_dir, f"CT_phase{config.training_phase}_best.pt")
+                torch.save(policy.state_dict(), backup_best_path)
+                print(f"  -> New best model saved! reward={ep_ret:.2f}")
 
-    print("\nTraining done.")
-    # 确保 saved_models 文件夹存在
-    saved_models_dir = os.path.join(os.path.dirname(__file__), "saved_models")
-    os.makedirs(saved_models_dir, exist_ok=True)
+    print(f"\nTraining done. Best reward: {best_reward:.2f}")
     
-    # 保存模型，使用带时间戳和训练阶段的文件名
-    model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_{timestamp}.pt")
-    torch.save(policy.state_dict(), model_path)
-    print(f"Model saved to: {model_path}")
+    # 保存最终模型到时间戳备份文件夹
+    final_model_path = os.path.join(backup_dir, f"CT_phase{config.training_phase}_final.pt")
+    torch.save(policy.state_dict(), final_model_path)
+    print(f"Final model saved to: {final_model_path}")
     
-    # 同时保存一个最新的模型副本（按阶段区分）
+    # 保存 latest 模型（覆盖）
     latest_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_latest.pt")
     torch.save(policy.state_dict(), latest_model_path)
     print(f"Latest model saved to: {latest_model_path}")
+    
+    print(f"Best model: {best_model_path}")
+    print(f"Backup folder: {backup_dir}")
     
     return log, policy
 
