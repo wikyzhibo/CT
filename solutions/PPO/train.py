@@ -240,7 +240,7 @@ def train(
             log['reward'].append(ep_ret)
             
             # 检查是否是最佳模型
-            if ep_ret > best_reward:
+            if ep_ret > best_reward and finish_times>1:
                 best_reward = ep_ret
                 torch.save(policy.state_dict(), best_model_path)
                 # 同时备份到时间戳文件夹
