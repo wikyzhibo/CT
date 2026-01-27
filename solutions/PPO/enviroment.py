@@ -129,7 +129,7 @@ class Env_PN(EnvBase):
     batch_locked = False
 
     def __init__(self, device='cpu', seed=None, detailed_reward: bool = False, training_phase: int = 2,
-                 reward_config: Optional[Dict[str, int]] = None, enable_turbo: bool = True):
+                 reward_config: Optional[Dict[str, int]] = None):
         """
         初始化连续 Petri 网环境。
 
@@ -148,7 +148,6 @@ class Env_PN(EnvBase):
                 - 'transport_penalty': 运输位超时惩罚
                 - 'congestion_penalty': 堵塞预测惩罚
                 - 'time_cost': 时间成本
-            enable_turbo: 是否启用 turbo 加速模式（默认 True）
         """
         super().__init__(device=device)
         self.training_phase = training_phase
@@ -156,13 +155,6 @@ class Env_PN(EnvBase):
             config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase1_config.json")
         else:
             config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase2_config.json")
-
-        # 启用 turbo 模式以加速训练
-        if enable_turbo:
-            config.turbo_mode = True
-            config.optimize_state_update = True
-            config.cache_indices = True
-            config.optimize_data_structures = True
 
         self.net = Petri(config=config)
         self.n_actions = self.net.T + 1  # wait action at index net.T
@@ -190,7 +182,7 @@ class Env_PN(EnvBase):
         # 观测维度 = n_wafer * 6 (每个 wafer 的六元组)
         # 六元组: (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
         # 双路线：最多 9 个晶圆同时可见（s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1）
-        obs_dim = 10 * 6
+        obs_dim = 12 * 6
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -226,7 +218,7 @@ class Env_PN(EnvBase):
 
         观测维度 = 9 * 6 = 54
         """
-        MAX_WAFERS = 10  # 双路线：s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1
+        MAX_WAFERS = 12  # 双路线：s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1
 
         # 收集加工区（type=1, 2, 5）的 wafer 信息
         processing_wafers = {}  # token_id -> (token_id, place_idx, place_type, stay_time, time_to_scrap, color)

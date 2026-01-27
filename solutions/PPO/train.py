@@ -167,7 +167,7 @@ def train(
     frame_count = 0
     log = defaultdict(list)
 
-    with set_exploration_type(ExplorationType.RANDOM):
+    with set_exploration_type(ExplorationType.MODE):
         for batch_idx, tensordict_data in enumerate(collector):
 
             frac = min(1.0, batch_idx / config.total_batch)
@@ -240,7 +240,7 @@ def train(
             log['reward'].append(ep_ret)
             
             # 检查是否是最佳模型
-            if ep_ret > best_reward and finish_times>1:
+            if ep_ret > best_reward and finish_times>0:
                 best_reward = ep_ret
                 torch.save(policy.state_dict(), best_model_path)
                 # 同时备份到时间戳文件夹

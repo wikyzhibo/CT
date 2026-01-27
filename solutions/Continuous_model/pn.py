@@ -150,12 +150,11 @@ class Petri:
         self.reward_config = config.reward_config
         
         # ============ 性能优化配置 ============
-        self.turbo_mode = getattr(config, 'turbo_mode', False)
-        self.optimize_reward_calc = getattr(config, 'optimize_reward_calc', True)
-        self.optimize_enable_check = getattr(config, 'optimize_enable_check', True)
-        self.optimize_state_update = getattr(config, 'optimize_state_update', True)
-        self.cache_indices = getattr(config, 'cache_indices', True)
-        self.optimize_data_structures = getattr(config, 'optimize_data_structures', True)
+        self.optimize_reward_calc = getattr(config, 'optimize_reward_calc', False)
+        self.optimize_enable_check = getattr(config, 'optimize_enable_check', False)
+        self.optimize_state_update = getattr(config, 'optimize_state_update', False)
+        self.cache_indices = getattr(config, 'cache_indices', False)
+        self.optimize_data_structures = getattr(config, 'optimize_data_structures', False)
         
         # 内部状态
         self.scrap_count = 0  # 报废计数器
@@ -254,14 +253,6 @@ class Petri:
         else:
             self._place_indices = None
             self._transition_indices = None
-        
-        # 极速模式缓存初始化
-        self._pre_places_cache = {}
-        self._pst_places_cache = {}
-        
-        # 缓存关键变迁索引
-        self._t_LP_done_idx = self._get_transition_index("t_LP_done") if "t_LP_done" in self.id2t_name else -1
-        self._lp_done_idx = self._get_place_index("LP_done") if "LP_done" in self.id2p_name else -1
         
         # 缓存加工腔室列表（type=1）
         # 注意：如果启用了数据结构优化，这个缓存将被 _marks_by_type[1] 替代
@@ -920,8 +911,6 @@ class Petri:
             place.release_schedule.clear()
             if place.type == 1:
                 place.last_machine = -1  # 重置机器轮换计数器
-        # 性能优化：重置极速模式缓存（网络结构不变，但状态变了）
-        # 注意：_pre_places_cache 和 _pst_places_cache 不需要重置，因为网络结构不变
         # 数据结构优化：更新 _marks_by_type 缓存（因为 marks 列表已重新克隆）
         if self.optimize_data_structures:
             try:
@@ -999,64 +988,10 @@ class Petri:
             return 0.0
 
         # 根据配置选择优化或原始实现
-        if self.turbo_mode:
-            return self._calc_reward_turbo(t1, t2, detailed)
-        elif self.optimize_reward_calc:
+        if self.optimize_reward_calc:
             return self._calc_reward_vectorized(t1, t2, moving_pre_places, detailed)
         else:
             return self._calc_reward_original(t1, t2, moving_pre_places, detailed)
-    
-    def _calc_reward_turbo(self, t1: int, t2: int, detailed: bool = False) -> float | Dict[str, float]:
-        """
-        极速版本的奖励计算（最大性能优化）。
-        
-        简化计算，只保留核心奖励/惩罚，跳过复杂的堵塞检测等。
-        """
-        proc_reward = 0.0
-        overtime_penalty = 0.0
-        p_res = self.P_Residual_time
-        
-        # 使用按类型分组的缓存，只遍历有驻留约束的加工腔室（type=1）
-        # 优化：直接使用缓存字典，避免函数调用开销
-        if self.optimize_data_structures:
-            process_places = self._marks_by_type.get(1, [])
-        else:
-            process_places = self._process_places_cache
-        for place in process_places:
-            ptime = place.processing_time
-            for tok in place.tokens:
-                enter = tok.enter_time
-                proc_end = enter + ptime
-                
-                # 加工奖励（内联 min/max）
-                overlap_start = t1 if t1 > enter else enter
-                overlap_end = t2 if t2 < proc_end else proc_end
-                if overlap_end > overlap_start:
-                    proc_reward += (overlap_end - overlap_start) * 2  # r=2
-                
-                # 超时惩罚
-                pen_start = proc_end + p_res
-                if t2 > pen_start:
-                    pen_overlap_start = t1 if t1 > pen_start else pen_start
-                    overtime_penalty += (t2 - pen_overlap_start) * 0.2  # Q2_p=0.2
-        
-        # 时间成本
-        total = proc_reward - overtime_penalty - self.c_time * (t2 - t1)
-        
-        if detailed:
-            return {
-                "total": total,
-                "proc_reward": proc_reward,
-                "safe_reward": 0.0,
-                "penalty": overtime_penalty,
-                "warn_penalty": 0.0,
-                "transport_penalty": 0.0,
-                "congestion_penalty": 0.0,
-                "time_cost": self.c_time * (t2 - t1),
-            }
-        
-        return total
-    
     def _calc_reward_original(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
                               detailed: bool = False) -> float | Dict[str, float]:
         """原始奖励计算实现（用于功能一致性验证）"""
@@ -1392,9 +1327,6 @@ class Petri:
 
     # ---------- 计算最早可使能时间 ----------
     def _earliest_enable_time(self, t):
-        if self.turbo_mode:
-            return self._earliest_enable_time_turbo(t)
-        
         pre_places = np.flatnonzero(self.pre[:, t] > 0)
         earliest = 0
         for p in pre_places:
@@ -1403,24 +1335,6 @@ class Petri:
             earliest = max(earliest, tok_enter)
         
         return int(earliest)
-    
-    def _earliest_enable_time_turbo(self, t):
-        """极速版本的最早使能时间计算"""
-        # 使用缓存的前置库所索引
-        pre_places = self._pre_places_cache.get(t)
-        if pre_places is None:
-            pre_places = np.flatnonzero(self.pre[:, t] > 0)
-            self._pre_places_cache[t] = pre_places
-        
-        earliest = 0
-        marks = self.marks
-        ptime = self.ptime
-        for p in pre_places:
-            tok_enter = marks[p].tokens[0].enter_time + ptime[p]
-            if tok_enter > earliest:
-                earliest = tok_enter
-        
-        return earliest
 
     def _resource_enable(self):
         # 双路线变迁:
@@ -1429,9 +1343,6 @@ class Petri:
         # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
         # 库所: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5', 
         #        'r_TM2', 'r_TM3', 'd_s1', 'd_s2', 'd_s3', 'd_s4', 'd_s5', 'd_LP_done']
-        
-        if self.turbo_mode:
-            return self._resource_enable_turbo()
         
         # 基本使能条件：前置库所有足够 token 且后置库所不超容量
         cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
@@ -1479,64 +1390,6 @@ class Petri:
 
         out_te = np.flatnonzero(mask)
         return out_te
-    
-    def _resource_enable_turbo(self):
-        """极速版本的使能检查（预计算优化）"""
-        m = self.m
-        
-        # 使用缓存的布尔掩码计算
-        if not hasattr(self, '_enable_cache_built'):
-            self._build_enable_cache()
-        
-        # 基本使能条件：前置库所有足够 token 且后置库所不超容量
-        # 使用纯 NumPy（避免 JIT 编译开销）
-        cond_pre = np.all(self.pre <= m[:, None], axis=0)
-        cond_cap = np.all((m[:, None] + self.pst) <= self.k[:, None], axis=0)
-        mask = cond_pre & cond_cap
-        
-        # 使用缓存的索引进行容量约束检查
-        for p_idx, t_idx, cap in self._capacity_constraints:
-            if m[p_idx] >= cap:
-                mask[t_idx] = False
-        
-        # ========== 颜色感知的分流约束（极速版本）==========
-        if self._s1_idx >= 0:
-            s1_place = self.marks[self._s1_idx]
-            if len(s1_place.tokens) > 0:
-                head_color = s1_place.tokens[0].color
-                
-                # u_s1_s2: 只有颜色1的晶圆可以走 s2
-                if self._t_s1_s2_idx >= 0 and head_color != 1:
-                    mask[self._t_s1_s2_idx] = False
-                
-                # u_s1_s5: 只有颜色2的晶圆可以走 s5
-                if self._t_s1_s5_idx >= 0 and head_color != 2:
-                    mask[self._t_s1_s5_idx] = False
-        
-        return np.flatnonzero(mask)
-    
-    def _build_enable_cache(self):
-        """构建使能检查的缓存数据"""
-        self._enable_cache_built = True
-        self._capacity_constraints = []
-        
-        # 双路线容量约束
-        capacity_constraints = [
-            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),
-            ("s3", "u_s2_s3"),
-            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),
-        ]
-        for place_name, u_trans_name in capacity_constraints:
-            if place_name in self.id2p_name and u_trans_name in self.id2t_name:
-                p_idx = self._get_place_index(place_name)
-                t_idx = self._get_transition_index(u_trans_name)
-                cap = self.marks[p_idx].capacity
-                self._capacity_constraints.append((p_idx, t_idx, cap))
-        
-        # 缓存分流相关索引
-        self._s1_idx = self._get_place_index("s1") if "s1" in self.id2p_name else -1
-        self._t_s1_s2_idx = self._get_transition_index("u_s1_s2") if "u_s1_s2" in self.id2t_name else -1
-        self._t_s1_s5_idx = self._get_transition_index("u_s1_s5") if "u_s1_s5" in self.id2t_name else -1
 
     def next_enable_time(self) -> int:
         te = self._resource_enable()
@@ -1548,9 +1401,6 @@ class Petri:
         return int(earliest)
 
     def _fire(self, t):
-        if self.turbo_mode:
-            return self._fire_turbo(t)
-        
         start_time = self.time
         enter_new = self.time + self.ttime
         t_name = self.id2t_name[t]
@@ -1671,65 +1521,6 @@ class Petri:
             "t2": int(enter_new),
             "token_id": wafer_id,
         })
-    
-    def _fire_turbo(self, t):
-        """极速版本的变迁执行（跳过所有追踪逻辑）"""
-        enter_new = self.time + self.ttime
-        
-        # 使用缓存的前置/后置库所
-        pre_places = self._pre_places_cache.get(t)
-        if pre_places is None:
-            pre_places = np.flatnonzero(self.pre[:, t] > 0)
-            self._pre_places_cache[t] = pre_places
-        
-        pst_places = self._pst_places_cache.get(t)
-        if pst_places is None:
-            pst_places = np.flatnonzero(self.pst[:, t] > 0)
-            self._pst_places_cache[t] = pst_places
-        
-        marks = self.marks
-        m = self.m
-        
-        # 1) 消费前置库所 token，保存 token_id 和 color
-        consumed_tid = -1
-        consumed_color = 0
-        for p in pre_places:
-            place = marks[p]
-            if place.type != 4 and consumed_tid == -1:
-                tok = place.tokens[0]
-                consumed_tid = tok.token_id
-                consumed_color = tok.color
-            place.tokens.popleft()
-            m[p] -= 1
-        
-        # 2) 生成后置库所 token（继承 color）
-        for p in pst_places:
-            place = marks[p]
-            if place.type != 4:
-                tid = consumed_tid
-                tcolor = consumed_color
-                consumed_tid = -1  # 只传递一次
-                consumed_color = 0
-            else:
-                tid = -1
-                tcolor = 0
-            
-            # 简化机器分配
-            if place.type == 1:
-                machine_id = (place.last_machine + 1) % place.capacity
-                place.last_machine = machine_id
-            else:
-                machine_id = -1
-            
-            place.tokens.append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, color=tcolor))
-            m[p] += 1
-        
-        # 3) 时间推进
-        self.time = enter_new
-        
-        # 4) 检查完工奖励（只检查 t_LP_done）
-        if t == self._t_LP_done_idx:
-            self._per_wafer_reward += self.R_done
 
     def render_gantt(self, out_path: str = r"C:\Users\khand\OneDrive\code\dqn\CT\results\continuous_gantt.png"):
         pm1_slots = [None, None]  # PM1 双 slot 追踪，记录 (start_time, token_id)
@@ -1800,9 +1591,6 @@ class Petri:
 
 
     def get_enable_t(self) -> List[int]:
-        if self.turbo_mode:
-            return self._get_enable_t_turbo()
-        
         te = self._resource_enable()
         use_t = []
         for t in te:
@@ -1810,54 +1598,6 @@ class Petri:
             if self.time >= el:
                 use_t.append(int(t))
         return use_t
-    
-    def _get_enable_t_turbo(self) -> List[int]:
-        """极速版本的使能变迁获取"""
-        m = self.m
-        
-        # 使用缓存的布尔掩码计算
-        if not hasattr(self, '_enable_cache_built'):
-            self._build_enable_cache()
-        
-        # 基本使能条件（使用 NumPy 向量化）
-        cond_pre = np.all(self.pre <= m[:, None], axis=0)
-        cond_cap = np.all((m[:, None] + self.pst) <= self.k[:, None], axis=0)
-        mask = cond_pre & cond_cap
-        
-        # 容量约束检查
-        for p_idx, t_idx, cap in self._capacity_constraints:
-            if m[p_idx] >= cap:
-                mask[t_idx] = False
-        
-        te = np.flatnonzero(mask)
-        if len(te) == 0:
-            return []
-        
-        # 时间条件检查
-        current_time = self.time
-        result = []
-        marks = self.marks
-        ptime = self.ptime
-        pre_cache = self._pre_places_cache
-        pre_mat = self.pre
-        
-        for t in te:
-            # 内联 _earliest_enable_time_turbo
-            pre_places = pre_cache.get(t)
-            if pre_places is None:
-                pre_places = np.flatnonzero(pre_mat[:, t] > 0)
-                pre_cache[t] = pre_places
-            
-            earliest = 0
-            for p in pre_places:
-                tok_enter = marks[p].tokens[0].enter_time + ptime[p]
-                if tok_enter > earliest:
-                    earliest = tok_enter
-            
-            if current_time >= earliest:
-                result.append(int(t))
-        
-        return result
 
     def _check_scrap(self, return_info: bool = False) -> bool | Tuple[bool, Optional[Dict]]:
         """
@@ -1917,13 +1657,6 @@ class Petri:
             done=True 表示 episode 结束（完成或报废）
             scrap=True 表示因报废而结束
         """
-        # 极速模式：使用简化版本
-        if self.turbo_mode:
-            if with_reward and not detailed_reward:
-                return self._step_turbo(t, wait)
-            elif not with_reward:
-                return self._step_turbo_no_reward(t, wait)
-
         if self.time >= MAX_TIME:
             if with_reward:
                 if detailed_reward:
@@ -2016,7 +1749,7 @@ class Petri:
         if finish:
             if with_reward:
                 if detailed_reward:
-                    reward_result["finish_bonus"] = self.R_finish
+                    reward_result["finish_bonus"] = self.R_finish+7000
                     reward_result["total"] += self.R_finish
                 else:
                     reward_result += self.R_finish
@@ -2038,112 +1771,6 @@ class Petri:
         if with_reward:
             return finish, reward_result, False
         return finish, False
-    
-    def _step_turbo(self, t: Optional[int], wait: bool):
-        """
-        极速版本的 step 函数（简化版本，只返回 (done, reward, scrap)）
-        """
-        current_time = self.time
-        
-        # 超时检查
-        if current_time >= MAX_TIME:
-            return True, -100.0, True
-        
-        if wait:
-            # WAIT 动作
-            t2 = current_time + 5
-            
-            # 简化奖励计算（内联）
-            reward = self._calc_reward_turbo(current_time, t2, detailed=False)
-            self.time = t2
-            
-            # 简化报废检查
-            if self._check_scrap_turbo():
-                self.scrap_count += 1
-                return self.stop_on_scrap, reward - self.R_scrap, True
-            
-            return False, reward, False
-        
-        # 执行变迁动作
-        ttime = self.ttime
-        t2 = current_time + ttime
-        
-        # 简化奖励计算
-        reward = self._calc_reward_turbo(current_time, t2, detailed=False)
-        
-        # 执行变迁
-        self._fire_turbo(t)
-        
-        # 添加单片完工奖励
-        per_wafer = self._per_wafer_reward
-        if per_wafer > 0:
-            reward += per_wafer
-            self._per_wafer_reward = 0.0
-        
-        # 检查完成
-        finish = (self.m[self._lp_done_idx] == self.n_wafer)
-        if finish:
-            reward += self.R_finish
-            return True, reward, False
-        
-        # 简化报废检查
-        if self._check_scrap_turbo():
-            self.scrap_count += 1
-            return self.stop_on_scrap, reward - self.R_scrap, True
-        
-        return False, reward, False
-    
-    def _check_scrap_turbo(self) -> bool:
-        """极速版本的报废检查"""
-        current_time = self.time
-        p_res = self.P_Residual_time
-        
-        # 使用按类型分组的缓存，只检查有驻留约束的加工腔室（type=1）
-        # 优化：直接使用缓存，避免函数调用开销
-        if self.optimize_data_structures:
-            process_places = self._marks_by_type.get(1, [])
-        else:
-            process_places = self._process_places_cache
-        for place in process_places:
-            deadline = place.processing_time + p_res
-            for tok in place.tokens:
-                if (current_time - tok.enter_time) > deadline:
-                    return True
-        return False
-    
-    def _step_turbo_no_reward(self, t: Optional[int], wait: bool):
-        """极速版本的 step 函数（不计算奖励，只返回 (done, scrap)）"""
-        current_time = self.time
-        
-        # 超时检查
-        if current_time >= MAX_TIME:
-            return True, True
-        
-        if wait:
-            # WAIT 动作
-            self.time = current_time + 5
-            
-            # 简化报废检查
-            if self._check_scrap_turbo():
-                self.scrap_count += 1
-                return self.stop_on_scrap, True
-            
-            return False, False
-        
-        # 执行变迁动作
-        self._fire_turbo(t)
-        
-        # 检查完成
-        finish = (self.m[self._lp_done_idx] == self.n_wafer)
-        if finish:
-            return True, False
-        
-        # 简化报废检查
-        if self._check_scrap_turbo():
-            self.scrap_count += 1
-            return self.stop_on_scrap, True
-        
-        return False, False
 
 
 def main():
