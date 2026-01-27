@@ -127,39 +127,81 @@ THEME = ColorTheme()
 
 # ============ 动画管理器 ============
 class AnimationManager:
-    """管理所有动画效果"""
+    """管理所有动画效果 - 支持 reduced-motion 和动画开关"""
     
     def __init__(self):
         self.start_time = pytime.time()
         self.animations: Dict[str, Dict[str, Any]] = {}
+        self.animations_enabled = True  # 动画总开关
+        self.reduced_motion = False     # 减少动画模式
+        self._active_pulse_count = 0    # 当前活跃的脉冲动画数量
+        self._max_concurrent_pulses = 2 # 最大同时脉冲数
+    
+    def should_animate(self) -> bool:
+        """检查是否应该播放动画（支持用户偏好）"""
+        return self.animations_enabled and not self.reduced_motion
+    
+    def toggle_animations(self):
+        """切换动画开关"""
+        self.animations_enabled = not self.animations_enabled
+    
+    def toggle_reduced_motion(self):
+        """切换减少动画模式"""
+        self.reduced_motion = not self.reduced_motion
         
     def get_time(self) -> float:
         """获取动画时间（秒）"""
         return pytime.time() - self.start_time
     
     def pulse(self, frequency: float = 1.0, min_val: float = 0.7, max_val: float = 1.0) -> float:
-        """脉冲动画 - 返回 min_val 到 max_val 之间的值"""
+        """脉冲动画 - 使用 ease-out 曲线，支持动画开关"""
+        if not self.should_animate():
+            return (min_val + max_val) / 2  # 返回中间值
+        
         t = self.get_time()
-        # sin 波在 0-1 之间
-        wave = (math.sin(t * frequency * 2 * math.pi) + 1) / 2
+        # 使用 ease-out 曲线代替线性 sin
+        cycle = (t * frequency) % 1.0
+        if cycle < 0.5:
+            # 上升阶段：ease-out
+            progress = cycle * 2
+            wave = 1 - (1 - progress) ** 2
+        else:
+            # 下降阶段：ease-in
+            progress = (cycle - 0.5) * 2
+            wave = 1 - progress ** 2
+        
         return min_val + wave * (max_val - min_val)
     
     def blink(self, frequency: float = 2.0) -> bool:
         """闪烁动画 - 返回 True/False"""
+        if not self.should_animate():
+            return True  # 动画关闭时始终显示
         t = self.get_time()
         return (t * frequency) % 1.0 < 0.5
     
     def flow_offset(self, speed: float = 50.0) -> float:
         """流线动画偏移"""
+        if not self.should_animate():
+            return 0
         t = self.get_time()
         return (t * speed) % 20  # 20像素周期
     
     def ease_out(self, progress: float) -> float:
-        """缓出动画曲线"""
-        return 1 - (1 - progress) ** 3
+        """缓出动画曲线 - cubic ease-out"""
+        return 1 - (1 - max(0, min(1, progress))) ** 3
+    
+    def ease_in_out(self, progress: float) -> float:
+        """缓入缓出动画曲线"""
+        progress = max(0, min(1, progress))
+        if progress < 0.5:
+            return 2 * progress ** 2
+        else:
+            return 1 - ((-2 * progress + 2) ** 2) / 2
     
     def add_flash(self, key: str, duration: float = 0.3):
         """添加闪烁动画"""
+        if not self.should_animate():
+            return
         self.animations[key] = {
             'type': 'flash',
             'start': self.get_time(),
@@ -167,7 +209,7 @@ class AnimationManager:
         }
     
     def get_flash_alpha(self, key: str) -> float:
-        """获取闪烁透明度 (0-1, 1表示最亮)"""
+        """获取闪烁透明度 (0-1, 1表示最亮) - 使用 ease-out"""
         if key not in self.animations:
             return 0
         anim = self.animations[key]
@@ -175,8 +217,9 @@ class AnimationManager:
         if elapsed > anim['duration']:
             del self.animations[key]
             return 0
-        # 快速淡出
-        return 1 - (elapsed / anim['duration']) ** 0.5
+        # 使用 ease-out 淡出
+        progress = elapsed / anim['duration']
+        return 1 - self.ease_out(progress)
 
 
 # ============ 晶圆渲染器 ============
@@ -186,17 +229,24 @@ class WaferRenderer:
     def __init__(self, theme: ColorTheme, anim: AnimationManager):
         self.theme = theme
         self.anim = anim
-        self.base_radius = 32
+        self.base_radius = 42  # 1.3x 放大
     
     def get_status_color(self, stay_time: int, proc_time: int, place_type: int) -> Tuple[Tuple[int, int, int], str]:
         """
-        获取晶圆状态颜色和状态名
+        获取晶圆状态颜色和状态名 - 使用固定颜色（无渐变）
         返回: (颜色, 状态名)
+        
+        三级颜色层次：
+        - Level 1 (关键警报): 红色 + 脉冲动画
+        - Level 2 (核心数据): Matrix Green
+        - Level 3 (辅助信息): 灰色，无动画
         """
         if place_type == 1:  # 加工腔室
             if stay_time < proc_time:
+                # 固定颜色：绿色表示加工中
                 return self.theme.success, "processing"
             elif stay_time < proc_time + 15:
+                # 固定颜色：黄色表示等待
                 return self.theme.warning, "done"
             elif stay_time < proc_time + 20:
                 return self.theme.danger, "critical"
@@ -206,37 +256,53 @@ class WaferRenderer:
             if stay_time < 7:
                 return self.theme.success, "normal"
             elif stay_time < 10:
+                # 固定颜色：黄色表示警告
                 return self.theme.warning, "warning"
             else:
                 return self.theme.danger, "overtime"
         else:
-            return self.theme.success, "idle"
+            return self.theme.text_muted, "idle"  # Level 3: 灰色
+    
+
     
     def draw(self, screen: pygame.Surface, x: int, y: int, 
              stay_time: int, proc_time: int, place_type: int,
-             token_id: int = -1, font_small: pygame.font.Font = None,
+             token_id: int = -1, wafer_color: int = 0, font_small: pygame.font.Font = None,
              font_tiny: pygame.font.Font = None):
         """绘制晶圆（带进度环和发光）"""
         color, status = self.get_status_color(stay_time, proc_time, place_type)
         radius = self.base_radius
+        
+        # 根据路线颜色选择装饰
+        if wafer_color == 1:
+            route_color = self.theme.glow_cyan  # 路线1 - 青色
+            route_label = "R1"
+        elif wafer_color == 2:
+            route_color = self.theme.glow_orange  # 路线2 - 橙色
+            route_label = "R2"
+        else:
+            route_color = None
+            route_label = None
         
         # 计算进度 (仅加工腔室显示)
         progress = 0.0
         if place_type == 1 and proc_time > 0:
             progress = min(1.0, stay_time / proc_time)
         
-        # 发光效果 (警告/危险状态脉冲)
+        # 发光效果 - 仅对关键警报状态启用（减少视觉噪音）
+        # Level 1 警报：critical/scrapped 才有脉冲发光
         glow_intensity = 0
-        if status in ["warning", "critical", "overtime"]:
-            glow_intensity = self.anim.pulse(2.0, 0.3, 1.0)
+        if status == "critical":
+            glow_intensity = self.anim.pulse(1.5, 0.4, 0.8)  # 降低频率和强度
         elif status == "scrapped":
-            glow_intensity = 1.0 if self.anim.blink(3.0) else 0.5
+            glow_intensity = 0.9 if self.anim.blink(2.0) else 0.4  # 降低闪烁频率
+        # warning/overtime 状态不再有发光动画，只用颜色区分
         
-        # 绘制外发光
+        # 绘制外发光（仅 Level 1 警报）
         if glow_intensity > 0:
-            for i in range(3, 0, -1):
-                glow_radius = radius + i * 4
-                glow_alpha = int(50 * glow_intensity * (4 - i) / 3)
+            for i in range(2, 0, -1):  # 减少发光层数
+                glow_radius = radius + i * 3
+                glow_alpha = int(40 * glow_intensity * (3 - i) / 2)
                 glow_surface = pygame.Surface((glow_radius * 2 + 10, glow_radius * 2 + 10), pygame.SRCALPHA)
                 glow_color = (*color, glow_alpha)
                 pygame.draw.circle(glow_surface, glow_color, 
@@ -263,19 +329,55 @@ class WaferRenderer:
         
         # 内部信息
         if font_tiny:
-            # Token ID
-            if token_id >= 0:
-                id_text = f"#{token_id}"
-                id_surf = font_tiny.render(id_text, True, self.theme.text_primary)
-                id_rect = id_surf.get_rect(centerx=x, centery=y - 7)
-                screen.blit(id_surf, id_rect)
-            
-            # 停留时间
-            time_text = f"{stay_time}s"
-            time_color = self.theme.text_primary if status != "scrapped" else self.theme.danger
-            time_surf = font_tiny.render(time_text, True, time_color)
-            time_rect = time_surf.get_rect(centerx=x, centery=y + 7)
-            screen.blit(time_surf, time_rect)
+            # 加工腔室：显示倒计时
+            if place_type == 1 and proc_time > 0:
+                remaining = max(0, proc_time - stay_time)
+                if remaining > 0:
+                    # 大号倒计时数字（在中心）
+                    countdown_text = f"{remaining}"
+                    countdown_color = color  # 使用状态颜色
+                    countdown_surf = font_tiny.render(countdown_text, True, countdown_color)
+                    countdown_rect = countdown_surf.get_rect(centerx=x, centery=y - 5)
+                    screen.blit(countdown_surf, countdown_rect)
+                    
+                    # Token ID 在下方小字
+                    if token_id >= 0:
+                        id_text = f"#{token_id}"
+                        id_surf = font_tiny.render(id_text, True, self.theme.text_muted)
+                        id_rect = id_surf.get_rect(centerx=x, centery=y + 12)
+                        screen.blit(id_surf, id_rect)
+                else:
+                    # 加工完成，显示 DONE 或超时时间
+                    overtime = stay_time - proc_time
+                    if status == "scrapped":
+                        done_text = "SCRAP"
+                        done_color = self.theme.danger
+                    else:
+                        done_text = f"+{overtime}s"
+                        done_color = color
+                    done_surf = font_tiny.render(done_text, True, done_color)
+                    done_rect = done_surf.get_rect(centerx=x, centery=y - 2)
+                    screen.blit(done_surf, done_rect)
+                    
+                    if token_id >= 0:
+                        id_text = f"#{token_id}"
+                        id_surf = font_tiny.render(id_text, True, self.theme.text_muted)
+                        id_rect = id_surf.get_rect(centerx=x, centery=y + 12)
+                        screen.blit(id_surf, id_rect)
+            else:
+                # 非加工腔室：显示 Token ID 和停留时间
+                if token_id >= 0:
+                    id_text = f"#{token_id}"
+                    id_surf = font_tiny.render(id_text, True, self.theme.text_primary)
+                    id_rect = id_surf.get_rect(centerx=x, centery=y - 7)
+                    screen.blit(id_surf, id_rect)
+                
+                # 停留时间
+                time_text = f"{stay_time}s"
+                time_color = color if status in ["warning", "overtime"] else self.theme.text_primary
+                time_surf = font_tiny.render(time_text, True, time_color)
+                time_rect = time_surf.get_rect(centerx=x, centery=y + 7)
+                screen.blit(time_surf, time_rect)
     
     def _draw_arc(self, screen: pygame.Surface, cx: int, cy: int, 
                   radius: int, width: int, progress: float, color: Tuple[int, int, int]):
@@ -310,6 +412,81 @@ class WaferRenderer:
         
         if len(points) >= 3:
             pygame.draw.polygon(screen, color, points)
+
+
+# ============ 迷你趋势图渲染器 ============
+class SparklineRenderer:
+    """迷你趋势图渲染器 - 用于显示产能和滞留时间趋势"""
+    
+    def __init__(self, theme: ColorTheme):
+        self.theme = theme
+        self.max_points = 20  # 最多显示 20 个数据点
+    
+    def draw(self, screen: pygame.Surface, x: int, y: int, 
+             width: int, height: int, data: List[float],
+             color: Tuple[int, int, int] = None,
+             show_fill: bool = True, show_current: bool = True):
+        """
+        绘制迷你趋势图
+        
+        Args:
+            screen: pygame 屏幕
+            x, y: 左上角坐标
+            width, height: 宽高
+            data: 数据点列表
+            color: 线条颜色
+            show_fill: 是否显示填充
+            show_current: 是否高亮当前值
+        """
+        if not data or len(data) < 2:
+            return
+        
+        if color is None:
+            color = self.theme.accent
+        
+        # 限制数据点数量
+        data = data[-self.max_points:]
+        
+        # 计算数据范围
+        min_val = min(data)
+        max_val = max(data)
+        val_range = max_val - min_val if max_val > min_val else 1
+        
+        # 计算点坐标
+        points = []
+        point_spacing = width / max(1, len(data) - 1)
+        
+        for i, val in enumerate(data):
+            px = x + i * point_spacing
+            # 归一化到 0-1，然后映射到 height（y 轴反转）
+            normalized = (val - min_val) / val_range
+            py = y + height - normalized * height
+            points.append((px, py))
+        
+        # 绘制填充区域
+        if show_fill and len(points) >= 2:
+            fill_points = points.copy()
+            fill_points.append((x + width, y + height))
+            fill_points.append((x, y + height))
+            
+            fill_surface = pygame.Surface((width + 2, height + 2), pygame.SRCALPHA)
+            fill_color = (*self.theme.dim_color(color, 0.3), 60)
+            
+            # 转换为相对坐标
+            relative_points = [(p[0] - x + 1, p[1] - y + 1) for p in fill_points]
+            if len(relative_points) >= 3:
+                pygame.draw.polygon(fill_surface, fill_color, relative_points)
+            screen.blit(fill_surface, (x - 1, y - 1))
+        
+        # 绘制线条
+        if len(points) >= 2:
+            pygame.draw.lines(screen, color, False, points, 2)
+        
+        # 高亮当前值（最后一个点）
+        if show_current and points:
+            last_point = points[-1]
+            pygame.draw.circle(screen, color, (int(last_point[0]), int(last_point[1])), 4)
+            pygame.draw.circle(screen, self.theme.bg_deep, (int(last_point[0]), int(last_point[1])), 2)
 
 
 # ============ 腔室渲染器 ============
@@ -610,22 +787,22 @@ class Button:
 class PetriVisualizer:
     """Petri 网可视化器 - UI/UX 优化版 - 多腔室网格布局"""
     
-    # 布局配置
-    WINDOW_WIDTH = 1400
-    WINDOW_HEIGHT = 950
+    # 布局配置 (1.3x 放大版本，适配 1440p 显示器)
+    WINDOW_WIDTH = 1820
+    WINDOW_HEIGHT = 1235
     
-    LEFT_PANEL_WIDTH = 320      # 左侧面板（扩大以容纳统计信息）
-    RIGHT_PANEL_WIDTH = 230     # 右侧面板
-    CENTER_PADDING = 15         # 中间区域左右边距
+    LEFT_PANEL_WIDTH = 416      # 左侧面板（扩大以容纳统计信息）
+    RIGHT_PANEL_WIDTH = 300     # 右侧面板
+    CENTER_PADDING = 20         # 中间区域左右边距
     
     # 腔室配置（网格布局）
-    CHAMBER_SIZE = 100           # 腔室大小（正方形）
-    CENTER_ROBOT_SIZE = 130     # 中心机械手区域大小
-    CHAMBER_GAP_X = 115         # 腔室水平间距
-    CHAMBER_GAP_Y = 105         # 腔室垂直间距
+    CHAMBER_SIZE = 130           # 腔室大小（正方形）
+    CENTER_ROBOT_SIZE = 170     # 中心机械手区域大小
+    CHAMBER_GAP_X = 150         # 腔室水平间距
+    CHAMBER_GAP_Y = 137         # 腔室垂直间距
     
     # 晶圆配置
-    WAFER_RADIUS = 24
+    WAFER_RADIUS = 32
     MAX_VISIBLE_WAFERS = 1      # 每个腔室最多显示1个晶圆
     
     def __init__(self, env: Env_PN, model_path: Optional[str] = None):
@@ -645,13 +822,17 @@ class PetriVisualizer:
         # 渲染器
         self.wafer_renderer = WaferRenderer(self.theme, self.anim)
         self.chamber_renderer = ChamberRenderer(self.theme, self.anim)
+        self.sparkline_renderer = SparklineRenderer(self.theme)
         
-        # 字体 (增大以提高清晰度)
-        self.font_large = pygame.font.SysFont("Microsoft YaHei", 22)
-        self.font_medium = pygame.font.SysFont("Microsoft YaHei", 18)
-        self.font_small = pygame.font.SysFont("Microsoft YaHei", 15)
-        self.font_tiny = pygame.font.SysFont("Microsoft YaHei", 13)
-        self.font_mono = pygame.font.SysFont("Consolas", 15)
+        # 字体 (1.3x 放大版本，提高清晰度)
+        self.font_large = pygame.font.SysFont("Microsoft YaHei", 28)
+        self.font_medium = pygame.font.SysFont("Microsoft YaHei", 24)
+        self.font_small = pygame.font.SysFont("Microsoft YaHei", 20)
+        self.font_tiny = pygame.font.SysFont("Microsoft YaHei", 17)
+        self.font_mono = pygame.font.SysFont("Consolas", 20)
+        # 新增：超大字体用于核心指标
+        self.font_xlarge = pygame.font.SysFont("Consolas", 48)
+        self.font_hero = pygame.font.SysFont("Consolas", 36)
         
         # 计算腔室位置
         self._setup_layout()
@@ -672,8 +853,23 @@ class PetriVisualizer:
         self.auto_speed = 1.0           # 速度倍率 (1x=1s间隔)
         self.last_auto_step_time = 0.0  # 上次自动执行时间
         
+        # 折叠状态（用于左侧面板分组）
+        self.collapsed_sections = {
+            "capacity": False,
+            "system_residence": False,
+            "chamber_residence": True,  # 默认折叠
+            "robot_residence": True,    # 默认折叠
+        }
+        
         # 动作历史记录
         self.action_history: List[Dict] = []
+        
+        # 趋势数据（用于迷你图）
+        self.trend_data = {
+            "throughput": [],      # 吞吐量趋势
+            "avg_stay_time": [],   # 平均滞留时间
+            "utilization": []      # 设备利用率
+        }
         
         # 模型相关
         self.policy = None
@@ -857,18 +1053,18 @@ class PetriVisualizer:
         self.center_pos = self.tm2_pos  # 保持向后兼容
     
     def _setup_buttons(self):
-        """设置动作按钮 - 分组布局，带类型颜色"""
+        """设置动作按钮 - 分组布局，带类型颜色 (1.3x 放大版本)"""
         self.buttons = []
         self.button_groups = {}
         
         t_names = self.net.id2t_name
         
-        panel_x = self.WINDOW_WIDTH - self.RIGHT_PANEL_WIDTH + 10
-        button_width = self.RIGHT_PANEL_WIDTH - 20
-        button_height = 32
-        button_gap = 4
+        panel_x = self.WINDOW_WIDTH - self.RIGHT_PANEL_WIDTH + 12
+        button_width = self.RIGHT_PANEL_WIDTH - 24
+        button_height = 42  # 1.3x 放大
+        button_gap = 5
         
-        y = 72
+        y = 94  # 1.3x 放大
         
         # 变迁动作组 - Cyan 色
         self.button_groups["transitions"] = {"start_y": y, "buttons": []}
@@ -880,7 +1076,7 @@ class PetriVisualizer:
             self.button_groups["transitions"]["buttons"].append(btn)
             y += button_height + button_gap
         
-        y += 15
+        y += 20  # 1.3x 放大
         
         # 系统控制组
         self.button_groups["control"] = {"start_y": y, "buttons": []}
@@ -912,28 +1108,67 @@ class PetriVisualizer:
         self.buttons.append(self.model_auto_button)
         self.button_groups["control"]["buttons"].append(self.model_auto_button)
         
-        y += button_height + 15
+        y += button_height + 20  # 1.3x 放大
         
         # 速度控制组 - Blue 色
         self.button_groups["speed"] = {"start_y": y, "buttons": []}
-        speed_btn_width = (button_width - 12) // 4  # 4个按钮横向排列
+        speed_btn_width = (button_width - 15) // 4  # 4个按钮横向排列
         speed_values = [(1, -5), (2, -6), (5, -7), (10, -8)]  # (倍率, action_id)
         self.speed_buttons = []
         
         for i, (speed, action_id) in enumerate(speed_values):
-            btn_x = panel_x + i * (speed_btn_width + 4)
+            btn_x = panel_x + i * (speed_btn_width + 5)
             btn = Button(btn_x, y, speed_btn_width, button_height,
                         f"{speed}x", action_id, "", self.theme, button_type="speed")
             self.buttons.append(btn)
             self.speed_buttons.append(btn)
             self.button_groups["speed"]["buttons"].append(btn)
         
-        y += button_height + 15
+        y += button_height + 20  # 1.3x 放大
         
         # Reset 按钮 - Red 色
         self.reset_button = Button(panel_x, y, button_width, button_height,
                                    "Reset", -2, "Space", self.theme, button_type="reset")
         self.reset_button.enabled = True
+    
+    def _update_trend_data(self):
+        """更新趋势数据（用于迷你图）"""
+        # 吞吐量：已完成的晶圆数
+        throughput = getattr(self.net, 'finished_count', 0)
+        self.trend_data["throughput"].append(throughput)
+        
+        # 平均滞留时间：所有活跃晶圆的平均滞留时间
+        total_stay = 0
+        wafer_count = 0
+        for place in self.net.marks:  # 使用 marks 而非 places
+            if hasattr(place, 'tokens') and place.tokens:
+                for token in place.tokens:
+                    if hasattr(token, 'stay_time'):
+                        total_stay += token.stay_time
+                        wafer_count += 1
+        
+        avg_stay = total_stay / max(1, wafer_count)
+        self.trend_data["avg_stay_time"].append(avg_stay)
+        
+        # 设备利用率：活跃腔室数 / 总腔室数
+        active_chambers = sum(1 for c in self.chamber_config.values() if c["active"])
+        busy_chambers = 0
+        for name, config in self.chamber_config.items():
+            if config["active"]:
+                place_name = name
+                for place in self.net.marks:  # 使用 marks 而非 places
+                    if place.name == place_name and hasattr(place, 'tokens') and place.tokens:
+                        busy_chambers += 1
+                        break
+        
+        utilization = busy_chambers / max(1, active_chambers)
+        self.trend_data["utilization"].append(utilization)
+        
+        # 限制数据点数量
+        max_points = 30
+        for key in self.trend_data:
+            if len(self.trend_data[key]) > max_points:
+                self.trend_data[key] = self.trend_data[key][-max_points:]
     
     def _update_buttons(self, action_mask: np.ndarray):
         """更新按钮状态"""
@@ -1000,6 +1235,7 @@ class PetriVisualizer:
                     "proc_time": place.processing_time,
                     "type": place.type,
                     "machine": getattr(tok, 'machine', -1),
+                    "color": getattr(tok, 'color', 0),  # 添加晶圆颜色
                 }
                 
                 # 根据实际库所映射到显示名称
@@ -1186,115 +1422,77 @@ class PetriVisualizer:
             pygame.draw.rect(self.screen, color, fill_rect, border_radius=height // 2)
     
     def _draw_left_panel(self):
-        """绘制左侧面板 - Cyberpunk 风格状态面板"""
-        panel_x = 8
-        panel_y = 8
-        panel_width = self.LEFT_PANEL_WIDTH - 16
-        panel_height = self.WINDOW_HEIGHT - 16
-        content_x = panel_x + 12
-        content_width = panel_width - 24
+        """绘制左侧面板 - 优化版：大号核心指标 + 可折叠分组"""
+        panel_x = 10
+        panel_y = 10
+        panel_width = self.LEFT_PANEL_WIDTH - 20
+        panel_height = self.WINDOW_HEIGHT - 20
+        content_x = panel_x + 16
+        content_width = panel_width - 32
         
-        # ===== 面板背景（带微妙渐变）=====
+        # ===== 面板背景 =====
         rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-        # 深色背景
-        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=12)
+        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=16)
         # 顶部渐变高光
-        highlight_surface = pygame.Surface((panel_width, 60), pygame.SRCALPHA)
-        for i in range(60):
-            alpha = int(15 * (1 - i / 60))
+        highlight_surface = pygame.Surface((panel_width, 78), pygame.SRCALPHA)
+        for i in range(78):
+            alpha = int(15 * (1 - i / 78))
             pygame.draw.line(highlight_surface, (*self.theme.accent, alpha), (0, i), (panel_width, i))
         self.screen.blit(highlight_surface, (panel_x, panel_y))
-        # 边框
-        pygame.draw.rect(self.screen, self.theme.border, rect, 2, border_radius=12)
+        pygame.draw.rect(self.screen, self.theme.border, rect, 2, border_radius=16)
         
-        y = panel_y + 12
+        y = panel_y + 16
         
-        # ===== 面板标题（带发光效果）=====
+        # ===== 面板标题 =====
         title_text = "SYSTEM MONITOR"
-        # 发光背景
-        glow_rect = pygame.Rect(content_x - 4, y - 2, content_width + 8, 28)
-        glow_surface = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-        pygame.draw.rect(glow_surface, (*self.theme.accent, 20), (0, 0, glow_rect.width, glow_rect.height), border_radius=4)
-        self.screen.blit(glow_surface, glow_rect.topleft)
-        # 标题文字
         title_surf = self.font_medium.render(title_text, True, self.theme.accent)
         self.screen.blit(title_surf, (content_x, y))
-        # 状态指示灯
         status = "active" if not self.done else "warning"
-        self._draw_status_indicator(panel_x + panel_width - 20, y + 10, 6, status)
-        y += 32
+        self._draw_status_indicator(panel_x + panel_width - 26, y + 13, 8, status)
+        y += 38
         
-        # ===== 核心指标卡片 =====
-        card_height = 38
-        card_gap = 6
-        
-        # TIME 卡片 - Cyan 色
-        self._draw_metric_card(content_x, y, content_width, card_height,
-                              "TIME", f"{self.net.time}s", self.theme.accent,
-                              icon_type="clock")
-        y += card_height + card_gap
-        
-        # STEP 卡片 - Green 色
-        self._draw_metric_card(content_x, y, content_width, card_height,
-                              "STEP", str(self.step_count), self.theme.success,
-                              icon_type="counter")
-        y += card_height + card_gap
-        
-        # REWARD 卡片 - 根据值变色
-        reward_color = self.theme.success if self.total_reward >= 0 else self.theme.danger
-        self._draw_metric_card(content_x, y, content_width, card_height,
-                              "REWARD", f"{self.total_reward:+.1f}", reward_color,
-                              icon_type="star")
-        y += card_height + 8
-        
-        # ===== 进度条区域 =====
+        # ===== 关键指标区 - 大号显示 =====
+        # 获取进度数据
         lp_done_place = next((p for p in self.net.marks if p.name == "LP_done"), None)
         done_wafers = len(lp_done_place.tokens) if lp_done_place else 0
         n_wafer = self.net.n_wafer
         progress = done_wafers / max(1, n_wafer)
         
-        # 进度标签
-        progress_label = f"WAFER PROGRESS: {done_wafers}/{n_wafer}"
-        label_surf = self.font_tiny.render(progress_label, True, self.theme.text_secondary)
-        self.screen.blit(label_surf, (content_x, y))
+        # TIME - 超大号显示
+        self._draw_hero_metric(content_x, y, content_width, 
+                              "TIME", f"{self.net.time}", "s",
+                              self.theme.accent)
+        y += 70
         
-        # 百分比
-        pct_text = f"{progress * 100:.0f}%"
-        pct_surf = self.font_tiny.render(pct_text, True, self.theme.success if progress > 0.5 else self.theme.warning)
-        pct_rect = pct_surf.get_rect(right=content_x + content_width, centery=y + 7)
-        self.screen.blit(pct_surf, pct_rect)
-        y += 18
+        # PROGRESS - 大号显示 + 进度条
+        self._draw_hero_metric(content_x, y, content_width,
+                              "PROGRESS", f"{progress * 100:.0f}", "%",
+                              self.theme.success if progress > 0.5 else self.theme.warning)
+        y += 55
         
-        # 渐变进度条
+        # 进度条
         bar_height = 10
         bar_rect = pygame.Rect(content_x, y, content_width, bar_height)
         pygame.draw.rect(self.screen, self.theme.bg_elevated, bar_rect, border_radius=5)
-        
         if progress > 0:
             fill_width = max(bar_height, int(content_width * progress))
-            # 渐变填充
             self._draw_gradient_rect(content_x, y, fill_width, bar_height,
                                     self.theme.gradient_start, self.theme.gradient_end,
                                     horizontal=True, border_radius=5)
-            # 发光边缘
-            if progress < 1.0:
-                glow_x = content_x + fill_width - 2
-                pulse = self.anim.pulse(2.0, 0.5, 1.0)
-                glow_surface = pygame.Surface((8, bar_height), pygame.SRCALPHA)
-                glow_color = (*self.theme.success, int(150 * pulse))
-                pygame.draw.rect(glow_surface, glow_color, (0, 0, 8, bar_height), border_radius=3)
-                self.screen.blit(glow_surface, (glow_x, y))
+        y += bar_height + 6
         
-        y += bar_height + 12
+        # 进度详情
+        progress_detail = f"{done_wafers}/{n_wafer} wafers"
+        detail_surf = self.font_tiny.render(progress_detail, True, self.theme.text_muted)
+        detail_rect = detail_surf.get_rect(centerx=content_x + content_width // 2, top=y)
+        self.screen.blit(detail_surf, detail_rect)
+        y += 24
         
-        # ===== 分隔线 =====
         self._draw_separator(content_x, y, content_width)
         y += 10
         
-        # ===== 产能统计 =====
+        # ===== 次要指标行 =====
         stats_data = self.net.calc_wafer_statistics()
-        
-        y = self._draw_section_header(content_x, y, content_width, "CAPACITY", self.theme.glow_cyan)
         
         # 产能计算
         if stats_data["system_avg"] > 0 and done_wafers > 0:
@@ -1302,216 +1500,299 @@ class PetriVisualizer:
         else:
             throughput = 0.0
         
-        # 三列布局
+        # 三列紧凑布局
         col_width = content_width // 3
-        metrics = [
-            ("TPT", f"{throughput:.1f}", self.theme.accent),
-            ("DONE", f"{stats_data['completed_count']}", self.theme.success),
-            ("ACTIVE", f"{stats_data['in_progress_count']}", self.theme.warning),
+        secondary_metrics = [
+            ("STEP", str(self.step_count), self.theme.text_primary),
+            ("REWARD", f"{self.total_reward:+.1f}", self.theme.success if self.total_reward >= 0 else self.theme.danger),
+            ("TPT", f"{throughput:.1f}/h", self.theme.accent),
         ]
         
-        for i, (label, value, color) in enumerate(metrics):
+        for i, (label, value, color) in enumerate(secondary_metrics):
             col_x = content_x + i * col_width
-            # 小标签
+            # 标签
             label_surf = self.font_tiny.render(label, True, self.theme.text_muted)
             label_rect = label_surf.get_rect(centerx=col_x + col_width // 2, top=y)
             self.screen.blit(label_surf, label_rect)
             # 值
             value_surf = self.font_small.render(value, True, color)
-            value_rect = value_surf.get_rect(centerx=col_x + col_width // 2, top=y + 14)
+            value_rect = value_surf.get_rect(centerx=col_x + col_width // 2, top=y + 18)
             self.screen.blit(value_surf, value_rect)
         
-        y += 36
+        y += 48
         self._draw_separator(content_x, y, content_width)
         y += 10
         
-        # ===== 系统滞留时间 =====
-        y = self._draw_section_header(content_x, y, content_width, "SYSTEM RESIDENCE", self.theme.glow_green)
+        # ===== 可折叠分组：系统滞留时间 =====
+        y = self._draw_collapsible_section(
+            content_x, y, content_width, "SYSTEM", "system_residence",
+            self.theme.glow_green, stats_data
+        )
         
-        # 横向三列
-        sys_metrics = [
-            ("AVG", f"{stats_data['system_avg']:.0f}s"),
-            ("MAX", f"{stats_data['system_max']}s"),
-            ("DIFF", f"{stats_data['system_diff']:.0f}s"),
-        ]
+        # ===== 可折叠分组：腔室滞留时间 =====
+        y = self._draw_collapsible_section(
+            content_x, y, content_width, "CHAMBERS", "chamber_residence",
+            self.theme.glow_orange, stats_data
+        )
         
-        for i, (label, value) in enumerate(sys_metrics):
-            col_x = content_x + i * col_width
-            text = f"{label}: {value}"
-            text_surf = self.font_tiny.render(text, True, self.theme.text_primary)
-            text_rect = text_surf.get_rect(centerx=col_x + col_width // 2, top=y)
-            self.screen.blit(text_surf, text_rect)
-        
-        y += 20
-        self._draw_separator(content_x, y, content_width)
-        y += 10
-        
-        # ===== 腔室滞留时间 =====
-        y = self._draw_section_header(content_x, y, content_width, "CHAMBER RESIDENCE", self.theme.glow_orange)
-        
-        chambers_display = [
-            ("PM7/8", self.theme.btn_transition),
-            ("PM1/2/3/4", self.theme.btn_model),  # s3 容量为 4
-            ("PM9/10", self.theme.btn_auto),
-        ]
-        
-        for chamber_name, color in chambers_display:
-            chamber_data = stats_data["chambers"].get(chamber_name, {"avg": 0, "max": 0})
-            avg_val = chamber_data.get("avg", 0)
-            max_val = chamber_data.get("max", 0)
-            
-            # 左侧彩色点 + 名称
-            pygame.draw.circle(self.screen, color, (content_x + 5, y + 7), 4)
-            name_surf = self.font_tiny.render(chamber_name, True, self.theme.text_secondary)
-            self.screen.blit(name_surf, (content_x + 14, y))
-            
-            # 右侧值
-            value_text = f"{avg_val:.0f}s / {max_val}s"
-            value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
-            value_rect = value_surf.get_rect(right=content_x + content_width, centery=y + 7)
-            self.screen.blit(value_surf, value_rect)
-            y += 16
-        
-        y += 4
-        self._draw_separator(content_x, y, content_width)
-        y += 10
-        
-        # ===== 机械手滞留时间 =====
-        y = self._draw_section_header(content_x, y, content_width, "ROBOT RESIDENCE", self.theme.glow_purple)
-        
-        # TM2 统计
-        tm2_times = []
-        for t_name in ["d_s1", "d_s2", "d_s5", "d_LP_done"]:
-            t_data = stats_data["transports_detail"].get(t_name, {})
-            if t_data.get("count", 0) > 0:
-                tm2_times.extend([t_data["avg"]] * t_data["count"])
-        tm2_avg = sum(tm2_times) / len(tm2_times) if tm2_times else 0
-        tm2_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
-                       for t in ["d_s1", "d_s2", "d_s5", "d_LP_done"]])
-        
-        # TM3 统计
-        tm3_times = []
-        for t_name in ["d_s3", "d_s4"]:
-            t_data = stats_data["transports_detail"].get(t_name, {})
-            if t_data.get("count", 0) > 0:
-                tm3_times.extend([t_data["avg"]] * t_data["count"])
-        tm3_avg = sum(tm3_times) / len(tm3_times) if tm3_times else 0
-        tm3_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
-                       for t in ["d_s3", "d_s4"]])
-        
-        robot_stats = [
-            ("TM2", tm2_avg, tm2_max, self.theme.accent),
-            ("TM3", tm3_avg, tm3_max, self.theme.btn_random),
-        ]
-        
-        for robot_name, avg_val, max_val, color in robot_stats:
-            pygame.draw.circle(self.screen, color, (content_x + 5, y + 7), 4)
-            name_surf = self.font_tiny.render(robot_name, True, self.theme.text_secondary)
-            self.screen.blit(name_surf, (content_x + 14, y))
-            
-            value_text = f"{avg_val:.0f}s / {max_val}s"
-            value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
-            value_rect = value_surf.get_rect(right=content_x + content_width, centery=y + 7)
-            self.screen.blit(value_surf, value_rect)
-            y += 16
-        
-        y += 4
-        self._draw_separator(content_x, y, content_width)
-        y += 10
-        
-        # ===== 图例 =====
-        legend_title = self.font_tiny.render("STATUS LEGEND", True, self.theme.text_muted)
-        self.screen.blit(legend_title, (content_x, y))
-        y += 16
-        
-        legends = [
-            (self.theme.success, "OK"),
-            (self.theme.warning, "WARN"),
-            (self.theme.danger, "CRIT"),
-        ]
-        
-        x_offset = content_x
-        for color, text in legends:
-            # 发光圆点
-            pygame.draw.circle(self.screen, self.theme.dim_color(color, 0.3), (x_offset + 5, y + 5), 7)
-            pygame.draw.circle(self.screen, color, (x_offset + 5, y + 5), 4)
-            text_surf = self.font_tiny.render(text, True, self.theme.text_primary)
-            self.screen.blit(text_surf, (x_offset + 14, y))
-            x_offset += 14 + text_surf.get_width() + 16
-        y += 18
+        # ===== 可折叠分组：机械手滞留时间 =====
+        y = self._draw_collapsible_section(
+            content_x, y, content_width, "ROBOTS", "robot_residence",
+            self.theme.glow_purple, stats_data
+        )
         
         self._draw_separator(content_x, y, content_width)
         y += 10
         
-        # ===== 动作历史 (时间轴样式) =====
-        y = self._draw_section_header(content_x, y, content_width, "ACTION HISTORY", self.theme.accent)
+        # ===== 动作历史 =====
+        y = self._draw_section_header(content_x, y, content_width, "HISTORY", self.theme.accent)
         
-        timeline_x = content_x + 8
-        max_y = panel_y + panel_height - 10
+        timeline_x = content_x + 10
+        max_y = panel_y + panel_height - 13
         
-        for i, entry in enumerate(reversed(self.action_history[-7:])):
-            if y >= max_y - 20:
+        for i, entry in enumerate(reversed(self.action_history[-6:])):
+            if y >= max_y - 26:
                 break
             
             step = entry['step']
             action_name = entry['action']
             total = entry['total']
             
-            # 时间轴节点颜色
             node_color = self.theme.success if total > 0 else (
                 self.theme.danger if total < -5 else self.theme.warning
             )
             
-            # 发光节点
-            glow_surface = pygame.Surface((16, 16), pygame.SRCALPHA)
-            pygame.draw.circle(glow_surface, (*node_color, 60), (8, 8), 7)
-            self.screen.blit(glow_surface, (timeline_x - 8, y - 1))
-            pygame.draw.circle(self.screen, node_color, (timeline_x, y + 7), 4)
+            # 节点
+            pygame.draw.circle(self.screen, node_color, (timeline_x, y + 9), 4)
             
             # 时间轴线
-            if i < len(self.action_history) - 1 and y + 22 < max_y:
+            if i < len(self.action_history) - 1 and y + 26 < max_y:
                 pygame.draw.line(self.screen, self.theme.border_muted,
-                               (timeline_x, y + 12), (timeline_x, y + 22), 1)
+                               (timeline_x, y + 14), (timeline_x, y + 26), 1)
             
-            # 步数
-            step_text = f"#{step:02d}"
-            step_surf = self.font_tiny.render(step_text, True, self.theme.text_muted)
-            self.screen.blit(step_surf, (timeline_x + 10, y))
+            # 步数 + 动作名
+            info_text = f"#{step:02d} {action_name}"
+            info_surf = self.font_tiny.render(info_text, True, self.theme.text_primary)
+            self.screen.blit(info_surf, (timeline_x + 12, y))
             
-            # 动作名
-            action_surf = self.font_tiny.render(action_name, True, self.theme.text_primary)
-            self.screen.blit(action_surf, (timeline_x + 40, y))
-            
-            # 奖励（带背景）
+            # 奖励
             reward_text = f"{total:+.1f}"
             reward_surf = self.font_tiny.render(reward_text, True, node_color)
-            reward_rect = reward_surf.get_rect(right=content_x + content_width, top=y)
-            
-            # 奖励背景
-            reward_bg = pygame.Rect(reward_rect.x - 4, reward_rect.y - 1, 
-                                   reward_rect.width + 8, reward_rect.height + 2)
-            pygame.draw.rect(self.screen, self.theme.dim_color(node_color, 0.15), reward_bg, border_radius=3)
+            reward_rect = reward_surf.get_rect(right=content_x + content_width, centery=y + 9)
             self.screen.blit(reward_surf, reward_rect)
             
-            y += 22
+            y += 26
+        
+        # 趋势数据文字显示（替代动态图）
+        if y < panel_y + panel_height - 80:
+            y += 10
+            self._draw_separator(content_x, y, content_width)
+            y += 10
+            
+            # 吞吐量趋势文字
+            if len(self.trend_data["throughput"]) > 0:
+                label_surf = self.font_tiny.render("THROUGHPUT TREND", True, self.theme.text_muted)
+                self.screen.blit(label_surf, (content_x, y))
+                y += 18
+                
+                current_tpt = self.trend_data["throughput"][-1] if self.trend_data["throughput"] else 0
+                if len(self.trend_data["throughput"]) > 1:
+                    prev_tpt = self.trend_data["throughput"][-2]
+                    delta = current_tpt - prev_tpt
+                    trend_symbol = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+                    trend_color = self.theme.success if delta > 0 else (self.theme.danger if delta < 0 else self.theme.text_muted)
+                else:
+                    trend_symbol = "→"
+                    trend_color = self.theme.text_muted
+                
+                value_text = f"{current_tpt:.1f} wafers/h {trend_symbol}"
+                value_surf = self.font_small.render(value_text, True, trend_color)
+                self.screen.blit(value_surf, (content_x, y))
+                y += 30
+            
+            # 平均滞留时间趋势文字
+            if len(self.trend_data["avg_stay_time"]) > 0:
+                label_surf = self.font_tiny.render("AVG STAY TIME TREND", True, self.theme.text_muted)
+                self.screen.blit(label_surf, (content_x, y))
+                y += 18
+                
+                current_stay = self.trend_data["avg_stay_time"][-1] if self.trend_data["avg_stay_time"] else 0
+                if len(self.trend_data["avg_stay_time"]) > 1:
+                    prev_stay = self.trend_data["avg_stay_time"][-2]
+                    delta = current_stay - prev_stay
+                    trend_symbol = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+                    # 注意：滞留时间增加是坏事，所以颜色反转
+                    trend_color = self.theme.danger if delta > 0 else (self.theme.success if delta < 0 else self.theme.text_muted)
+                else:
+                    trend_symbol = "→"
+                    trend_color = self.theme.text_muted
+                
+                value_text = f"{current_stay:.1f}s {trend_symbol}"
+                value_surf = self.font_small.render(value_text, True, trend_color)
+                self.screen.blit(value_surf, (content_x, y))
+                y += 30
+
+    
+    def _draw_hero_metric(self, x: int, y: int, width: int,
+                         label: str, value: str, unit: str,
+                         color: Tuple[int, int, int]):
+        """绘制大号核心指标"""
+        # 标签
+        label_surf = self.font_tiny.render(label, True, self.theme.text_muted)
+        self.screen.blit(label_surf, (x, y))
+        
+        # 值（超大号）
+        value_surf = self.font_xlarge.render(value, True, color)
+        value_rect = value_surf.get_rect(left=x, top=y + 18)
+        self.screen.blit(value_surf, value_rect)
+        
+        # 单位
+        unit_surf = self.font_medium.render(unit, True, self.theme.text_secondary)
+        unit_rect = unit_surf.get_rect(left=value_rect.right + 4, bottom=value_rect.bottom - 5)
+        self.screen.blit(unit_surf, unit_rect)
+    
+    def _draw_collapsible_section(self, x: int, y: int, width: int,
+                                  title: str, section_key: str,
+                                  color: Tuple[int, int, int],
+                                  stats_data: Dict) -> int:
+        """绘制可折叠的统计分组，返回下一个 y 坐标"""
+        is_collapsed = self.collapsed_sections.get(section_key, False)
+        
+        # 标题栏（可点击）
+        header_rect = pygame.Rect(x - 5, y, width + 10, 24)
+        
+        # 折叠指示器
+        indicator = "+" if is_collapsed else "-"
+        indicator_surf = self.font_small.render(indicator, True, color)
+        self.screen.blit(indicator_surf, (x, y))
+        
+        # 标题
+        title_surf = self.font_small.render(title, True, color)
+        self.screen.blit(title_surf, (x + 18, y))
+        
+        # 如果折叠，显示摘要
+        if is_collapsed:
+            if section_key == "system_residence":
+                summary = f"AVG: {stats_data['system_avg']:.0f}s"
+            elif section_key == "chamber_residence":
+                summary = "3 chambers"
+            elif section_key == "robot_residence":
+                summary = "TM2/TM3"
+            else:
+                summary = ""
+            summary_surf = self.font_tiny.render(summary, True, self.theme.text_muted)
+            summary_rect = summary_surf.get_rect(right=x + width, centery=y + 12)
+            self.screen.blit(summary_surf, summary_rect)
+            
+            # 存储点击区域
+            self._store_click_region(section_key, header_rect)
+            return y + 28
+        
+        y += 26
+        
+        # 展开内容
+        if section_key == "system_residence":
+            col_width = width // 3
+            sys_metrics = [
+                ("AVG", f"{stats_data['system_avg']:.0f}s"),
+                ("MAX", f"{stats_data['system_max']}s"),
+                ("DIFF", f"{stats_data['system_diff']:.0f}s"),
+            ]
+            for i, (label, value) in enumerate(sys_metrics):
+                col_x = x + i * col_width
+                text = f"{label}: {value}"
+                text_surf = self.font_tiny.render(text, True, self.theme.text_primary)
+                text_rect = text_surf.get_rect(centerx=col_x + col_width // 2, top=y)
+                self.screen.blit(text_surf, text_rect)
+            y += 24
+            
+        elif section_key == "chamber_residence":
+            chambers = [
+                ("PM7/8", self.theme.btn_transition),
+                ("PM1-4", self.theme.btn_model),
+                ("PM9/10", self.theme.btn_auto),
+            ]
+            for chamber_name, c in chambers:
+                chamber_data = stats_data["chambers"].get(chamber_name.replace("-", "/"), {"avg": 0, "max": 0})
+                if chamber_name == "PM1-4":
+                    chamber_data = stats_data["chambers"].get("PM1/2/3/4", {"avg": 0, "max": 0})
+                avg_val = chamber_data.get("avg", 0)
+                max_val = chamber_data.get("max", 0)
+                
+                pygame.draw.circle(self.screen, c, (x + 6, y + 9), 4)
+                name_surf = self.font_tiny.render(chamber_name, True, self.theme.text_secondary)
+                self.screen.blit(name_surf, (x + 16, y))
+                
+                value_text = f"{avg_val:.0f}s / {max_val}s"
+                value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
+                value_rect = value_surf.get_rect(right=x + width, centery=y + 9)
+                self.screen.blit(value_surf, value_rect)
+                y += 20
+            
+        elif section_key == "robot_residence":
+            # TM2 统计
+            tm2_times = []
+            for t_name in ["d_s1", "d_s2", "d_s5", "d_LP_done"]:
+                t_data = stats_data["transports_detail"].get(t_name, {})
+                if t_data.get("count", 0) > 0:
+                    tm2_times.extend([t_data["avg"]] * t_data["count"])
+            tm2_avg = sum(tm2_times) / len(tm2_times) if tm2_times else 0
+            tm2_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
+                           for t in ["d_s1", "d_s2", "d_s5", "d_LP_done"]])
+            
+            # TM3 统计
+            tm3_times = []
+            for t_name in ["d_s3", "d_s4"]:
+                t_data = stats_data["transports_detail"].get(t_name, {})
+                if t_data.get("count", 0) > 0:
+                    tm3_times.extend([t_data["avg"]] * t_data["count"])
+            tm3_avg = sum(tm3_times) / len(tm3_times) if tm3_times else 0
+            tm3_max = max([stats_data["transports_detail"].get(t, {}).get("max", 0) 
+                           for t in ["d_s3", "d_s4"]])
+            
+            robot_stats = [
+                ("TM2", tm2_avg, tm2_max, self.theme.accent),
+                ("TM3", tm3_avg, tm3_max, self.theme.btn_random),
+            ]
+            
+            for robot_name, avg_val, max_val, c in robot_stats:
+                pygame.draw.circle(self.screen, c, (x + 6, y + 9), 4)
+                name_surf = self.font_tiny.render(robot_name, True, self.theme.text_secondary)
+                self.screen.blit(name_surf, (x + 16, y))
+                
+                value_text = f"{avg_val:.0f}s / {max_val}s"
+                value_surf = self.font_tiny.render(value_text, True, self.theme.text_primary)
+                value_rect = value_surf.get_rect(right=x + width, centery=y + 9)
+                self.screen.blit(value_surf, value_rect)
+                y += 20
+        
+        # 存储点击区域
+        self._store_click_region(section_key, header_rect)
+        return y + 6
+    
+    def _store_click_region(self, key: str, rect: pygame.Rect):
+        """存储可点击区域（用于折叠/展开）"""
+        if not hasattr(self, '_click_regions'):
+            self._click_regions = {}
+        self._click_regions[key] = rect
     
     def _draw_metric_card(self, x: int, y: int, width: int, height: int,
                          label: str, value: str, color: Tuple[int, int, int],
                          icon_type: str = None):
-        """绘制指标卡片（带左侧彩色边条和图标）"""
+        """绘制指标卡片（带左侧彩色边条和图标）- 1.3x 放大版本"""
         # 背景
         card_rect = pygame.Rect(x, y, width, height)
-        pygame.draw.rect(self.screen, self.theme.bg_surface, card_rect, border_radius=6)
+        pygame.draw.rect(self.screen, self.theme.bg_surface, card_rect, border_radius=8)
         
         # 左侧彩色边条
-        accent_rect = pygame.Rect(x, y + 4, 4, height - 8)
-        pygame.draw.rect(self.screen, color, accent_rect, border_radius=2)
+        accent_rect = pygame.Rect(x, y + 5, 5, height - 10)
+        pygame.draw.rect(self.screen, color, accent_rect, border_radius=3)
         
         # 图标区域（简化为彩色方块）
-        icon_x = x + 12
-        icon_size = 20
+        icon_x = x + 16
+        icon_size = 26
         icon_rect = pygame.Rect(icon_x, y + (height - icon_size) // 2, icon_size, icon_size)
-        pygame.draw.rect(self.screen, self.theme.dim_color(color, 0.2), icon_rect, border_radius=4)
+        pygame.draw.rect(self.screen, self.theme.dim_color(color, 0.2), icon_rect, border_radius=5)
         
         # 图标符号
         if icon_type == "clock":
@@ -1528,11 +1809,11 @@ class PetriVisualizer:
         
         # 标签
         label_surf = self.font_tiny.render(label, True, self.theme.text_secondary)
-        self.screen.blit(label_surf, (icon_x + icon_size + 8, y + 6))
+        self.screen.blit(label_surf, (icon_x + icon_size + 10, y + 8))
         
         # 值
         value_surf = self.font_medium.render(value, True, color)
-        value_rect = value_surf.get_rect(right=x + width - 10, centery=y + height // 2)
+        value_rect = value_surf.get_rect(right=x + width - 13, centery=y + height // 2)
         self.screen.blit(value_surf, value_rect)
     
     def _draw_separator(self, x: int, y: int, width: int):
@@ -1546,52 +1827,52 @@ class PetriVisualizer:
             self.screen.blit(surface, (x + i, y))
     
     def _draw_right_panel(self):
-        """绘制右侧面板 - Cyberpunk 风格控制面板"""
+        """绘制右侧面板 - Cyberpunk 风格控制面板 (1.3x 放大版本)"""
         panel_x = self.WINDOW_WIDTH - self.RIGHT_PANEL_WIDTH
-        panel_y = 8
-        panel_width = self.RIGHT_PANEL_WIDTH - 8
-        panel_height = self.WINDOW_HEIGHT - 16
-        content_x = panel_x + 10
-        content_width = panel_width - 20
+        panel_y = 10
+        panel_width = self.RIGHT_PANEL_WIDTH - 10
+        panel_height = self.WINDOW_HEIGHT - 20
+        content_x = panel_x + 13
+        content_width = panel_width - 26
         
         # ===== 面板背景（带微妙渐变）=====
         rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=12)
+        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=16)
         
         # 顶部渐变高光
-        highlight_surface = pygame.Surface((panel_width, 50), pygame.SRCALPHA)
-        for i in range(50):
-            alpha = int(12 * (1 - i / 50))
+        highlight_surface = pygame.Surface((panel_width, 65), pygame.SRCALPHA)
+        for i in range(65):
+            alpha = int(12 * (1 - i / 65))
             pygame.draw.line(highlight_surface, (*self.theme.btn_transition, alpha), (0, i), (panel_width, i))
         self.screen.blit(highlight_surface, (panel_x, panel_y))
         
         # 边框
-        pygame.draw.rect(self.screen, self.theme.border, rect, 2, border_radius=12)
+        pygame.draw.rect(self.screen, self.theme.border, rect, 2, border_radius=16)
         
         # ===== 面板标题 =====
         title_text = "CONTROL PANEL"
         # 标题背景
-        title_bg_rect = pygame.Rect(content_x - 2, panel_y + 10, content_width + 4, 26)
-        pygame.draw.rect(self.screen, (*self.theme.btn_transition, 15), title_bg_rect, border_radius=4)
+        title_bg_rect = pygame.Rect(content_x - 3, panel_y + 13, content_width + 6, 34)
+        pygame.draw.rect(self.screen, (*self.theme.btn_transition, 15), title_bg_rect, border_radius=5)
         # 标题文字
         title_surf = self.font_medium.render(title_text, True, self.theme.btn_transition)
-        self.screen.blit(title_surf, (content_x, panel_y + 13))
+        self.screen.blit(title_surf, (content_x, panel_y + 17))
         # 状态指示灯
-        self._draw_status_indicator(panel_x + panel_width - 18, panel_y + 23, 5, 
+        self._draw_status_indicator(panel_x + panel_width - 23, panel_y + 30, 7, 
                                    "active" if not self.done else "warning")
         
         # ===== 变迁组标题（带彩色边条）=====
-        trans_y = self.button_groups["transitions"]["start_y"] - 24
+        trans_y = self.button_groups["transitions"]["start_y"] - 31
         self._draw_group_header(content_x, trans_y, content_width, "TRANSITIONS", 
                                self.theme.btn_transition)
         
         # ===== 控制组标题 =====
-        ctrl_y = self.button_groups["control"]["start_y"] - 24
+        ctrl_y = self.button_groups["control"]["start_y"] - 31
         self._draw_group_header(content_x, ctrl_y, content_width, "CONTROL", 
                                self.theme.btn_model)
         
         # ===== 速度组标题 =====
-        speed_y = self.button_groups["speed"]["start_y"] - 20
+        speed_y = self.button_groups["speed"]["start_y"] - 26
         self._draw_group_header(content_x, speed_y, content_width, "SPEED", 
                                self.theme.btn_speed)
         
@@ -1601,17 +1882,17 @@ class PetriVisualizer:
             status_color = self.theme.btn_auto
             # 发光背景
             pulse = self.anim.pulse(1.5, 0.6, 1.0)
-            glow_surface = pygame.Surface((70, 18), pygame.SRCALPHA)
+            glow_surface = pygame.Surface((91, 23), pygame.SRCALPHA)
             glow_color = (*status_color, int(40 * pulse))
-            pygame.draw.rect(glow_surface, glow_color, (0, 0, 70, 18), border_radius=4)
-            self.screen.blit(glow_surface, (panel_x + panel_width - 78, speed_y - 1))
+            pygame.draw.rect(glow_surface, glow_color, (0, 0, 91, 23), border_radius=5)
+            self.screen.blit(glow_surface, (panel_x + panel_width - 101, speed_y - 1))
         else:
             auto_status = "AUTO: OFF"
             status_color = self.theme.text_muted
         
         # 状态背景
-        status_bg_rect = pygame.Rect(panel_x + panel_width - 76, speed_y, 66, 16)
-        pygame.draw.rect(self.screen, self.theme.dim_color(status_color, 0.15), status_bg_rect, border_radius=3)
+        status_bg_rect = pygame.Rect(panel_x + panel_width - 99, speed_y, 86, 21)
+        pygame.draw.rect(self.screen, self.theme.dim_color(status_color, 0.15), status_bg_rect, border_radius=4)
         
         auto_surf = self.font_tiny.render(auto_status, True, status_color)
         auto_rect = auto_surf.get_rect(center=status_bg_rect.center)
@@ -1625,30 +1906,30 @@ class PetriVisualizer:
         self.reset_button.draw(self.screen, self.font_small, self.font_tiny)
         
         # ===== 快捷键提示区域 =====
-        hint_y = panel_y + panel_height - 35
+        hint_y = panel_y + panel_height - 46
         
         # 提示背景
-        hint_bg_rect = pygame.Rect(content_x, hint_y, content_width, 28)
-        pygame.draw.rect(self.screen, self.theme.bg_surface, hint_bg_rect, border_radius=6)
-        pygame.draw.rect(self.screen, self.theme.border_muted, hint_bg_rect, 1, border_radius=6)
+        hint_bg_rect = pygame.Rect(content_x, hint_y, content_width, 36)
+        pygame.draw.rect(self.screen, self.theme.bg_surface, hint_bg_rect, border_radius=8)
+        pygame.draw.rect(self.screen, self.theme.border_muted, hint_bg_rect, 1, border_radius=8)
         
         # 提示标题
         hint_title = self.font_tiny.render("SHORTCUTS", True, self.theme.text_muted)
-        hint_title_rect = hint_title.get_rect(centerx=panel_x + panel_width // 2, centery=hint_y + 8)
+        hint_title_rect = hint_title.get_rect(centerx=panel_x + panel_width // 2, centery=hint_y + 10)
         self.screen.blit(hint_title, hint_title_rect)
         
         # 快捷键列表
         shortcuts_text = "1-9 W R M A Space"
         shortcuts_surf = self.font_tiny.render(shortcuts_text, True, self.theme.accent)
-        shortcuts_rect = shortcuts_surf.get_rect(centerx=panel_x + panel_width // 2, centery=hint_y + 20)
+        shortcuts_rect = shortcuts_surf.get_rect(centerx=panel_x + panel_width // 2, centery=hint_y + 26)
         self.screen.blit(shortcuts_surf, shortcuts_rect)
     
     def _draw_group_header(self, x: int, y: int, width: int, title: str,
                           accent_color: Tuple[int, int, int]):
-        """绘制按钮组标题（带左侧彩色边条）"""
+        """绘制按钮组标题（带左侧彩色边条）- 1.3x 放大版本"""
         # 左侧彩色边条
-        bar_rect = pygame.Rect(x - 6, y + 2, 3, 14)
-        pygame.draw.rect(self.screen, accent_color, bar_rect, border_radius=2)
+        bar_rect = pygame.Rect(x - 8, y + 3, 4, 18)
+        pygame.draw.rect(self.screen, accent_color, bar_rect, border_radius=3)
         
         # 标题文字
         title_surf = self.font_small.render(title, True, self.theme.text_secondary)
@@ -1670,6 +1951,77 @@ class PetriVisualizer:
             (mid_x - 4, y1 + 6)
         ]
         pygame.draw.polygon(self.screen, self.theme.accent, arrow_points)
+    
+    def _draw_status_summary_bar(self, center_x: int, y: int, wafer_info: Dict[str, List[Dict]]):
+        """绘制状态摘要条 - 显示关键警报"""
+        # 收集警报状态
+        alerts = []
+        
+        # 检查各腔室状态
+        for chamber_name, config in self.chamber_config.items():
+            if not config["active"]:
+                continue
+            wafers = wafer_info.get(chamber_name, [])
+            if not wafers:
+                continue
+            
+            proc_time = config["proc_time"]
+            for wafer in wafers:
+                stay = wafer["stay_time"]
+                if proc_time > 0:  # 加工腔室
+                    if stay >= proc_time + 15:
+                        alerts.append(("CRIT", chamber_name, self.theme.danger))
+                    elif stay >= proc_time:
+                        alerts.append(("WARN", chamber_name, self.theme.warning))
+        
+        # 检查运输状态
+        for t_name in self.transports:
+            wafers = wafer_info.get(t_name, [])
+            for wafer in wafers:
+                if wafer["stay_time"] >= 10:
+                    alerts.append(("CRIT", t_name.replace("d_", ""), self.theme.danger))
+                elif wafer["stay_time"] >= 7:
+                    alerts.append(("WARN", t_name.replace("d_", ""), self.theme.warning))
+        
+        # 计算摘要条宽度
+        bar_width = self.WINDOW_WIDTH - self.LEFT_PANEL_WIDTH - self.RIGHT_PANEL_WIDTH - 40
+        bar_x = self.LEFT_PANEL_WIDTH + 20
+        bar_height = 28
+        
+        # 背景
+        bar_rect = pygame.Rect(bar_x, y, bar_width, bar_height)
+        pygame.draw.rect(self.screen, self.theme.bg_surface, bar_rect, border_radius=6)
+        pygame.draw.rect(self.screen, self.theme.border_muted, bar_rect, 1, border_radius=6)
+        
+        # 如果没有警报，显示 OK 状态
+        if not alerts:
+            ok_surf = self.font_small.render("ALL SYSTEMS OK", True, self.theme.success)
+            ok_rect = ok_surf.get_rect(center=(bar_x + bar_width // 2, y + bar_height // 2))
+            self.screen.blit(ok_surf, ok_rect)
+            # 绿色指示灯
+            pygame.draw.circle(self.screen, self.theme.success, (bar_x + 15, y + bar_height // 2), 5)
+        else:
+            # 显示警报（最多显示 4 个）
+            x_offset = bar_x + 10
+            max_alerts = min(4, len(alerts))
+            
+            for i, (level, name, color) in enumerate(alerts[:max_alerts]):
+                # 状态指示灯
+                pygame.draw.circle(self.screen, color, (x_offset + 5, y + bar_height // 2), 4)
+                
+                # 警报文本
+                alert_text = f"[{level}] {name}"
+                alert_surf = self.font_tiny.render(alert_text, True, color)
+                self.screen.blit(alert_surf, (x_offset + 14, y + 6))
+                
+                x_offset += alert_surf.get_width() + 30
+            
+            # 如果还有更多警报
+            if len(alerts) > max_alerts:
+                more_text = f"+{len(alerts) - max_alerts} more"
+                more_surf = self.font_tiny.render(more_text, True, self.theme.text_muted)
+                more_rect = more_surf.get_rect(right=bar_x + bar_width - 10, centery=y + bar_height // 2)
+                self.screen.blit(more_surf, more_rect)
     
     def _draw_robot_buffer(self, wafer_info: Dict[str, List[Dict]]):
         """绘制双机械手缓冲区（TM2 和 TM3）
@@ -1713,50 +2065,50 @@ class PetriVisualizer:
     
     def _draw_single_robot(self, cx: int, cy: int, name: str, 
                            is_busy: bool, is_active: bool, wafers: List[Dict]):
-        """绘制单个机械手"""
+        """绘制单个机械手 (1.3x 放大版本)"""
         size = self.CENTER_ROBOT_SIZE
         
         # 背景
         rect = pygame.Rect(cx - size // 2, cy - size // 2, size, size)
         bg_color = self.theme.bg_deep if is_active else self.theme.bg_surface
-        pygame.draw.rect(self.screen, bg_color, rect, border_radius=10)
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=13)
         
         # 边框
         if is_active:
             border_color = self.theme.accent if is_busy else self.theme.border
         else:
             border_color = self.theme.border_muted
-        pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=10)
+        pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=13)
         
         # 网格
         grid_color = self.theme.border_muted if is_active else self.theme.dim_color(self.theme.border_muted, 0.5)
-        grid_spacing = 16
+        grid_spacing = 21
         for gx in range(cx - size // 2 + grid_spacing, cx + size // 2, grid_spacing):
             pygame.draw.line(self.screen, grid_color, 
-                           (gx, cy - size // 2 + 8), (gx, cy + size // 2 - 8), 1)
+                           (gx, cy - size // 2 + 10), (gx, cy + size // 2 - 10), 1)
         for gy in range(cy - size // 2 + grid_spacing, cy + size // 2, grid_spacing):
             pygame.draw.line(self.screen, grid_color, 
-                           (cx - size // 2 + 8, gy), (cx + size // 2 - 8, gy), 1)
+                           (cx - size // 2 + 10, gy), (cx + size // 2 - 10, gy), 1)
         
         # 标题
         title_color = self.theme.accent if is_active else self.theme.text_muted
         title_surf = self.font_large.render(name, True, title_color)
-        title_rect = title_surf.get_rect(centerx=cx, top=cy - size // 2 + 5)
+        title_rect = title_surf.get_rect(centerx=cx, top=cy - size // 2 + 7)
         self.screen.blit(title_surf, title_rect)
         
         # 状态指示灯
-        led_radius = 6
-        led_x = cx + size // 2 - 15
-        led_y = cy - size // 2 + 15
+        led_radius = 8
+        led_x = cx + size // 2 - 20
+        led_y = cy - size // 2 + 20
         
         if is_active and is_busy:
             led_color = self.theme.success
             pulse = self.anim.pulse(2.0, 0.6, 1.0)
-            glow_radius = int(led_radius + 3 * pulse)
-            glow_surface = pygame.Surface((glow_radius * 2 + 10, glow_radius * 2 + 10), pygame.SRCALPHA)
+            glow_radius = int(led_radius + 4 * pulse)
+            glow_surface = pygame.Surface((glow_radius * 2 + 13, glow_radius * 2 + 13), pygame.SRCALPHA)
             glow_color = (*led_color, int(80 * pulse))
-            pygame.draw.circle(glow_surface, glow_color, (glow_radius + 5, glow_radius + 5), glow_radius)
-            self.screen.blit(glow_surface, (led_x - glow_radius - 5, led_y - glow_radius - 5))
+            pygame.draw.circle(glow_surface, glow_color, (glow_radius + 6, glow_radius + 6), glow_radius)
+            self.screen.blit(glow_surface, (led_x - glow_radius - 6, led_y - glow_radius - 6))
         else:
             led_color = self.theme.text_muted
         
@@ -1771,14 +2123,14 @@ class PetriVisualizer:
             status_text = "IDLE"
             status_color = self.theme.text_muted
         status_surf = self.font_small.render(status_text, True, status_color)
-        status_rect = status_surf.get_rect(centerx=cx, centery=cy - 8)
+        status_rect = status_surf.get_rect(centerx=cx, centery=cy - 10)
         self.screen.blit(status_surf, status_rect)
         
         # 绘制晶圆
         if wafers and is_active:
-            wafer_y = cy + 15
-            wafer_spacing = self.WAFER_RADIUS * 2 + 4
-            total_width = len(wafers[:2]) * wafer_spacing - 4
+            wafer_y = cy + 20
+            wafer_spacing = self.WAFER_RADIUS * 2 + 5
+            total_width = len(wafers[:2]) * wafer_spacing - 5
             start_x = cx - total_width // 2 + self.WAFER_RADIUS
             
             for i, wafer in enumerate(wafers[:2]):
@@ -1786,7 +2138,7 @@ class PetriVisualizer:
                 self.wafer_renderer.draw(
                     self.screen, wafer_x, wafer_y,
                     wafer["stay_time"], 0, 2,
-                    wafer["token_id"], None, self.font_tiny
+                    wafer["token_id"], wafer.get("color", 0), None, self.font_tiny
                 )
     
     def _draw_robot_connections(self, target_chambers: set = None):
@@ -1945,43 +2297,43 @@ class PetriVisualizer:
             pos += total
     
     def _draw_idle_chamber(self, name: str, x: int, y: int):
-        """绘制闲置腔室"""
+        """绘制闲置腔室 (1.3x 放大版本)"""
         size = self.CHAMBER_SIZE
         
         # 阴影
-        shadow_offset = 3
+        shadow_offset = 4
         shadow_rect = pygame.Rect(x + shadow_offset, y + shadow_offset, size, size)
         shadow_surface = pygame.Surface((size, size), pygame.SRCALPHA)
-        pygame.draw.rect(shadow_surface, (0, 0, 0, 40), (0, 0, size, size), border_radius=8)
+        pygame.draw.rect(shadow_surface, (0, 0, 0, 40), (0, 0, size, size), border_radius=10)
         self.screen.blit(shadow_surface, (x + shadow_offset, y + shadow_offset))
         
         # 背景（更暗）
         rect = pygame.Rect(x, y, size, size)
-        pygame.draw.rect(self.screen, self.theme.bg_surface, rect, border_radius=8)
+        pygame.draw.rect(self.screen, self.theme.bg_surface, rect, border_radius=10)
         
         # 网格（更淡）
         grid_color = self.theme.dim_color(self.theme.border_muted, 0.5)
-        for gx in range(x + 15, x + size, 15):
-            pygame.draw.line(self.screen, grid_color, (gx, y + 10), (gx, y + size - 10), 1)
-        for gy in range(y + 15, y + size, 15):
-            pygame.draw.line(self.screen, grid_color, (x + 10, gy), (x + size - 10, gy), 1)
+        for gx in range(x + 20, x + size, 20):
+            pygame.draw.line(self.screen, grid_color, (gx, y + 13), (gx, y + size - 13), 1)
+        for gy in range(y + 20, y + size, 20):
+            pygame.draw.line(self.screen, grid_color, (x + 13, gy), (x + size - 13, gy), 1)
         
         # 边框
-        pygame.draw.rect(self.screen, self.theme.border_muted, rect, 1, border_radius=8)
+        pygame.draw.rect(self.screen, self.theme.border_muted, rect, 1, border_radius=10)
         
         # 名称
         name_surf = self.font_medium.render(name, True, self.theme.text_muted)
-        name_rect = name_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 - 10)
+        name_rect = name_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 - 13)
         self.screen.blit(name_surf, name_rect)
         
         # IDLE 标签
         idle_surf = self.font_tiny.render("IDLE", True, self.theme.text_muted)
-        idle_rect = idle_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 + 15)
+        idle_rect = idle_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 + 20)
         self.screen.blit(idle_surf, idle_rect)
     
     def _draw_active_chamber(self, name: str, x: int, y: int, proc_time: int, 
                              wafers: List[Dict], place_type: int):
-        """绘制活跃腔室"""
+        """绘制活跃腔室 (1.3x 放大版本)"""
         size = self.CHAMBER_SIZE
         
         # 获取状态
@@ -2000,67 +2352,67 @@ class PetriVisualizer:
             led_color = self.theme.text_muted
         
         # 阴影
-        shadow_offset = 4
+        shadow_offset = 5
         shadow_rect = pygame.Rect(x + shadow_offset, y + shadow_offset, size, size)
         shadow_surface = pygame.Surface((size, size), pygame.SRCALPHA)
-        pygame.draw.rect(shadow_surface, (0, 0, 0, 80), (0, 0, size, size), border_radius=8)
+        pygame.draw.rect(shadow_surface, (0, 0, 0, 80), (0, 0, size, size), border_radius=10)
         self.screen.blit(shadow_surface, (x + shadow_offset, y + shadow_offset))
         
         # 背景
         rect = pygame.Rect(x, y, size, size)
-        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=8)
+        pygame.draw.rect(self.screen, self.theme.bg_deep, rect, border_radius=10)
         
         # 网格
         grid_color = self.theme.border_muted
-        for gx in range(x + 15, x + size, 15):
-            pygame.draw.line(self.screen, grid_color, (gx, y + 18), (gx, y + size - 10), 1)
-        for gy in range(y + 18, y + size, 15):
-            pygame.draw.line(self.screen, grid_color, (x + 10, gy), (x + size - 10, gy), 1)
+        for gx in range(x + 20, x + size, 20):
+            pygame.draw.line(self.screen, grid_color, (gx, y + 24), (gx, y + size - 13), 1)
+        for gy in range(y + 24, y + size, 20):
+            pygame.draw.line(self.screen, grid_color, (x + 13, gy), (x + size - 13, gy), 1)
         
         # 边框
         border_color = self.theme.border if status == "idle" else led_color
-        pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=8)
+        pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=10)
         
         # 顶部 LED 条
-        led_height = 5
-        led_rect = pygame.Rect(x + 8, y + 5, size - 16, led_height)
-        pygame.draw.rect(self.screen, self.theme.bg_elevated, led_rect, border_radius=2)
+        led_height = 7
+        led_rect = pygame.Rect(x + 10, y + 7, size - 20, led_height)
+        pygame.draw.rect(self.screen, self.theme.bg_elevated, led_rect, border_radius=3)
         
         # LED 活跃段
         led_segments = 4
-        seg_width = (size - 20) // led_segments
+        seg_width = (size - 26) // led_segments
         active_segs = led_segments if status in ["active", "danger"] else (2 if status == "warning" else 1)
         for i in range(active_segs):
-            seg_x = x + 10 + i * (seg_width + 1)
-            seg_rect = pygame.Rect(seg_x, y + 6, seg_width - 2, led_height - 2)
-            pygame.draw.rect(self.screen, led_color, seg_rect, border_radius=1)
+            seg_x = x + 13 + i * (seg_width + 1)
+            seg_rect = pygame.Rect(seg_x, y + 8, seg_width - 2, led_height - 2)
+            pygame.draw.rect(self.screen, led_color, seg_rect, border_radius=2)
         
         # 名称（上方外部）
         name_surf = self.font_medium.render(name, True, self.theme.text_primary)
-        name_rect = name_surf.get_rect(centerx=x + size // 2, bottom=y - 5)
+        name_rect = name_surf.get_rect(centerx=x + size // 2, bottom=y - 7)
         self.screen.blit(name_surf, name_rect)
         
         # 绘制晶圆
         if wafers:
             wafer = wafers[0]  # 只显示第一个
             wafer_x = x + size // 2
-            wafer_y = y + size // 2 + 10
+            wafer_y = y + size // 2 + 13
             
             self.wafer_renderer.draw(
                 self.screen, wafer_x, wafer_y,
                 wafer["stay_time"], wafer["proc_time"], place_type,
-                wafer["token_id"], None, self.font_tiny
+                wafer["token_id"], wafer.get("color", 0), None, self.font_tiny
             )
         
         # 显示晶圆数量（如果超过1个）
         if len(wafers) > 1:
             count_text = f"+{len(wafers) - 1}"
             count_surf = self.font_tiny.render(count_text, True, self.theme.warning)
-            count_rect = count_surf.get_rect(right=x + size - 5, bottom=y + size - 5)
+            count_rect = count_surf.get_rect(right=x + size - 7, bottom=y + size - 7)
             self.screen.blit(count_surf, count_rect)
     
     def draw(self):
-        """绘制整个界面 - 正方形布局版本"""
+        """绘制整个界面 - 正方形布局版本 (1.3x 放大版本)"""
         # 深色背景
         self.screen.fill(self.theme.bg_deepest)
         
@@ -2076,20 +2428,14 @@ class PetriVisualizer:
         # 主标题
         title_text = "WAFER PROCESSING CONSOLE"
         title_surf = self.font_large.render(title_text, True, self.theme.text_primary)
-        title_rect = title_surf.get_rect(centerx=center_x, top=15)
+        title_rect = title_surf.get_rect(centerx=center_x, top=20)
         self.screen.blit(title_surf, title_rect)
         
-        # 副标题 - 状态指示
-        status_text = f"Time: {self.net.time}s  |  Step: {self.step_count}"
-        if self.done:
-            status_text += "  |  ENDED"
-        status_color = self.theme.accent if not self.done else self.theme.warning
-        status_surf = self.font_medium.render(status_text, True, status_color)
-        status_rect = status_surf.get_rect(centerx=center_x, top=42)
-        self.screen.blit(status_surf, status_rect)
-        
-        # 收集晶圆信息
+        # 收集晶圆信息（提前收集用于状态摘要）
         wafer_info = self._collect_wafer_info()
+        
+        # 状态摘要条
+        self._draw_status_summary_bar(center_x, 50, wafer_info)
         
         # ========== 绘制中心机械手缓冲区 ==========
         self._draw_robot_buffer(wafer_info)
@@ -2178,8 +2524,21 @@ class PetriVisualizer:
                     for btn in self.buttons:
                         if btn.check_click(mouse_pos):
                             return btn.action_id
+                    
+                    # 检查折叠区域点击
+                    self._handle_collapse_click(mouse_pos)
         
         return None
+    
+    def _handle_collapse_click(self, pos: Tuple[int, int]):
+        """处理折叠区域的点击"""
+        if not hasattr(self, '_click_regions'):
+            return
+        
+        for key, rect in self._click_regions.items():
+            if rect.collidepoint(pos):
+                self.collapsed_sections[key] = not self.collapsed_sections.get(key, False)
+                break
     
     def step_action(self, action: int) -> Tuple[Dict, bool, bool, bool]:
         """执行动作并返回结果"""
@@ -2287,7 +2646,7 @@ class PetriVisualizer:
             'total': reward,
             'details': reward_dict
         })
-        
+
         action_mask_indices = self.net.get_enable_t()
         mask = np.zeros(self.env.n_actions, dtype=bool)
         mask[action_mask_indices] = True

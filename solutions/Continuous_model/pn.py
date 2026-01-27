@@ -788,7 +788,7 @@ class Petri:
         chamber_display = {
             "s1": "PM7/8",
             "s2": "LLC",
-            "s3": "PM1/2",
+            "s3": "PM1/2/3/4",
             "s4": "LLD",
             "s5": "PM9/10",
         }
