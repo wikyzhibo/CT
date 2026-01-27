@@ -2409,7 +2409,10 @@ def main():
                 print("Warning: Default model not found, Model button will be disabled")
     
     print()
-    env = Env_PN()
+    # 为可视化禁用极速模式（需要详细奖励信息和完整统计追踪）
+    env = Env_PN(enable_turbo=False)
+    print("Note: Turbo mode disabled for visualization (enables detailed reward tracking)")
+    print()
     visualizer = PetriVisualizer(env, model_path=model_path)
     visualizer.run()
 
