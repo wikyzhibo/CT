@@ -34,8 +34,6 @@ class TestFunctionality:
             n_wafer=4,
             training_phase=2,
             turbo_mode=True,
-            optimize_reward_calc=True,
-            optimize_enable_check=True,
             optimize_state_update=True,
             cache_indices=True
         )
@@ -107,8 +105,6 @@ class TestFunctionality:
             n_wafer=4,
             training_phase=2,
             turbo_mode=False,  # turbo_mode 使用简化奖励，不参与一致性测试
-            optimize_reward_calc=True,
-            optimize_enable_check=True,
             optimize_state_update=True
         )
         env_new = Petri(config=config_new)

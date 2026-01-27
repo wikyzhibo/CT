@@ -112,8 +112,6 @@ def run_turbo_mode_test():
         n_wafer=4,
         training_phase=2,
         turbo_mode=True,
-        optimize_reward_calc=True,
-        optimize_enable_check=True,
         optimize_state_update=True,
         cache_indices=True
     )
