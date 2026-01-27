@@ -1,0 +1,61 @@
+Detailed cProfile Report (Turbo ON)
+================================================================================
+
+         14078576 function calls (13692668 primitive calls) in 9.900 seconds
+
+   Ordered by: cumulative time
+   List reduced from 904 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+     1005    0.016    0.000    7.555    0.008 D:\anaconda\Lib\site-packages\torch\utils\_contextlib.py:117(decorate_context)
+        6    0.000    0.000    7.543    1.257 D:\anaconda\Lib\site-packages\torchrl\collectors\collectors.py:341(__iter__)
+        6    0.000    0.000    7.543    1.257 D:\anaconda\Lib\site-packages\torchrl\collectors\collectors.py:1216(iterator)
+        6    0.000    0.000    7.539    1.256 D:\anaconda\Lib\site-packages\torchrl\_utils.py:399(unpack_rref_and_invoke_function)
+        5    0.027    0.005    7.525    1.505 D:\anaconda\Lib\site-packages\torchrl\collectors\collectors.py:1445(rollout)
+     3200    0.018    0.000    5.155    0.002 D:\anaconda\Lib\site-packages\torchrl\envs\common.py:3626(step_and_maybe_reset)
+18010/6905    0.067    0.000    3.252    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\common.py:265(wrapper)
+37350/3705    0.049    0.000    3.041    0.001 D:\anaconda\Lib\site-packages\torch\nn\modules\module.py:1769(_wrapped_call_impl)
+37350/3705    0.079    0.000    3.035    0.001 D:\anaconda\Lib\site-packages\torch\nn\modules\module.py:1777(_call_impl)
+     3200    0.016    0.000    2.689    0.001 D:\anaconda\Lib\site-packages\torchrl\envs\common.py:2056(step)
+30144/13280    0.034    0.000    2.260    0.000 D:\anaconda\Lib\site-packages\torchrl\envs\common.py:92(wrapper)
+     3200    0.026    0.000    1.940    0.001 D:\anaconda\Lib\site-packages\torchrl\envs\transforms\transforms.py:1194(_step)
+14305/4205    0.050    0.000    1.898    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\utils.py:353(wrapper)
+     3200    0.006    0.000    1.811    0.001 D:\anaconda\Lib\site-packages\torchrl\envs\common.py:3495(_step_mdp)
+     3200    0.066    0.000    1.804    0.001 D:\anaconda\Lib\site-packages\torchrl\envs\utils.py:87(__init__)
+     3200    0.014    0.000    1.665    0.001 D:\anaconda\Lib\site-packages\tensordict\nn\probabilistic.py:1332(forward)
+      500    0.003    0.000    1.219    0.002 D:\anaconda\Lib\site-packages\torch\nn\modules\module.py:1789(inner)
+      500    0.003    0.000    1.214    0.002 D:\anaconda\Lib\site-packages\torchrl\objectives\common.py:47(new_forward)
+      500    0.043    0.000    1.192    0.002 D:\anaconda\Lib\site-packages\torchrl\objectives\ppo.py:1220(forward)
+     9600    0.051    0.000    1.069    0.000 D:\anaconda\Lib\site-packages\torchrl\envs\utils.py:198(_repr_key_list_as_tree)
+   108310    0.074    0.000    1.024    0.000 D:\anaconda\Lib\site-packages\tensordict\base.py:6571(set)
+     3200    0.031    0.000    0.907    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\probabilistic.py:601(forward)
+     3200    0.121    0.000    0.857    0.000 C:\Users\khand\OneDrive\code\dqn\CT\solutions\PPO\enviroment.py:292(_step)
+112389/112283    0.074    0.000    0.818    0.000 D:\anaconda\Lib\site-packages\tensordict\_td.py:2483(_set_tuple)
+196585/167784    0.127    0.000    0.755    0.000 D:\anaconda\Lib\site-packages\tensordict\_td.py:2422(_set_str)
+    23264    0.058    0.000    0.751    0.000 {built-in method builtins.sorted}
+     3700    0.016    0.000    0.710    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\probabilistic.py:1081(get_dist_params)
+   213632    0.203    0.000    0.693    0.000 D:\anaconda\Lib\site-packages\torchrl\data\tensor_specs.py:6942(__iter__)
+     3700    0.012    0.000    0.585    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\sequence.py:608(forward)
+    13401    0.094    0.000    0.574    0.000 D:\anaconda\Lib\site-packages\tensordict\_td.py:255(__init__)
+     4205    0.029    0.000    0.542    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\common.py:1138(forward)
+     3700    0.003    0.000    0.538    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\sequence.py:570(_run_module)
+     3296    0.080    0.000    0.450    0.000 D:\anaconda\Lib\site-packages\torchrl\envs\common.py:2139(_complete_done)
+      500    0.007    0.000    0.423    0.001 D:\anaconda\Lib\site-packages\torchrl\objectives\ppo.py:723(_log_weight)
+    16861    0.031    0.000    0.423    0.000 D:\anaconda\Lib\site-packages\tensordict\base.py:12082(_validate_value_batchfree)
+     9600    0.018    0.000    0.421    0.000 D:\anaconda\Lib\site-packages\torch\utils\_pytree.py:1339(tree_map)
+     6903    0.045    0.000    0.415    0.000 D:\anaconda\Lib\site-packages\tensordict\base.py:14272(to)
+   107776    0.044    0.000    0.409    0.000 D:\anaconda\Lib\site-packages\torchrl\data\tensor_specs.py:7033(__iter__)
+      500    0.006    0.000    0.405    0.001 D:\anaconda\Lib\site-packages\torchrl\objectives\ppo.py:678(_get_cur_log_prob)
+1057626/1034430    0.225    0.000    0.404    0.000 {built-in method builtins.isinstance}
+  1002209    0.304    0.000    0.382    0.000 D:\anaconda\Lib\site-packages\torch\compiler\__init__.py:425(is_compiling)
+485522/461728    0.071    0.000    0.378    0.000 {built-in method builtins.len}
+   107776    0.037    0.000    0.365    0.000 D:\anaconda\Lib\site-packages\torchrl\data\tensor_specs.py:7034(<genexpr>)
+     4205    0.008    0.000    0.355    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\common.py:1128(_call_module)
+   308224    0.122    0.000    0.354    0.000 D:\anaconda\Lib\site-packages\torchrl\data\tensor_specs.py:6954(_iter_from_item)
+     3700    0.026    0.000    0.347    0.000 D:\anaconda\Lib\site-packages\tensordict\nn\probabilistic.py:509(get_dist)
+      500    0.024    0.000    0.339    0.001 D:\anaconda\Lib\site-packages\torchrl\objectives\ppo.py:769(loss_critic)
+      500    0.007    0.000    0.337    0.001 D:\anaconda\Lib\site-packages\torch\optim\optimizer.py:496(wrapper)
+     3200    0.015    0.000    0.333    0.000 D:\anaconda\Lib\site-packages\torchrl\collectors\collectors.py:1423(_update_traj_ids)
+      500    0.001    0.000    0.309    0.001 D:\anaconda\Lib\site-packages\torch\_tensor.py:592(backward)
+
+

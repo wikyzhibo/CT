@@ -280,8 +280,8 @@ class TestTurboTraining:
         torch.manual_seed(42)
         
         test_config = PPOTrainingConfig(
-            n_hidden=128,
-            n_layer=4,
+            n_hidden=32,
+            n_layer=1,
             device="cpu",
             seed=42,
             training_phase=1
