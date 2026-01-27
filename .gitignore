@@ -2,6 +2,8 @@
 /.cursor/
 /solutions/PPO/saved_models/
 /solutions/PPO/data/
+/specs/
+.gitignore
 
 # Python
 __pycache__/
