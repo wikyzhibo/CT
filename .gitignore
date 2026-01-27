@@ -2,6 +2,7 @@
 /.cursor/
 /solutions/PPO/saved_models/
 /solutions/PPO/data/
+/spec/
 
 # Python
 __pycache__/

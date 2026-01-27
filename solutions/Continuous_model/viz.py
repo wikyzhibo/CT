@@ -2401,7 +2401,7 @@ def main():
             model_path = args.model
         else:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            default_model = os.path.join(current_dir, "..", "PPO", "saved_models", "CT_phase2_best.pt")
+            default_model = os.path.join(current_dir, "..", "PPO", "saved_models","keepmodels", "CT_phase2_best.pt")
             if os.path.exists(default_model):
                 model_path = default_model
                 print(f"Loading model: {model_path}")
