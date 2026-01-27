@@ -168,23 +168,34 @@ class Petri:
         # -----------------------
         # 2) 构建 Petri 网
         # -----------------------
-        # 新路线：LP -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
-        # 双机械手协作：TM2 负责 LP/s1/s2放入/s4取出/s5/LP_done，TM3 负责 s2取出/s3/s4放入
+        # 双路线支持：
+        # 路线1：LP1 -> s1(70) -> s2(0) -> s3(600) -> s4(70) -> s5(200) -> LP_done
+        # 路线2：LP2 -> s1(70) -> s5(200) -> LP_done
+        # 在 s1 处根据晶圆颜色分流：颜色1走 s2，颜色2走 s5
+        # 双机械手协作：TM2 负责 LP1/LP2/s1/s2放入/s4取出/s5/LP_done，TM3 负责 s2取出/s3/s4放入
+        
+        # 晶圆数量分配（可配置）
+        self.n_wafer_route1 = getattr(config, 'n_wafer_route1', self.n_wafer // 2)
+        self.n_wafer_route2 = getattr(config, 'n_wafer_route2', self.n_wafer - self.n_wafer // 2)
+        
         modules = {
-            "LP": ModuleSpec(tokens=self.n_wafer, ptime=0, capacity=self.n_wafer),
+            "LP1": ModuleSpec(tokens=self.n_wafer_route1, ptime=0, capacity=self.n_wafer_route1),  # 路线1晶圆
+            "LP2": ModuleSpec(tokens=self.n_wafer_route2, ptime=0, capacity=self.n_wafer_route2),  # 路线2晶圆
             "LP_done": ModuleSpec(tokens=0, ptime=0, capacity=self.n_wafer),
-            "s1": ModuleSpec(tokens=0, ptime=70, capacity=2),   # PM7/PM8，有驻留约束
-            "s2": ModuleSpec(tokens=0, ptime=0, capacity=1),    # LLC，无驻留约束（缓冲）
-            "s3": ModuleSpec(tokens=0, ptime=300, capacity=2),  # PM1/PM2，有驻留约束
-            "s4": ModuleSpec(tokens=0, ptime=70, capacity=1),   # LLD，有加工时间但无驻留约束
-            "s5": ModuleSpec(tokens=0, ptime=70, capacity=2),   # PM9/PM10，有驻留约束
+            "s1": ModuleSpec(tokens=0, ptime=70, capacity=2),    # PM7/PM8，有驻留约束
+            "s2": ModuleSpec(tokens=0, ptime=0, capacity=1),     # LLC，无驻留约束（缓冲）
+            "s3": ModuleSpec(tokens=0, ptime=600, capacity=4),   # PM1/PM2，有驻留约束，容量增加到4
+            "s4": ModuleSpec(tokens=0, ptime=70, capacity=1),    # LLD，有加工时间但无驻留约束
+            "s5": ModuleSpec(tokens=0, ptime=200, capacity=2),   # PM9/PM10，有驻留约束
         }
         robots = {
-            "TM2": RobotSpec(tokens=1, reach={"LP", "s1", "s2", "s4", "s5", "LP_done"}),
+            "TM2": RobotSpec(tokens=1, reach={"LP1", "LP2", "s1", "s2", "s4", "s5", "LP_done"}),
             "TM3": RobotSpec(tokens=1, reach={"s2", "s3", "s4"}),
         }
+        # 两条路线：在 s1 处分流
         routes = [
-            ["LP", "s1", "s2", "s3", "s4", "s5", "LP_done"],
+            ["LP1", "s1", "s2", "s3", "s4", "s5", "LP_done"],  # 路线1：完整路径
+            ["LP2", "s1", "s5", "LP_done"],                     # 路线2：跳过 s2/s3/s4
         ]
 
         builder = SuperPetriBuilder(d_ptime=5, default_ttime=5)
@@ -405,9 +416,15 @@ class Petri:
         release_chain[place_idx] = (downstream_place_idx, transport_time)
         用于链式更新下游腔室的预估释放时间。
         
-        新路线：LP -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
+        双路线：
+        路线1：LP1 -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
+        路线2：LP2 -> s1 -> s5 -> LP_done
+        
         有驻留约束腔室：s1, s3, s5
         无驻留约束腔室：s2, s4（作为机械手交接点）
+        
+        注意：由于双路线在 s1 分流，release_chain 需要按颜色区分。
+        这里只构建路线1的链路（s1 -> s3 -> s5），路线2的 s1 -> s5 在运行时处理。
         """
         self.release_chain: Dict[int, Tuple[int, int]] = {}
         
@@ -421,7 +438,7 @@ class Petri:
         s3_idx = get_idx("s3")
         s5_idx = get_idx("s5")
         
-        # 配置链路（有驻留约束的腔室之间）
+        # 路线1的链路（有驻留约束的腔室之间）
         # s1 -> s3：经过 s2（交接点），预估运输时间
         if s1_idx >= 0 and s3_idx >= 0:
             # 运输时间 = s1卸载 + d_s2运输 + s2停留 + d_s3运输 + s3装载
@@ -433,6 +450,14 @@ class Petri:
             # 运输时间 = s3卸载 + d_s4运输 + s4加工(70s) + d_s5运输 + s5装载
             transport_s3_to_s5 = self.ttime * 4 + 70  # 约 90s
             self.release_chain[s3_idx] = (s5_idx, transport_s3_to_s5)
+        
+        # 路线2的链路：s1 -> s5（直接）
+        # 存储为单独的映射，在运行时根据颜色选择
+        self.release_chain_route2: Dict[int, Tuple[int, int]] = {}
+        if s1_idx >= 0 and s5_idx >= 0:
+            # 运输时间 = s1卸载 + d_s5运输 + s5装载
+            transport_s1_to_s5 = self.ttime * 2  # 约 10s
+            self.release_chain_route2[s1_idx] = (s5_idx, transport_s1_to_s5)
 
     def _check_release_violation(self, place_idx: int, expected_enter_time: int) -> float:
         """
@@ -462,7 +487,7 @@ class Petri:
         return self.c_release_violation * violation_gap
 
     def _record_initial_release(self, token_id: int, enter_d_time: int, 
-                                 target_place_idx: int) -> float:
+                                 target_place_idx: int, wafer_color: int = 0) -> float:
         """
         晶圆进入运输位时，记录初步预估的释放时间，并链式传播到下游腔室。
         
@@ -470,6 +495,7 @@ class Petri:
             token_id: 晶圆编号
             enter_d_time: 进入运输位的时间
             target_place_idx: 目标腔室索引
+            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
             
         Returns:
             违规惩罚值
@@ -490,13 +516,13 @@ class Petri:
         # 记录释放时间
         target_place.add_release(token_id, release_time)
         
-        # 链式传播到下游腔室
-        penalty += self._chain_record_release(token_id, target_place_idx, release_time)
+        # 链式传播到下游腔室（根据颜色选择链路）
+        penalty += self._chain_record_release(token_id, target_place_idx, release_time, wafer_color)
         
         return penalty
 
     def _chain_record_release(self, token_id: int, start_place_idx: int, 
-                               start_release_time: int) -> float:
+                               start_release_time: int, wafer_color: int = 0) -> float:
         """
         链式记录/更新下游腔室的预估释放时间。
         
@@ -504,6 +530,7 @@ class Petri:
             token_id: 晶圆编号
             start_place_idx: 起始腔室索引
             start_release_time: 起始腔室的释放时间
+            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
             
         Returns:
             下游违规惩罚值
@@ -512,8 +539,16 @@ class Petri:
         current_idx = start_place_idx
         current_release = start_release_time
         
-        while current_idx in self.release_chain:
-            downstream_idx, transport_time = self.release_chain[current_idx]
+        # 根据颜色选择释放链路
+        # 路线1（color=1）：使用 release_chain（s1 -> s3 -> s5）
+        # 路线2（color=2）：使用 release_chain_route2（s1 -> s5）
+        if wafer_color == 2 and hasattr(self, 'release_chain_route2'):
+            chain = self.release_chain_route2
+        else:
+            chain = self.release_chain
+        
+        while current_idx in chain:
+            downstream_idx, transport_time = chain[current_idx]
             downstream_place = self.marks[downstream_idx]
             
             # 下游预估进入时间 = 当前释放时间 + 运输时间
@@ -535,7 +570,7 @@ class Petri:
         return penalty
 
     def _update_release(self, token_id: int, actual_enter_time: int, 
-                        place_idx: int) -> None:
+                        place_idx: int, wafer_color: int = 0) -> None:
         """
         晶圆实际进入腔室时，更新精确的释放时间，并链式更新下游。
         
@@ -545,6 +580,7 @@ class Petri:
             token_id: 晶圆编号
             actual_enter_time: 实际进入时间
             place_idx: 腔室索引
+            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
         """
         place = self.marks[place_idx]
         
@@ -555,10 +591,10 @@ class Petri:
         place.update_release(token_id, new_release_time)
         
         # 链式更新下游（不检查违规）
-        self._chain_update_release(token_id, place_idx, new_release_time)
+        self._chain_update_release(token_id, place_idx, new_release_time, wafer_color)
 
     def _chain_update_release(self, token_id: int, start_place_idx: int, 
-                               start_release_time: int) -> None:
+                               start_release_time: int, wafer_color: int = 0) -> None:
         """
         链式更新下游腔室中指定晶圆的预估释放时间。
         
@@ -568,12 +604,19 @@ class Petri:
             token_id: 晶圆编号
             start_place_idx: 起始腔室索引
             start_release_time: 起始腔室的新释放时间
+            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
         """
         current_idx = start_place_idx
         current_release = start_release_time
         
-        while current_idx in self.release_chain:
-            downstream_idx, transport_time = self.release_chain[current_idx]
+        # 根据颜色选择释放链路
+        if wafer_color == 2 and hasattr(self, 'release_chain_route2'):
+            chain = self.release_chain_route2
+        else:
+            chain = self.release_chain
+        
+        while current_idx in chain:
+            downstream_idx, transport_time = chain[current_idx]
             downstream_place = self.marks[downstream_idx]
             
             # 下游预估进入时间 = 当前释放时间 + 运输时间
@@ -604,7 +647,9 @@ class Petri:
         """
         追踪晶圆在各腔室和运输位的滞留时间。
         
-        路线：LP -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
+        双路线：
+        路线1：LP1 -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
+        路线2：LP2 -> s1(PM7/PM8) -> s5(PM9/PM10) -> LP_done
         运输位：d_s1, d_s2, d_s3, d_s4, d_s5, d_LP_done
         
         Args:
@@ -628,8 +673,9 @@ class Petri:
         stats = self.wafer_stats[wafer_id]
         
         # ========== 系统进入/退出追踪 ==========
-        if t_name == "u_LP_s1":
-            # 晶圆离开 LP，进入系统（进入 d_s1 运输位）
+        # 双路线：u_LP1_s1 和 u_LP2_s1 都进入系统
+        if t_name in ("u_LP1_s1", "u_LP2_s1"):
+            # 晶圆离开 LP1/LP2，进入系统（进入 d_s1 运输位）
             stats["enter_system"] = start_time
             stats["transports"]["d_s1"] = {"enter": enter_new, "exit": None}
         
@@ -647,12 +693,18 @@ class Petri:
                 stats["transports"]["d_s1"]["exit"] = start_time
         
         elif t_name == "u_s1_s2":
-            # 晶圆离开 s1 腔室，进入 d_s2 运输位
+            # 路线1：晶圆离开 s1 腔室，进入 d_s2 运输位
             if "s1" in stats["chambers"]:
                 stats["chambers"]["s1"]["exit"] = start_time
             stats["transports"]["d_s2"] = {"enter": enter_new, "exit": None}
         
-        # s2 (LLC) - 缓冲区，无驻留约束
+        elif t_name == "u_s1_s5":
+            # 路线2：晶圆离开 s1 腔室，直接进入 d_s5 运输位
+            if "s1" in stats["chambers"]:
+                stats["chambers"]["s1"]["exit"] = start_time
+            stats["transports"]["d_s5"] = {"enter": enter_new, "exit": None}
+        
+        # s2 (LLC) - 缓冲区，无驻留约束（仅路线1）
         elif t_name == "t_s2":
             # 晶圆进入 s2 缓冲区
             stats["chambers"]["s2"] = {"enter": enter_new, "exit": None}
@@ -665,7 +717,7 @@ class Petri:
                 stats["chambers"]["s2"]["exit"] = start_time
             stats["transports"]["d_s3"] = {"enter": enter_new, "exit": None}
         
-        # s3 (PM1/PM2)
+        # s3 (PM1/PM2)（仅路线1）
         elif t_name == "t_s3":
             # 晶圆进入 s3 腔室
             stats["chambers"]["s3"] = {"enter": enter_new, "exit": None}
@@ -678,7 +730,7 @@ class Petri:
                 stats["chambers"]["s3"]["exit"] = start_time
             stats["transports"]["d_s4"] = {"enter": enter_new, "exit": None}
         
-        # s4 (LLD) - 有加工时间但无驻留约束
+        # s4 (LLD) - 有加工时间但无驻留约束（仅路线1）
         elif t_name == "t_s4":
             # 晶圆进入 s4 腔室
             stats["chambers"]["s4"] = {"enter": enter_new, "exit": None}
@@ -686,12 +738,12 @@ class Petri:
                 stats["transports"]["d_s4"]["exit"] = start_time
         
         elif t_name == "u_s4_s5":
-            # 晶圆离开 s4，进入 d_s5 运输位
+            # 路线1：晶圆离开 s4，进入 d_s5 运输位
             if "s4" in stats["chambers"]:
                 stats["chambers"]["s4"]["exit"] = start_time
             stats["transports"]["d_s5"] = {"enter": enter_new, "exit": None}
         
-        # s5 (PM9/PM10)
+        # s5 (PM9/PM10)（两条路线都经过）
         elif t_name == "t_s5":
             # 晶圆进入 s5 腔室
             stats["chambers"]["s5"] = {"enter": enter_new, "exit": None}
@@ -1371,9 +1423,11 @@ class Petri:
         return earliest
 
     def _resource_enable(self):
-        # 新路线变迁: ['u_LP_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3', 
-        #              'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 库所: ['LP', 'LP_done', 's1', 's2', 's3', 's4', 's5', 
+        # 双路线变迁:
+        # 路线1: ['u_LP1_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3', 
+        #         'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
+        # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
+        # 库所: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5', 
         #        'r_TM2', 'r_TM3', 'd_s1', 'd_s2', 'd_s3', 'd_s4', 'd_s5', 'd_LP_done']
         
         if self.turbo_mode:
@@ -1385,15 +1439,43 @@ class Petri:
         mask = cond_pre & cond_cap
         
         # 双机械手容量约束：防止向已满的加工腔室发送晶圆
-        # s1 容量=2：当 s1 已满时，禁用 u_LP_s1
-        # s3 容量=2：当 s3 已满时，禁用 u_s2_s3
-        # s5 容量=2：当 s5 已满时，禁用 u_s4_s5
-        for place_name, u_trans_name in [("s1", "u_LP_s1"), ("s3", "u_s2_s3"), ("s5", "u_s4_s5")]:
+        # s1 容量=2：当 s1 已满时，禁用 u_LP1_s1 和 u_LP2_s1
+        # s3 容量=4：当 s3 已满时，禁用 u_s2_s3
+        # s5 容量=2：当 s5 已满时，禁用 u_s4_s5 和 u_s1_s5
+        capacity_constraints = [
+            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),  # 双起点到 s1
+            ("s3", "u_s2_s3"),                        # 路线1: s2 -> s3
+            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),    # 路线1: s4 -> s5, 路线2: s1 -> s5
+        ]
+        for place_name, u_trans_name in capacity_constraints:
             if place_name in self.id2p_name and u_trans_name in self.id2t_name:
                 p_idx = self._get_place_index(place_name)
                 t_idx = self._get_transition_index(u_trans_name)
                 if self.m[p_idx] >= self.marks[p_idx].capacity:
                     mask[t_idx] = False
+        
+        # ========== 颜色感知的分流约束 ==========
+        # 在 s1 处根据晶圆颜色决定走哪条路线
+        # u_s1_s2 只对 color=1 的晶圆使能（路线1）
+        # u_s1_s5 只对 color=2 的晶圆使能（路线2）
+        if "s1" in self.id2p_name:
+            s1_idx = self._get_place_index("s1")
+            s1_place = self.marks[s1_idx]
+            
+            if len(s1_place.tokens) > 0:
+                head_color = s1_place.head().color
+                
+                # u_s1_s2: 只有颜色1的晶圆可以走 s2（路线1）
+                if "u_s1_s2" in self.id2t_name:
+                    t_s1_s2_idx = self._get_transition_index("u_s1_s2")
+                    if head_color != 1:
+                        mask[t_s1_s2_idx] = False
+                
+                # u_s1_s5: 只有颜色2的晶圆可以走 s5（路线2）
+                if "u_s1_s5" in self.id2t_name:
+                    t_s1_s5_idx = self._get_transition_index("u_s1_s5")
+                    if head_color != 2:
+                        mask[t_s1_s5_idx] = False
 
         out_te = np.flatnonzero(mask)
         return out_te
@@ -1417,18 +1499,44 @@ class Petri:
             if m[p_idx] >= cap:
                 mask[t_idx] = False
         
+        # ========== 颜色感知的分流约束（极速版本）==========
+        if self._s1_idx >= 0:
+            s1_place = self.marks[self._s1_idx]
+            if len(s1_place.tokens) > 0:
+                head_color = s1_place.tokens[0].color
+                
+                # u_s1_s2: 只有颜色1的晶圆可以走 s2
+                if self._t_s1_s2_idx >= 0 and head_color != 1:
+                    mask[self._t_s1_s2_idx] = False
+                
+                # u_s1_s5: 只有颜色2的晶圆可以走 s5
+                if self._t_s1_s5_idx >= 0 and head_color != 2:
+                    mask[self._t_s1_s5_idx] = False
+        
         return np.flatnonzero(mask)
     
     def _build_enable_cache(self):
         """构建使能检查的缓存数据"""
         self._enable_cache_built = True
         self._capacity_constraints = []
-        for place_name, u_trans_name in [("s1", "u_LP_s1"), ("s3", "u_s2_s3"), ("s5", "u_s4_s5")]:
+        
+        # 双路线容量约束
+        capacity_constraints = [
+            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),
+            ("s3", "u_s2_s3"),
+            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),
+        ]
+        for place_name, u_trans_name in capacity_constraints:
             if place_name in self.id2p_name and u_trans_name in self.id2t_name:
                 p_idx = self._get_place_index(place_name)
                 t_idx = self._get_transition_index(u_trans_name)
                 cap = self.marks[p_idx].capacity
                 self._capacity_constraints.append((p_idx, t_idx, cap))
+        
+        # 缓存分流相关索引
+        self._s1_idx = self._get_place_index("s1") if "s1" in self.id2p_name else -1
+        self._t_s1_s2_idx = self._get_transition_index("u_s1_s2") if "u_s1_s2" in self.id2t_name else -1
+        self._t_s1_s5_idx = self._get_transition_index("u_s1_s5") if "u_s1_s5" in self.id2t_name else -1
 
     def next_enable_time(self) -> int:
         te = self._resource_enable()
@@ -1450,27 +1558,31 @@ class Petri:
         pre_places = np.flatnonzero(self.pre[:, t] > 0)
         pst_places = np.nonzero(self.pst[:, t] > 0)[0]
 
-        # 1) 消费前置库所 token（队头），保存 token_id
+        # 1) 消费前置库所 token（队头），保存 token_id 和 color
         consumed_token_ids = []
+        consumed_colors = []
         for p in pre_places:
             place = self.marks[p]
-            # 只有非资源库所的 token 才有 wafer id
+            # 只有非资源库所的 token 才有 wafer id 和 color
             if place.type != 4:  # 非资源库所
                 tok = place.head()
                 consumed_token_ids.append(tok.token_id)
+                consumed_colors.append(tok.color)
             place.pop_head()
             self.m[p] -= 1
 
-        # 2) 生成后置库所 token：enter_time = finish time，继承 token_id
+        # 2) 生成后置库所 token：enter_time = finish time，继承 token_id 和 color
         token_id_idx = 0
         for p in pst_places:
             place = self.marks[p]
-            # 只有非资源库所才传递 wafer id
+            # 只有非资源库所才传递 wafer id 和 color
             if place.type != 4 and token_id_idx < len(consumed_token_ids):
                 tid = consumed_token_ids[token_id_idx]
+                tcolor = consumed_colors[token_id_idx]
                 token_id_idx += 1
             else:
                 tid = -1  # 资源库所的 token 无 wafer id
+                tcolor = 0
             
             # 为 type=1 的加工腔室分配机器（轮换策略）
             if place.type == 1:
@@ -1479,7 +1591,7 @@ class Petri:
             else:
                 machine_id = -1
             
-            self.marks[p].append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id))
+            self.marks[p].append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, color=tcolor))
             self.m[p] += 1
 
         # 3) 时间推进到完成之后
@@ -1491,25 +1603,33 @@ class Petri:
             self._last_t_pm1_fire_time = start_time
         
         # ========== 4) 释放时间追踪逻辑 ==========
-        # 获取晶圆 token_id（第一个非资源库所消费的 token）
+        # 获取晶圆 token_id 和 color（第一个非资源库所消费的 token）
         wafer_id = consumed_token_ids[0] if consumed_token_ids else -1
+        wafer_color = consumed_colors[0] if consumed_colors else 0
         
         # 根据变迁类型处理释放时间（只追踪有驻留约束的腔室：s1, s3, s5）
-        if t_name == "u_LP_s1":
+        # 双路线：u_LP1_s1 和 u_LP2_s1 都进入 d_s1
+        if t_name in ("u_LP1_s1", "u_LP2_s1"):
             # 晶圆进入 d_s1：记录初步预估释放时间 + 链式传播
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx)
+                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_color)
                 self._release_violation_penalty += penalty
             
         elif t_name == "t_s1":
             # 晶圆进入 s1：更新精确释放时间 + 链式更新
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                self._update_release(wafer_id, enter_new, s1_idx)
+                self._update_release(wafer_id, enter_new, s1_idx, wafer_color)
             
         elif t_name == "u_s1_s2":
-            # 晶圆离开 s1：从 s1 队列移除
+            # 路线1：晶圆离开 s1 去 s2，从 s1 队列移除
+            if "s1" in self.id2p_name:
+                s1_idx = self._get_place_index("s1")
+                self._pop_release(wafer_id, s1_idx)
+        
+        elif t_name == "u_s1_s5":
+            # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
                 self._pop_release(wafer_id, s1_idx)
@@ -1518,7 +1638,7 @@ class Petri:
             # 晶圆进入 s3：更新精确释放时间 + 链式更新
             if "s3" in self.id2p_name:
                 s3_idx = self._get_place_index("s3")
-                self._update_release(wafer_id, enter_new, s3_idx)
+                self._update_release(wafer_id, enter_new, s3_idx, wafer_color)
             
         elif t_name == "u_s3_s4":
             # 晶圆离开 s3：从 s3 队列移除
@@ -1530,7 +1650,7 @@ class Petri:
             # 晶圆进入 s5：更新精确释放时间
             if "s5" in self.id2p_name:
                 s5_idx = self._get_place_index("s5")
-                self._update_release(wafer_id, enter_new, s5_idx)
+                self._update_release(wafer_id, enter_new, s5_idx, wafer_color)
             
         elif t_name == "u_s5_LP_done":
             # 晶圆离开 s5：从 s5 队列移除
@@ -1570,23 +1690,29 @@ class Petri:
         marks = self.marks
         m = self.m
         
-        # 1) 消费前置库所 token，保存 token_id
+        # 1) 消费前置库所 token，保存 token_id 和 color
         consumed_tid = -1
+        consumed_color = 0
         for p in pre_places:
             place = marks[p]
             if place.type != 4 and consumed_tid == -1:
-                consumed_tid = place.tokens[0].token_id
+                tok = place.tokens[0]
+                consumed_tid = tok.token_id
+                consumed_color = tok.color
             place.tokens.popleft()
             m[p] -= 1
         
-        # 2) 生成后置库所 token
+        # 2) 生成后置库所 token（继承 color）
         for p in pst_places:
             place = marks[p]
             if place.type != 4:
                 tid = consumed_tid
+                tcolor = consumed_color
                 consumed_tid = -1  # 只传递一次
+                consumed_color = 0
             else:
                 tid = -1
+                tcolor = 0
             
             # 简化机器分配
             if place.type == 1:
@@ -1595,7 +1721,7 @@ class Petri:
             else:
                 machine_id = -1
             
-            place.tokens.append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id))
+            place.tokens.append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, color=tcolor))
             m[p] += 1
         
         # 3) 时间推进

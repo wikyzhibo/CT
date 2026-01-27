@@ -14,10 +14,11 @@ class BasedToken:
     stay_time: int = 0
     token_id: int = -1  # wafer 唯一标识，-1 表示未分配
     machine: int = -1   # 分配的机器编号，-1 表示未分配
+    color: int = 0      # 晶圆颜色/路线类型：0=未分配, 1=路线1, 2=路线2
 
     def clone(self):
         return BasedToken(enter_time=self.enter_time, stay_time=self.stay_time, 
-                          token_id=self.token_id, machine=self.machine)
+                          token_id=self.token_id, machine=self.machine, color=self.color)
 
 @dataclass
 class RobotSpec:
@@ -228,13 +229,33 @@ class SuperPetriBuilder:
             if nd["type"] == "p":
                 m0[nd["id"]] = nd["tokens"]
 
-        idle_idx = {'start': self.id2p_name.index('LP'),
-                    'end': self.id2p_name.index('LP_done'), }
-
-        md = m0.copy()
-        n_wafer = m0[self.id2p_name.index("LP")]
-        md[self.id2p_name.index("LP_done")] = n_wafer
-        md[self.id2p_name.index("LP")] = 0
+        # 支持双起点 LP1/LP2 或单起点 LP
+        if 'LP1' in self.id2p_name:
+            # 双起点模式
+            idle_idx = {
+                'start1': self.id2p_name.index('LP1'),
+                'start2': self.id2p_name.index('LP2'),
+                'end': self.id2p_name.index('LP_done'),
+            }
+            n_wafer_route1 = m0[self.id2p_name.index("LP1")]
+            n_wafer_route2 = m0[self.id2p_name.index("LP2")]
+            n_wafer = n_wafer_route1 + n_wafer_route2
+            
+            md = m0.copy()
+            md[self.id2p_name.index("LP_done")] = n_wafer
+            md[self.id2p_name.index("LP1")] = 0
+            md[self.id2p_name.index("LP2")] = 0
+        else:
+            # 单起点模式（向后兼容）
+            idle_idx = {'start': self.id2p_name.index('LP'),
+                        'end': self.id2p_name.index('LP_done'), }
+            n_wafer = m0[self.id2p_name.index("LP")]
+            n_wafer_route1 = n_wafer
+            n_wafer_route2 = 0
+            
+            md = m0.copy()
+            md[self.id2p_name.index("LP_done")] = n_wafer
+            md[self.id2p_name.index("LP")] = 0
 
         # pre/pst
         pre = np.zeros((P, T), dtype=int)
@@ -263,7 +284,10 @@ class SuperPetriBuilder:
         ttime = np.array(self._ttime_by_tid, dtype=int)
 
         marks = []
-        idle_places = [1]
+        # idle_places: 资源库所（如 r_TM2, r_TM3）的 token 不需要 ID
+        # 通过名称判断而非硬编码索引
+        token_id_counter = 0  # 全局 token ID 计数器
+        
         for i in range(P):
             pname = self.id2p_name[i]
             if pname.startswith('LP') and pname in getattr(self, '_modules', {}):
@@ -284,17 +308,27 @@ class SuperPetriBuilder:
 
             cnt = m0[i]
             if cnt > 0:
-                if i in idle_places:
+                # 资源库所（r_ 开头）的 token 不需要 ID
+                if pname.startswith('r_'):
                     for _ in range(cnt):
                         place.append(BasedToken(enter_time=0))
+                # LP1 库所的初始 token 分配唯一 ID 和颜色1（路线1）
+                elif pname == "LP1":
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, color=1))
+                        token_id_counter += 1
+                # LP2 库所的初始 token 分配唯一 ID 和颜色2（路线2）
+                elif pname == "LP2":
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, color=2))
+                        token_id_counter += 1
+                # 单起点 LP 库所（向后兼容）
+                elif pname == "LP":
+                    for tok_id in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=tok_id, color=0))
                 else:
-                    # LP 库所的初始 token 分配唯一 ID
-                    if pname == "LP":
-                        for tok_id in range(cnt):
-                            place.append(BasedToken(enter_time=0, token_id=tok_id))
-                    else:
-                        for _ in range(cnt):
-                            place.append(BasedToken(enter_time=0))
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0))
             marks.append(place)
 
         return {
@@ -310,6 +344,8 @@ class SuperPetriBuilder:
             "idle_idx": idle_idx,
             "module_x": module_x,
             "marks": marks,
-            "n_wafer": n_wafer
+            "n_wafer": n_wafer,
+            "n_wafer_route1": n_wafer_route1,
+            "n_wafer_route2": n_wafer_route2,
         }
 

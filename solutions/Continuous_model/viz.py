@@ -763,23 +763,24 @@ class PetriVisualizer:
         
         # ========== 腔室映射配置 ==========
         # 定义显示名称到实际 Petri 库所的映射
-        # 新路线：LP -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
+        # 双路线：LP1/LP2 -> s1(PM7/PM8) -> s2(LLC) -> s3(PM1/PM2/PM3/PM4) -> s4(LLD) -> s5(PM9/PM10) -> LP_done
+        #         LP2 -> s1(PM7/PM8) -> s5(PM9/PM10) -> LP_done (跳过 s2/s3/s4)
         self.chamber_config = {
-            # TM2 区域（活跃）- LP/s1/s2放入/s4取出/s5/LP_done
-            "LLA": {"source": "LP", "active": True, "proc_time": 0, "robot": "TM2"},
+            # TM2 区域（活跃）- LP1/LP2/s1/s2放入/s4取出/s5/LP_done
+            "LLA": {"source": ["LP1", "LP2"], "active": True, "proc_time": 0, "robot": "TM2"},  # 两个起点
             "LLB": {"source": "LP_done", "active": True, "proc_time": 0, "robot": "TM2"},
             "PM7": {"source": "s1", "machine": 0, "active": True, "proc_time": 70, "robot": "TM2"},
             "PM8": {"source": "s1", "machine": 1, "active": True, "proc_time": 70, "robot": "TM2"},
-            "PM9": {"source": "s5", "machine": 0, "active": True, "proc_time": 70, "robot": "TM2"},
-            "PM10": {"source": "s5", "machine": 1, "active": True, "proc_time": 70, "robot": "TM2"},
-            # TM3 区域（活跃）- s2取出/s3/s4放入
+            "PM9": {"source": "s5", "machine": 0, "active": True, "proc_time": 200, "robot": "TM2"},
+            "PM10": {"source": "s5", "machine": 1, "active": True, "proc_time": 200, "robot": "TM2"},
+            # TM3 区域（活跃）- s2取出/s3/s4放入，PM1/2/3/4 全部活跃
             "LLC": {"source": "s2", "active": True, "proc_time": 0, "robot": "TM3"},
             "LLD": {"source": "s4", "active": True, "proc_time": 70, "robot": "TM3"},
-            "PM1": {"source": "s3", "machine": 0, "active": True, "proc_time": 300, "robot": "TM3"},
-            "PM2": {"source": "s3", "machine": 1, "active": True, "proc_time": 300, "robot": "TM3"},
+            "PM1": {"source": "s3", "machine": 0, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM2": {"source": "s3", "machine": 1, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM3": {"source": "s3", "machine": 2, "active": True, "proc_time": 600, "robot": "TM3"},  # 新增活跃
+            "PM4": {"source": "s3", "machine": 3, "active": True, "proc_time": 600, "robot": "TM3"},  # 新增活跃
             # TM3 区域（闲置）
-            "PM3": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
-            "PM4": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
             "PM5": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
             "PM6": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
         }
@@ -1002,8 +1003,8 @@ class PetriVisualizer:
                 }
                 
                 # 根据实际库所映射到显示名称
-                if p_name == "LP":
-                    # LP 映射到 LLA
+                if p_name in ("LP1", "LP2"):
+                    # LP1 和 LP2 都映射到 LLA
                     wafer_info["LLA"].append(wafer_data)
                 elif p_name == "LP_done":
                     # LP_done 映射到 LLB
@@ -1017,9 +1018,9 @@ class PetriVisualizer:
                     # s2 映射到 LLC
                     wafer_info["LLC"].append(wafer_data)
                 elif p_name == "s3":
-                    # s3 根据 machine 属性分配到 PM1 或 PM2
+                    # s3 根据 machine 属性分配到 PM1/PM2/PM3/PM4
                     machine = getattr(tok, 'machine', 0)
-                    display_name = "PM1" if machine == 0 else "PM2"
+                    display_name = ["PM1", "PM2", "PM3", "PM4"][machine % 4]
                     wafer_info[display_name].append(wafer_data)
                 elif p_name == "s4":
                     # s4 映射到 LLD
@@ -1039,9 +1040,9 @@ class PetriVisualizer:
                         # d_s2 -> s2 -> LLC
                         wafer_data["target_chamber"] = "LLC"
                     elif p_name == "d_s3":
-                        # d_s3 -> s3 -> PM1 (machine=0) 或 PM2 (machine=1)
+                        # d_s3 -> s3 -> PM1/PM2/PM3/PM4 (machine=0/1/2/3)
                         machine = getattr(tok, 'machine', 0)
-                        wafer_data["target_chamber"] = "PM1" if machine == 0 else "PM2"
+                        wafer_data["target_chamber"] = ["PM1", "PM2", "PM3", "PM4"][machine % 4]
                     elif p_name == "d_s4":
                         # d_s4 -> s4 -> LLD
                         wafer_data["target_chamber"] = "LLD"
@@ -1350,7 +1351,7 @@ class PetriVisualizer:
         
         chambers_display = [
             ("PM7/8", self.theme.btn_transition),
-            ("PM1/2", self.theme.btn_model),
+            ("PM1/2/3/4", self.theme.btn_model),  # s3 容量为 4
             ("PM9/10", self.theme.btn_auto),
         ]
         
