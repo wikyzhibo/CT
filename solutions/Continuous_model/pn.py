@@ -1528,6 +1528,7 @@ class Petri:
         elif t_name == "t_LP_done":
             # 晶圆完成加工，给予单片完工奖励
             self._per_wafer_reward += self.R_done
+            self.entered_wafer_count -= 1
         
         # ========== 5) 晶圆滞留时间统计追踪 ==========
         self._track_wafer_statistics(t_name, wafer_id, start_time, enter_new)

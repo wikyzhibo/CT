@@ -167,7 +167,7 @@ def train(
     frame_count = 0
     log = defaultdict(list)
 
-    with set_exploration_type(ExplorationType.MODE):
+    with set_exploration_type(ExplorationType.RANDOM):
         for batch_idx, tensordict_data in enumerate(collector):
 
             frac = min(1.0, batch_idx / config.total_batch)
