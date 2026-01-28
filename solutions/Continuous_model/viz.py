@@ -1583,6 +1583,106 @@ class PetriVisualizer:
             
             y += 26
         
+        # ===== 详细奖励和惩罚 =====
+        if y < max_y - 40:  # 确保有足够空间
+            y += 10
+            self._draw_separator(content_x, y, content_width)
+            y += 10
+            
+            # 显示最近一步的详细奖励
+            if len(self.action_history) > 0:
+                latest_entry = self.action_history[-1]
+                details = latest_entry.get('details', {})
+                step = latest_entry.get('step', 0)
+                action_name = latest_entry.get('action', 'UNKNOWN')
+                
+                if details and isinstance(details, dict):
+                    # 奖励项标签映射（按重要性排序）
+                    reward_labels = {
+                        'proc_reward': '加工奖励',
+                        'safe_reward': '安全裕量',
+                        'wafer_done_bonus': '完工奖励',
+                        'finish_bonus': '完成奖励',
+                        'penalty': '超时惩罚',
+                        'warn_penalty': '预警惩罚',
+                        'transport_penalty': '运输惩罚',
+                        'congestion_penalty': '堵塞惩罚',
+                        'time_cost': '时间成本',
+                        'release_violation_penalty': '释放违规',
+                        'scrap_penalty': '报废惩罚',
+                    }
+                    
+                    # 惩罚项列表（这些项应该显示为负数）
+                    penalty_keys = {
+                        'penalty', 'warn_penalty', 'transport_penalty', 
+                        'congestion_penalty', 'time_cost', 
+                        'release_violation_penalty', 'scrap_penalty'
+                    }
+                    
+                    # 过滤非零项并按重要性排序
+                    non_zero_items = []
+                    for key in reward_labels.keys():
+                        if key in details and details[key] != 0:
+                            value = details[key]
+                            # 如果是惩罚项且值为正，转换为负数
+                            if key in penalty_keys and value > 0:
+                                value = -value
+                            non_zero_items.append((key, value))
+                    
+                    # 添加其他未映射的项
+                    for key, value in details.items():
+                        if key not in reward_labels and key != 'total' and value != 0:
+                            # 如果键名包含 penalty，视为惩罚项
+                            if 'penalty' in key.lower() and value > 0:
+                                value = -value
+                            non_zero_items.append((key, value))
+                    
+                    if non_zero_items:
+                        # 绘制标题
+                        y = self._draw_section_header(content_x, y, content_width, "REWARD DETAILS", self.theme.accent)
+                        
+                        # 显示步数和动作信息
+                        step_action_text = f"Step #{step:02d} - {action_name}"
+                        step_action_surf = self.font_tiny.render(step_action_text, True, self.theme.text_muted)
+                        self.screen.blit(step_action_surf, (content_x + 10, y))
+                        y += 18
+                        
+                        # 绘制每个奖励/惩罚项
+                        for key, value in non_zero_items:
+                            if y >= max_y - 20:
+                                break
+                            
+                            # 标签
+                            label = reward_labels.get(key, key)
+                            label_surf = self.font_tiny.render(label, True, self.theme.text_secondary)
+                            self.screen.blit(label_surf, (content_x + 10, y))
+                            
+                            # 值（根据正负值选择颜色，惩罚确保显示为负数）
+                            if value > 0:
+                                value_color = self.theme.success
+                            elif value < 0:
+                                value_color = self.theme.danger
+                            else:
+                                value_color = self.theme.text_muted
+                            
+                            # 确保惩罚显示为负数格式
+                            value_text = f"{value:+.1f}"
+                            value_surf = self.font_tiny.render(value_text, True, value_color)
+                            value_rect = value_surf.get_rect(right=content_x + content_width, centery=y + 9)
+                            self.screen.blit(value_surf, value_rect)
+                            
+                            y += 20
+                    else:
+                        # 所有项都为零，显示提示（包含步数和动作）
+                        y = self._draw_section_header(content_x, y, content_width, "REWARD DETAILS", self.theme.accent)
+                        step_action_text = f"Step #{step:02d} - {action_name}"
+                        step_action_surf = self.font_tiny.render(step_action_text, True, self.theme.text_muted)
+                        self.screen.blit(step_action_surf, (content_x + 10, y))
+                        y += 18
+                        hint_surf = self.font_tiny.render("无活跃奖励/惩罚", True, self.theme.text_muted)
+                        self.screen.blit(hint_surf, (content_x + 10, y))
+                        y += 20
+        
         # 趋势数据文字显示（替代动态图）
         if y < panel_y + panel_height - 80:
             y += 10
