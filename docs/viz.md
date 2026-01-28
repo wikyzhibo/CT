@@ -343,6 +343,8 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
   - 变迁按钮显示友好格式（如 `LP1→PM7/PM8`, `PM7/PM8`），使用简短格式提高可读性
   - 变迁按钮不再使用键盘快捷键，只能通过鼠标点击
   - 控制按钮（WAIT、Random、Model等）保留键盘快捷键
+  - **Bug 模式按钮**（Reset 下方）: 可切换；开启时，自动模式下若单步奖励 \< 50 则立即停止自动模式
+  - 不同按钮组之间间距加大（如 TRANSITIONS / CONTROL / SPEED / Reset 等）
 - **左侧面板功能按钮**:
   - **绘制甘特图按钮**: 调用Petri的`render_gantt()`方法，生成甘特图并保存到`./result/`目录
   - **保存奖励数据按钮**: 将`action_history`中的详细奖励数据保存为JSON文件到`./result/detail_reward/`目录

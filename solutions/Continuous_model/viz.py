@@ -86,6 +86,7 @@ class ColorTheme:
     btn_reset: Tuple[int, int, int] = (255, 51, 51)         # Red - 重置
     btn_gantt: Tuple[int, int, int] = (59, 130, 246)        # Blue - 甘特图按钮
     btn_save: Tuple[int, int, int] = (0, 255, 65)            # Green - 保存按钮
+    btn_bug: Tuple[int, int, int] = (255, 184, 0)            # Yellow - Bug 模式
     
     # 渐变色（用于进度条等）
     gradient_start: Tuple[int, int, int] = (0, 200, 255)    # Cyan
@@ -660,6 +661,7 @@ class Button:
         "reset": "btn_reset",            # 重置按钮
         "gantt": "btn_gantt",            # 甘特图按钮
         "save_reward": "btn_save",       # 保存奖励数据按钮
+        "bug": "btn_bug",                # Bug 模式按钮
     }
     
     def __init__(self, x: int, y: int, width: int, height: int, 
@@ -856,15 +858,16 @@ class PetriVisualizer:
         
         # 自动模式状态变量
         self.auto_mode = False          # 自动模式开关
-        self.auto_speed = 1.0           # 速度倍率 (1x=1s间隔)
+        self.auto_speed = 0.5           # 速度倍率 (1x=1s间隔)
         self.last_auto_step_time = 0.0  # 上次自动执行时间
+        self.bug_mode = False           # Bug 模式：开启时奖励<50则停止自动模式
         
-        # 折叠状态（用于左侧面板分组）
+        # 折叠状态（用于左侧面板分组）- 始终展开
         self.collapsed_sections = {
             "capacity": False,
             "system_residence": False,
-            "chamber_residence": True,  # 默认折叠
-            "robot_residence": True,    # 默认折叠
+            "chamber_residence": False,  # 始终展开
+            "robot_residence": False,    # 始终展开
         }
         
         # 动作历史记录
@@ -1220,7 +1223,7 @@ class PetriVisualizer:
             self.button_groups["transitions"]["buttons"].append(btn)
             y += button_height + button_gap
         
-        y += 20  # 1.3x 放大
+        y += 28  # 按钮组间距
         
         # 系统控制组
         self.button_groups["control"] = {"start_y": y, "buttons": []}
@@ -1241,7 +1244,7 @@ class PetriVisualizer:
         
         # Model(1步) 按钮 - Green 色
         self.model_button = Button(panel_x, y, button_width, button_height,
-                                   "Model(1步)", -3, "M", self.theme, button_type="model")
+                                   "Model(one step)", -3, "M", self.theme, button_type="model")
         self.buttons.append(self.model_button)
         self.button_groups["control"]["buttons"].append(self.model_button)
         y += button_height + button_gap
@@ -1252,7 +1255,7 @@ class PetriVisualizer:
         self.buttons.append(self.model_auto_button)
         self.button_groups["control"]["buttons"].append(self.model_auto_button)
         
-        y += button_height + 20  # 1.3x 放大
+        y += button_height + 28  # 按钮组间距
         
         # 速度控制组 - Blue 色
         self.button_groups["speed"] = {"start_y": y, "buttons": []}
@@ -1268,12 +1271,18 @@ class PetriVisualizer:
             self.speed_buttons.append(btn)
             self.button_groups["speed"]["buttons"].append(btn)
         
-        y += button_height + 20  # 1.3x 放大
+        y += button_height + 28  # 按钮组间距
         
         # Reset 按钮 - Red 色
         self.reset_button = Button(panel_x, y, button_width, button_height,
                                    "Reset", -2, "Space", self.theme, button_type="reset")
         self.reset_button.enabled = True
+        y += button_height + button_gap
+        
+        # Bug 模式按钮 - Yellow 色（开启时奖励<50则停止自动模式）
+        self.bug_mode_button = Button(panel_x, y, button_width, button_height,
+                                      "Debug Mode", -12, "", self.theme, button_type="bug")
+        self.bug_mode_button.enabled = True
     
     def _update_trend_data(self):
         """更新趋势数据（用于迷你图）"""
@@ -1774,12 +1783,12 @@ class PetriVisualizer:
                             non_zero_items.append((key, value))
                     
                     # 添加其他未映射的项
-                    for key, value in details.items():
-                        if key not in reward_labels and key != 'total' and value != 0:
-                            # 如果键名包含 penalty，视为惩罚项
-                            if 'penalty' in key.lower() and value > 0:
-                                value = -value
-                            non_zero_items.append((key, value))
+                    #for key, value in details.items():
+                    #    if key not in reward_labels and key != 'total' and value != 0:
+                    #        # 如果键名包含 penalty，视为惩罚项
+                    #        if 'penalty' in key.lower() and value > 0:
+                    #            value = -value
+                    #        non_zero_items.append((key, value))
                     
                     if non_zero_items:
                         # 绘制标题
@@ -1802,12 +1811,12 @@ class PetriVisualizer:
                             self.screen.blit(label_surf, (content_x + 10, y))
                             
                             # 值（根据正负值选择颜色，惩罚确保显示为负数）
-                            #if value > 0:
-                            #    value_color = self.theme.success
-                            #elif value < 0:
-                            #    value_color = self.theme.danger
-                            #else:
-                            #    value_color = self.theme.text_muted
+                            if value > 0:
+                                value_color = self.theme.success
+                            elif value < 0:
+                                value_color = self.theme.danger
+                            else:
+                                value_color = self.theme.text_muted
                             value_color = self.theme.success
 
                             # 确保惩罚显示为负数格式
@@ -2164,6 +2173,10 @@ class PetriVisualizer:
         
         # ===== Reset 按钮 =====
         self.reset_button.draw(self.screen, self.font_small, self.font_tiny)
+        
+        # ===== Bug 模式按钮 =====
+        self.bug_mode_button.is_active = self.bug_mode
+        self.bug_mode_button.draw(self.screen, self.font_small, self.font_tiny)
         
         # ===== 快捷键提示区域 =====
         hint_y = panel_y + panel_height - 46
@@ -2746,6 +2759,7 @@ class PetriVisualizer:
             btn.check_hover(mouse_pos)
         
         self.reset_button.check_hover(mouse_pos)
+        self.bug_mode_button.check_hover(mouse_pos)
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -2785,6 +2799,9 @@ class PetriVisualizer:
                 if event.button == 1:
                     if self.reset_button.check_click(mouse_pos):
                         return -2
+                    if self.bug_mode_button.check_click(mouse_pos):
+                        self.bug_mode = not self.bug_mode
+                        return None
                     
                     # 检查左侧面板按钮
                     for btn in self.left_panel_buttons:
@@ -2888,6 +2905,9 @@ class PetriVisualizer:
                     if model_action is not None:
                         self._execute_action(model_action)
                         self.last_auto_step_time = current_time
+                        # Bug 模式：奖励 < 50 则停止自动模式
+                        if self.bug_mode and self.last_reward < -50:
+                            self.auto_mode = False
             
             self.draw()
             self.clock.tick(60)  # 60 FPS for smoother animations
