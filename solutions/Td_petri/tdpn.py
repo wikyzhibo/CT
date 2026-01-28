@@ -169,7 +169,7 @@ class TimedPetri:
 
         modules = {
             "LP1": ModuleSpec(tokens=0, capacity=100),
-            "LP2": ModuleSpec(tokens=25, capacity=100),
+            "LP2": ModuleSpec(tokens=24, capacity=100),
             "AL": ModuleSpec(tokens=0, capacity=1),
             "LLA_S2": ModuleSpec(tokens=0, capacity=1),
             "PM7": ModuleSpec(tokens=0, capacity=1),

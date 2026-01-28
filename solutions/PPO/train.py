@@ -68,7 +68,12 @@ def train(
     saved_configs_dir = os.path.join("data", "ppo_configs", "training_runs")
     os.makedirs(saved_configs_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    config_save_path = os.path.join(saved_configs_dir, f"config_phase{config.training_phase}_{timestamp}.json")
+    # 检查是否有 training_phase 属性
+    if hasattr(config, 'training_phase') and config.training_phase is not None:
+        config_prefix = f"config_phase{config.training_phase}"
+    else:
+        config_prefix = "config_tdpn"
+    config_save_path = os.path.join(saved_configs_dir, f"{config_prefix}_{timestamp}.json")
     config.save(config_save_path)
     
     torch.manual_seed(config.seed)
@@ -83,13 +88,19 @@ def train(
     
     # 初始化最佳奖励追踪
     best_reward = float('-inf')
-    best_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_best.pt")
-    
-    print(f"\n[Training Phase {config.training_phase}]")
-    if config.training_phase == 1:
-        print("  -> 仅考虑报废惩罚（加工腔室超时）")
+    # 检查是否有 training_phase 属性（CT_v2 环境没有此属性）
+    if hasattr(config, 'training_phase') and config.training_phase is not None:
+        model_prefix = f"CT_phase{config.training_phase}"
+        print(f"\n[Training Phase {config.training_phase}]")
+        if config.training_phase == 1:
+            print("  -> 仅考虑报废惩罚（加工腔室超时）")
+        else:
+            print("  -> 完整奖励（加工腔室超时 + 运输位超时）")
     else:
-        print("  -> 完整奖励（加工腔室超时 + 运输位超时）")
+        model_prefix = "CT_tdpn"
+        print(f"\n[Td_petri Training]")
+        print("  -> Chain-based 动作空间")
+    best_model_path = os.path.join(saved_models_dir, f"{model_prefix}_best.pt")
     print(f"  -> Backup folder: {backup_dir}")
 
     # 策略与价值网络
@@ -244,19 +255,19 @@ def train(
                 best_reward = ep_ret
                 torch.save(policy.state_dict(), best_model_path)
                 # 同时备份到时间戳文件夹
-                backup_best_path = os.path.join(backup_dir, f"CT_phase{config.training_phase}_best.pt")
+                backup_best_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
                 torch.save(policy.state_dict(), backup_best_path)
                 print(f"  -> New best model saved! reward={ep_ret:.2f}")
 
     print(f"\nTraining done. Best reward: {best_reward:.2f}")
     
     # 保存最终模型到时间戳备份文件夹
-    final_model_path = os.path.join(backup_dir, f"CT_phase{config.training_phase}_final.pt")
+    final_model_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")
     torch.save(policy.state_dict(), final_model_path)
     print(f"Final model saved to: {final_model_path}")
     
     # 保存 latest 模型（覆盖）
-    latest_model_path = os.path.join(saved_models_dir, f"CT_phase{config.training_phase}_latest.pt")
+    latest_model_path = os.path.join(saved_models_dir, f"{model_prefix}_latest.pt")
     torch.save(policy.state_dict(), latest_model_path)
     print(f"Latest model saved to: {latest_model_path}")
     

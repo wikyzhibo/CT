@@ -10,7 +10,7 @@ import os
 
 #from solutions.v2.net_v2 import PetriNet
 #from solutions.v3.net_v3 import PetriV3
-#from solutions.Td_petri.tdpn import TimedPetri
+from solutions.Td_petri.tdpn import TimedPetri
 from solutions.Continuous_model.pn import Petri
 #from data.config.params_N7 import params_N7
 from data.petri_configs.env_config import PetriEnvConfig
@@ -87,26 +87,19 @@ class CT_v2(EnvBase):
 
         mask_next, new_obs, time, finish, reward1 = self.net.step(action)
 
-        '''
-        r_over = 0
-        if qtime_violation:
-            r_over = -100
-        if over_time:
-            r_over = -5000
-        '''
-
 
         delta_time = time - last_time
         if delta_time > 0:
             r_time = -1 * delta_time
         else:
             r_time = 0
-        reward = reward1 * 100
+        #reward = reward1 * 1000
+        reward = r_time
         #reward = int(-delta_dense*1000)
 
         terminated = finish
 
-
+        assert len(mask_next) == 16, f"mask_next length={len(mask_next)}, expected 16"
         out = TensorDict({
             "observation": torch.as_tensor(new_obs, dtype=torch.int64),
             "action_mask": torch.as_tensor(mask_next, dtype=torch.bool),

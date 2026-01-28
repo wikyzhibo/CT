@@ -9,8 +9,7 @@ Stage = Union[str, List[str]]
 
 INF = 10**9
 
-<<<<<<< Updated upstream:solutions/model/super_net.py
-=======
+
 @dataclass(slots=True)
 class BasedToken:
     enter_time: int
@@ -21,7 +20,7 @@ class BasedToken:
     def clone(self):
         return BasedToken(enter_time=self.enter_time, stay_time=self.stay_time, 
                           token_id=self.token_id, machine=self.machine)
->>>>>>> Stashed changes:solutions/Continuous_model/construct.py
+
 
 @dataclass
 class RobotSpec:
