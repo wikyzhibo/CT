@@ -9,7 +9,7 @@ Env_PN 可视化测试程序 (Pygame 版本) - UI/UX 优化版
 
 交互：
     鼠标点击动作按钮执行动作
-    键盘快捷键: 1-9 变迁, W 等待, R 随机, M 模型, Space 重置
+    键盘快捷键: W 等待, R 随机, M 模型, A 自动, Space 重置
     ESC 或关闭窗口退出
 """
 
@@ -880,17 +880,9 @@ class PetriVisualizer:
         self._setup_shortcuts()
     
     def _setup_shortcuts(self):
-        """设置快捷键映射"""
+        """设置快捷键映射（只保留控制按钮的快捷键，取消变迁按钮的快捷键）"""
         self.shortcuts = {
-            pygame.K_1: 0,
-            pygame.K_2: 1,
-            pygame.K_3: 2,
-            pygame.K_4: 3,
-            pygame.K_5: 4,
-            pygame.K_6: 5,
-            pygame.K_7: 6,
-            pygame.K_8: 7,
-            pygame.K_9: 8,
+            # 取消数字键1-9的映射（变迁按钮不再使用快捷键）
             pygame.K_w: self.net.T,  # WAIT
             pygame.K_r: -1,  # Random
             pygame.K_m: -3,  # Model(1步)
@@ -1052,6 +1044,46 @@ class PetriVisualizer:
         self.tm2_pos = (tm2_x, tm2_y)
         self.center_pos = self.tm2_pos  # 保持向后兼容
     
+    def _format_transition_name(self, t_name: str) -> str:
+        """将技术性变迁名称转换为简短友好的显示格式
+        
+        Args:
+            t_name: 变迁名称（如 u_LP1_s1, t_s1）
+            
+        Returns:
+            友好的显示名称（如 LP1→PM7/PM8, PM7/PM8）
+        """
+        # 库所到显示名称映射
+        place_to_display = {
+            'LP1': 'LP1',
+            'LP2': 'LP2',
+            's1': 'PM7/PM8',
+            's2': 'LLC',
+            's3': 'PM1-4',  # 缩短：PM1/PM2/PM3/PM4 → PM1-4
+            's4': 'LLD',
+            's5': 'PM9/PM10',
+            'LP_done': 'LLB',
+        }
+        
+        # 解析变迁名称
+        if t_name.startswith('u_'):
+            # 运输/移动操作：u_<from>_<to>
+            parts = t_name.split('_')
+            if len(parts) >= 3:
+                from_place = parts[1]
+                to_place = parts[2]
+                from_display = place_to_display.get(from_place, from_place)
+                to_display = place_to_display.get(to_place, to_place)
+                return f"{from_display}→{to_display}"
+        elif t_name.startswith('t_'):
+            # 进入操作：t_<place>
+            place = t_name[2:]  # 去掉 't_' 前缀
+            display = place_to_display.get(place, place)
+            return display
+        
+        # 如果不在映射中，保持原样（向后兼容）
+        return t_name
+    
     def _setup_buttons(self):
         """设置动作按钮 - 分组布局，带类型颜色 (1.3x 放大版本)"""
         self.buttons = []
@@ -1069,9 +1101,12 @@ class PetriVisualizer:
         # 变迁动作组 - Cyan 色
         self.button_groups["transitions"] = {"start_y": y, "buttons": []}
         for i, t_name in enumerate(t_names):
-            shortcut = str(i + 1) if i < 9 else ""
+            # 取消变迁按钮的快捷键映射
+            shortcut = ""
+            # 转换显示名称
+            display_name = self._format_transition_name(t_name)
             btn = Button(panel_x, y, button_width, button_height, 
-                        t_name, i, shortcut, self.theme, button_type="transition")
+                        display_name, i, shortcut, self.theme, button_type="transition")
             self.buttons.append(btn)
             self.button_groups["transitions"]["buttons"].append(btn)
             y += button_height + button_gap
@@ -2019,7 +2054,7 @@ class PetriVisualizer:
         self.screen.blit(hint_title, hint_title_rect)
         
         # 快捷键列表
-        shortcuts_text = "1-9 W R M A Space"
+        shortcuts_text = "W R M A Space"
         shortcuts_surf = self.font_tiny.render(shortcuts_text, True, self.theme.accent)
         shortcuts_rect = shortcuts_surf.get_rect(centerx=panel_x + panel_width // 2, centery=hint_y + 26)
         self.screen.blit(shortcuts_surf, shortcuts_rect)
