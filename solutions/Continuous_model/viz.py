@@ -18,6 +18,8 @@ import os
 import argparse
 import math
 import time as pytime
+import json
+from datetime import datetime
 import numpy as np
 import torch
 from tensordict import TensorDict
@@ -82,6 +84,8 @@ class ColorTheme:
     btn_auto: Tuple[int, int, int] = (255, 107, 53)         # Orange - 自动模式
     btn_speed: Tuple[int, int, int] = (59, 130, 246)        # Blue - 速度控制
     btn_reset: Tuple[int, int, int] = (255, 51, 51)         # Red - 重置
+    btn_gantt: Tuple[int, int, int] = (59, 130, 246)        # Blue - 甘特图按钮
+    btn_save: Tuple[int, int, int] = (0, 255, 65)            # Green - 保存按钮
     
     # 渐变色（用于进度条等）
     gradient_start: Tuple[int, int, int] = (0, 200, 255)    # Cyan
@@ -654,6 +658,8 @@ class Button:
         "auto": "btn_auto",              # 自动模式
         "speed": "btn_speed",            # 速度按钮
         "reset": "btn_reset",            # 重置按钮
+        "gantt": "btn_gantt",            # 甘特图按钮
+        "save_reward": "btn_save",       # 保存奖励数据按钮
     }
     
     def __init__(self, x: int, y: int, width: int, height: int, 
@@ -788,7 +794,7 @@ class PetriVisualizer:
     """Petri 网可视化器 - UI/UX 优化版 - 多腔室网格布局"""
     
     # 布局配置 (1.3x 放大版本，适配 1440p 显示器)
-    WINDOW_WIDTH = 1820
+    WINDOW_WIDTH = 1520
     WINDOW_HEIGHT = 1235
     
     LEFT_PANEL_WIDTH = 416      # 左侧面板（扩大以容纳统计信息）
@@ -878,6 +884,38 @@ class PetriVisualizer:
         
         # 快捷键映射
         self._setup_shortcuts()
+        
+        # 左侧面板按钮
+        self.left_panel_buttons: List[Button] = []
+        self._setup_left_panel_buttons()
+    
+    def _setup_left_panel_buttons(self):
+        """设置左侧面板功能按钮"""
+        self.left_panel_buttons = []
+        
+        # 按钮尺寸（适合左侧面板）
+        button_width = self.LEFT_PANEL_WIDTH - 70
+        button_height = 42
+        button_gap = 6
+        
+        # 按钮位置将在 _draw_left_panel() 中动态计算
+        # 这里只创建按钮对象，位置稍后设置
+        
+        # 甘特图按钮
+        gantt_btn = Button(
+            0, 0, button_width, button_height,
+            "Draw Gantt", -10, "", self.theme, button_type="gantt"
+        )
+        gantt_btn.enabled = True  # 始终可用
+        self.left_panel_buttons.append(gantt_btn)
+        
+        # 保存奖励数据按钮
+        save_btn = Button(
+            0, 0, button_width, button_height,
+            "Save Reward", -11, "", self.theme, button_type="save_reward"
+        )
+        save_btn.enabled = True  # 始终可用
+        self.left_panel_buttons.append(save_btn)
     
     def _setup_shortcuts(self):
         """设置快捷键映射（只保留控制按钮的快捷键，取消变迁按钮的快捷键）"""
@@ -917,6 +955,77 @@ class PetriVisualizer:
         
         print(f"模型加载成功: {model_path}")
         return True
+    
+    def _render_gantt(self):
+        """调用Petri的render_gantt方法绘制甘特图"""
+        try:
+            # 确保目录存在
+            os.makedirs("./result", exist_ok=True)
+            
+            # 生成输出路径（包含时间戳）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = f"./result/continuous_gantt_{timestamp}.png"
+            
+            # 调用Petri的render_gantt方法
+            self.net.render_gantt(out_path=out_path)
+            print(f"甘特图已保存到: {out_path}")
+            return True
+        except Exception as e:
+            print(f"绘制甘特图失败: {e}")
+            return False
+    
+    def _save_reward_details(self):
+        """保存详细奖励数据到文件"""
+        try:
+            # 确保目录存在
+            save_dir = "./results/detail_reward"
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # 生成文件名（包含时间戳）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"reward_details_{timestamp}.json"
+            filepath = os.path.join(save_dir, filename)
+            
+            # 准备数据
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "step_count": self.step_count,
+                "total_reward": self.total_reward,
+                "history": []
+            }
+            
+            # 转换 action_history 为可序列化格式
+            for entry in self.action_history:
+                history_entry = {
+                    "step": entry.get("step", 0),
+                    "action": entry.get("action", "UNKNOWN"),
+                    "total": entry.get("total", 0.0),
+                    "details": {}
+                }
+                
+                # 处理 details（确保所有值都是可序列化的）
+                details = entry.get("details", {})
+                if isinstance(details, dict):
+                    for key, value in details.items():
+                        # 转换 numpy 类型为 Python 原生类型
+                        if isinstance(value, (np.integer, np.floating)):
+                            history_entry["details"][key] = float(value)
+                        elif isinstance(value, (int, float, str, bool)) or value is None:
+                            history_entry["details"][key] = value
+                        else:
+                            history_entry["details"][key] = str(value)
+                
+                data["history"].append(history_entry)
+            
+            # 保存到文件
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            print(f"奖励数据已保存到: {filepath}")
+            return True
+        except Exception as e:
+            print(f"保存奖励数据失败: {e}")
+            return False
     
     def get_model_action(self) -> Optional[int]:
         """使用模型获取动作"""
@@ -1693,13 +1802,14 @@ class PetriVisualizer:
                             self.screen.blit(label_surf, (content_x + 10, y))
                             
                             # 值（根据正负值选择颜色，惩罚确保显示为负数）
-                            if value > 0:
-                                value_color = self.theme.success
-                            elif value < 0:
-                                value_color = self.theme.danger
-                            else:
-                                value_color = self.theme.text_muted
-                            
+                            #if value > 0:
+                            #    value_color = self.theme.success
+                            #elif value < 0:
+                            #    value_color = self.theme.danger
+                            #else:
+                            #    value_color = self.theme.text_muted
+                            value_color = self.theme.success
+
                             # 确保惩罚显示为负数格式
                             value_text = f"{value:+.1f}"
                             value_surf = self.font_tiny.render(value_text, True, value_color)
@@ -1766,6 +1876,21 @@ class PetriVisualizer:
                 value_surf = self.font_small.render(value_text, True, trend_color)
                 self.screen.blit(value_surf, (content_x, y))
                 y += 30
+        
+        # ===== 左侧面板功能按钮 =====
+        if y < panel_y + panel_height - 100:  # 确保有足够空间
+            y = panel_y + panel_height - 150
+            self._draw_separator(content_x, y, content_width)
+            y += 10
+            
+            # 更新按钮位置
+            button_y = y
+            for btn in self.left_panel_buttons:
+                btn.rect.x = content_x
+                btn.rect.y = button_y
+                # 绘制按钮
+                btn.draw(self.screen, self.font_small, self.font_tiny)
+                button_y += btn.rect.height + 6
 
     
     def _draw_hero_metric(self, x: int, y: int, width: int,
@@ -2615,6 +2740,11 @@ class PetriVisualizer:
                 speed_map = {-5: 1, -6: 2, -7: 5, -8: 10}
                 is_selected = speed_map.get(btn.action_id) == self.auto_speed
                 btn.hovered = is_mouse_hover or is_selected
+        
+        # 更新左侧面板按钮悬停状态
+        for btn in self.left_panel_buttons:
+            btn.check_hover(mouse_pos)
+        
         self.reset_button.check_hover(mouse_pos)
         
         for event in pygame.event.get():
@@ -2655,6 +2785,15 @@ class PetriVisualizer:
                 if event.button == 1:
                     if self.reset_button.check_click(mouse_pos):
                         return -2
+                    
+                    # 检查左侧面板按钮
+                    for btn in self.left_panel_buttons:
+                        if btn.check_click(mouse_pos):
+                            if btn.action_id == -10:  # 甘特图按钮
+                                self._render_gantt()
+                            elif btn.action_id == -11:  # 保存奖励数据按钮
+                                self._save_reward_details()
+                            return None  # 不返回动作ID，这些是功能按钮
                     
                     for btn in self.buttons:
                         if btn.check_click(mouse_pos):
