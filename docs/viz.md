@@ -180,6 +180,7 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
 - **右侧面板宽度**: 300
 - **腔室大小**: 130 x 130
 - **中心机械手区域**: 170 x 170
+- **窗口图标**: 使用 `assets/rectangle-small-with-blocksiconImage24px.png`；文件缺失时跳过 `set_icon`，不影响启动。
 
 #### 布局配置
 
@@ -195,6 +196,10 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
 **机械手分配**:
 - TM2: d_s1, d_s2, d_s5, d_LP_done
 - TM3: d_s3, d_s4
+
+**腔体名称显示**:
+- 竖排下方腔体 **PM7、PM1、PM10** 的名称显示在腔体**下方**，避免被遮挡
+- 其余腔体：活跃时名称在上方外部，闲置时在内部居中
 
 #### 主要方法
 
@@ -214,6 +219,7 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
 - `_setup_layout()`: 设置布局位置 - 双机械手网格布局
 - `_setup_buttons()`: 设置动作按钮 - 分组布局，带类型颜色
 - `_setup_shortcuts()`: 设置快捷键映射
+- `_set_window_icon()`: 从 `assets/rectangle-small-with-blocksiconImage24px.png` 加载窗口图标；缺失时静默跳过
 
 ##### 数据收集
 
@@ -248,8 +254,8 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
   - 速度控制
   - 快捷键提示
 
-- `_draw_active_chamber()`: 绘制活跃腔室
-- `_draw_idle_chamber()`: 绘制闲置腔室
+- `_draw_active_chamber()`: 绘制活跃腔室；PM7/PM1/PM10 名称在腔体下方，其余在上方
+- `_draw_idle_chamber()`: 绘制闲置腔室；PM7/PM1/PM10 名称在腔体下方，其余在内部居中
 - `_draw_robot_buffer()`: 绘制双机械手缓冲区
 - `_draw_single_robot()`: 绘制单个机械手
 - `_draw_robot_connections()`: 绘制机械手到腔室的折线连接
@@ -331,6 +337,7 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
   - 网格背景
   - 阴影效果
   - 状态指示
+  - 腔体名称：PM7/PM1/PM10 显示在腔体下方，其余在上方或内部
 
 - **机械手显示**:
   - 状态指示灯（BUSY/IDLE）

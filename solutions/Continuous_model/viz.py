@@ -808,6 +808,7 @@ class PetriVisualizer:
     CENTER_ROBOT_SIZE = 170     # 中心机械手区域大小
     CHAMBER_GAP_X = 150         # 腔室水平间距
     CHAMBER_GAP_Y = 137         # 腔室垂直间距
+    CHAMBERS_NAME_BELOW = {"PM7", "PM1", "PM10"}  # 竖排下方腔体，名称画在腔体下方
     
     # 晶圆配置
     WAFER_RADIUS = 32
@@ -823,6 +824,7 @@ class PetriVisualizer:
         
         self.screen = pygame.display.set_mode((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
         self.clock = pygame.time.Clock()
+        self._set_window_icon()
         
         # 动画管理器
         self.anim = AnimationManager()
@@ -891,6 +893,21 @@ class PetriVisualizer:
         # 左侧面板按钮
         self.left_panel_buttons: List[Button] = []
         self._setup_left_panel_buttons()
+    
+    def _set_window_icon(self):
+        """从 assets/rectangle-small-with-blocksiconImage24px.png 加载窗口图标并 set_icon。文件缺失时静默跳过。"""
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        icon_path = os.path.join(root, "assets", "rectangle-small-with-blocksiconImage24px.png")
+        if not os.path.isfile(icon_path):
+            return
+        try:
+            icon_surf = pygame.image.load(icon_path)
+            w, h = icon_surf.get_size()
+            if w != 32 or h != 32:
+                icon_surf = pygame.transform.smoothscale(icon_surf, (32, 32))
+            pygame.display.set_icon(icon_surf)
+        except Exception as e:
+            print("[viz] 加载窗口图标失败，跳过 set_icon:", e, flush=True)
     
     def _setup_left_panel_buttons(self):
         """设置左侧面板功能按钮"""
@@ -1647,9 +1664,9 @@ class PetriVisualizer:
         # ===== 次要指标行 =====
         stats_data = self.net.calc_wafer_statistics()
         
-        # 产能计算
-        if stats_data["system_avg"] > 0 and done_wafers > 0:
-            throughput = 3600 / stats_data["system_avg"]
+        # 产能计算：产能 = (完工晶圆数 / 时间) * 3600 → wafers/h
+        if self.net.time > 0 and done_wafers > 0:
+            throughput = (done_wafers / self.net.time) * 3600
         else:
             throughput = 0.0
         
@@ -2594,9 +2611,12 @@ class PetriVisualizer:
         # 边框
         pygame.draw.rect(self.screen, self.theme.border_muted, rect, 1, border_radius=10)
         
-        # 名称
+        # 名称（PM7/PM1/PM10 画在腔体下方，其余在内部居中）
         name_surf = self.font_medium.render(name, True, self.theme.text_muted)
-        name_rect = name_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 - 13)
+        if name in self.CHAMBERS_NAME_BELOW:
+            name_rect = name_surf.get_rect(centerx=x + size // 2, top=y + size + 7)
+        else:
+            name_rect = name_surf.get_rect(centerx=x + size // 2, centery=y + size // 2 - 13)
         self.screen.blit(name_surf, name_rect)
         
         # IDLE 标签
@@ -2660,9 +2680,12 @@ class PetriVisualizer:
             seg_rect = pygame.Rect(seg_x, y + 8, seg_width - 2, led_height - 2)
             pygame.draw.rect(self.screen, led_color, seg_rect, border_radius=2)
         
-        # 名称（上方外部）
+        # 名称（PM7/PM1/PM10 画在腔体下方，其余在上方外部）
         name_surf = self.font_medium.render(name, True, self.theme.text_primary)
-        name_rect = name_surf.get_rect(centerx=x + size // 2, bottom=y - 7)
+        if name in self.CHAMBERS_NAME_BELOW:
+            name_rect = name_surf.get_rect(centerx=x + size // 2, top=y + size + 7)
+        else:
+            name_rect = name_surf.get_rect(centerx=x + size // 2, bottom=y - 7)
         self.screen.blit(name_surf, name_rect)
         
         # 绘制晶圆
@@ -2708,7 +2731,7 @@ class PetriVisualizer:
         wafer_info = self._collect_wafer_info()
         
         # 状态摘要条
-        self._draw_status_summary_bar(center_x, 50, wafer_info)
+        #self._draw_status_summary_bar(center_x, 50, wafer_info)
         
         # ========== 绘制中心机械手缓冲区 ==========
         self._draw_robot_buffer(wafer_info)
