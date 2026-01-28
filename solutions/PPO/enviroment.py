@@ -6,6 +6,7 @@ from tensordict import TensorDict
 #from solutions.PDR.net import Petri
 import copy
 from typing import Dict, Optional
+import os
 
 #from solutions.v2.net_v2 import PetriNet
 #from solutions.v3.net_v3 import PetriV3
@@ -151,10 +152,17 @@ class Env_PN(EnvBase):
         """
         super().__init__(device=device)
         self.training_phase = training_phase
-        if training_phase == 1:
-            config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase1_config.json")
-        else:
-            config = PetriEnvConfig.load(r"C:\Users\khand\OneDrive\code\dqn\CT\data\petri_configs\phase2_config.json")
+        
+        # 使用相对路径（跨平台兼容）
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.join(script_dir, "..", "..")
+        config_path = os.path.join(project_root, "data", "petri_configs", f"phase{training_phase}_config.json")
+        config_path = os.path.abspath(config_path)
+        
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"配置文件不存在: {config_path}")
+        
+        config = PetriEnvConfig.load(config_path)
 
         self.net = Petri(config=config)
         self.n_actions = self.net.T + 1  # wait action at index net.T

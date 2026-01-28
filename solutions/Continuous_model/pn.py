@@ -162,6 +162,10 @@ class Petri:
         self._consecutive_wait_time = 0  # 连续执行 WAIT 动作的累计时间
         self._per_wafer_reward = 0.0  # 累积的单片完工奖励
         
+        # 晶圆进入系统限制
+        self.entered_wafer_count = 0  # 已进入系统的晶圆数
+        self.max_wafers_in_system = 5  # 最大允许进入系统的晶圆数
+        
         self.shot = "s"
 
         # -----------------------
@@ -906,6 +910,7 @@ class Petri:
         self._release_violation_penalty = 0.0  # 重置释放时间违规惩罚
         self._per_wafer_reward = 0.0  # 重置单片完工奖励
         self.wafer_stats = {}  # 重置晶圆滞留时间统计
+        self.entered_wafer_count = 0  # 重置已进入系统的晶圆数
         # 清空所有库所的释放时间队列，并重置机器分配计数器
         for place in self.marks:
             place.release_schedule.clear()
@@ -1365,6 +1370,16 @@ class Petri:
                 if self.m[p_idx] >= self.marks[p_idx].capacity:
                     mask[t_idx] = False
         
+        # ========== 限制进入系统的晶圆数量 ==========
+        # 当已进入系统的晶圆数达到上限时，禁用 u_LP1_s1 和 u_LP2_s1
+        if self.entered_wafer_count >= self.max_wafers_in_system:
+            if "u_LP1_s1" in self.id2t_name:
+                t_idx = self._get_transition_index("u_LP1_s1")
+                mask[t_idx] = False
+            if "u_LP2_s1" in self.id2t_name:
+                t_idx = self._get_transition_index("u_LP2_s1")
+                mask[t_idx] = False
+        
         # ========== 颜色感知的分流约束 ==========
         # 在 s1 处根据晶圆颜色决定走哪条路线
         # u_s1_s2 只对 color=1 的晶圆使能（路线1）
@@ -1460,6 +1475,8 @@ class Petri:
         # 根据变迁类型处理释放时间（只追踪有驻留约束的腔室：s1, s3, s5）
         # 双路线：u_LP1_s1 和 u_LP2_s1 都进入 d_s1
         if t_name in ("u_LP1_s1", "u_LP2_s1"):
+            # 递增已进入系统的晶圆计数
+            self.entered_wafer_count += 1
             # 晶圆进入 d_s1：记录初步预估释放时间 + 链式传播
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")

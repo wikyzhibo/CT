@@ -25,7 +25,7 @@ import warnings
 
 #from CT_env import init_marks_from_m
 from solutions.PPO.network.models import MaskedPolicyHead
-from behavior_clone import pretrain_bc,build_expert_buffer
+from solutions.PPO.behavior_clone import pretrain_bc,build_expert_buffer
 from data.ppo_configs.training_config import PPOTrainingConfig
 
 
