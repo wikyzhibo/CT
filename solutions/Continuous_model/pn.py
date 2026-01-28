@@ -1437,6 +1437,9 @@ class Petri:
             self.m[p] -= 1
 
         # 2) 生成后置库所 token：enter_time = finish time，继承 token_id 和 color
+        # 保存后置库所信息用于 fire_log
+        post_place_info = []  # [(chamber_name, machine_id, token_id), ...]
+        
         token_id_idx = 0
         for p in pst_places:
             place = self.marks[p]
@@ -1455,6 +1458,10 @@ class Petri:
                 place.last_machine = machine_id
             else:
                 machine_id = -1
+            
+            # 保存后置库所信息（用于 fire_log）
+            if place.type != 4:  # 非资源库所
+                post_place_info.append((place.name, machine_id, tid))
             
             self.marks[p].append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, color=tcolor))
             self.m[p] += 1
@@ -1533,67 +1540,210 @@ class Petri:
         # ========== 5) 晶圆滞留时间统计追踪 ==========
         self._track_wafer_statistics(t_name, wafer_id, start_time, enter_new)
         
-        self.fire_log.append({
+        # ========== 6) 记录 fire_log，包含足够信息用于甘特图绘制 ==========
+        log_entry = {
             "t_name": t_name,
             "t1": int(start_time),
             "t2": int(enter_new),
             "token_id": wafer_id,
-        })
+        }
+        
+        # 解析变迁名称，提取额外信息
+        # 进入腔室的变迁：t_s1, t_s2, t_s3, t_s4, t_s5
+        if t_name.startswith("t_") and len(t_name) > 2:
+            chamber_name = t_name[2:]  # 提取 "s1", "s2" 等
+            if chamber_name in ["s1", "s2", "s3", "s4", "s5"]:
+                # 从 post_place_info 中找到对应的 chamber_name 和 machine_id
+                for p_name, m_id, tid in post_place_info:
+                    if p_name == chamber_name and tid == wafer_id:
+                        log_entry["chamber_name"] = chamber_name
+                        log_entry["machine_id"] = m_id
+                        break
+                else:
+                    # 如果没找到，设置默认值
+                    log_entry["chamber_name"] = chamber_name
+                    log_entry["machine_id"] = -1
+        
+        # 离开腔室的变迁：u_s1_s2, u_s1_s5, u_s2_s3, u_s3_s4, u_s4_s5, u_s5_LP_done
+        elif t_name.startswith("u_") and "_" in t_name[2:]:
+            parts = t_name[2:].split("_")  # 例如 "s1_s2" -> ["s1", "s2"], "s5_LP_done" -> ["s5", "LP", "done"]
+            if len(parts) >= 2:
+                from_chamber = parts[0]
+                # 处理特殊情况：u_s5_LP_done -> to_chamber = "LP_done"
+                if len(parts) > 2 and parts[1] == "LP" and parts[2] == "done":
+                    to_chamber = "LP_done"
+                else:
+                    to_chamber = parts[1]
+                log_entry["from_chamber"] = from_chamber
+                log_entry["to_chamber"] = to_chamber
+        
+        # 机械手动作：所有 u_ 开头的变迁都是机械手动作
+        if t_name.startswith("u_"):
+            # 确定机械手名称
+            robot_map = {
+                "u_LP1_s1": "TM2",
+                "u_LP2_s1": "TM2",
+                "u_s1_s2": "TM2",
+                "u_s1_s5": "TM2",
+                "u_s2_s3": "TM3",
+                "u_s3_s4": "TM3",
+                "u_s4_s5": "TM2",
+                "u_s5_LP_done": "TM2",
+            }
+            robot_name = robot_map.get(t_name, "TM2")  # 默认 TM2
+            log_entry["robot_name"] = robot_name
+            
+            # 提取 from_loc 和 to_loc
+            if "_" in t_name[2:]:
+                parts = t_name[2:].split("_")
+                if len(parts) >= 2:
+                    # 处理特殊情况：u_LP1_s1, u_LP2_s1 -> from_loc = "LP1"/"LP2"
+                    if len(parts) >= 3 and parts[0] == "LP" and parts[1].isdigit():
+                        log_entry["from_loc"] = f"{parts[0]}{parts[1]}"  # "LP1" 或 "LP2"
+                        log_entry["to_loc"] = parts[2]
+                    # 处理特殊情况：u_s5_LP_done -> to_loc = "LP_done"
+                    elif len(parts) > 2 and parts[1] == "LP" and parts[2] == "done":
+                        log_entry["from_loc"] = parts[0]
+                        log_entry["to_loc"] = "LP_done"
+                    else:
+                        log_entry["from_loc"] = parts[0]
+                        log_entry["to_loc"] = parts[1]
+        
+        self.fire_log.append(log_entry)
 
     def render_gantt(self, out_path: str = r"C:\Users\khand\OneDrive\code\dqn\CT\results\continuous_gantt.png"):
-        pm1_slots = [None, None]  # PM1 双 slot 追踪，记录 (start_time, token_id)
-        pm2_info = None  # (start_time, token_id)
-        pm3_info = None  # (start_time, token_id)
+        """
+        生成甘特图，追踪晶圆在腔室中的占用情况和机械手动作。
+        
+        腔室映射：
+        - stage 1: s1 (PM7/PM8, capacity=2, processing_time=70)
+        - stage 2: s2 (LLC, capacity=1, processing_time=0)
+        - stage 3: s3 (PM1/PM2/PM3/PM4, capacity=4, processing_time=600)
+        - stage 4: s4 (LLD, capacity=1, processing_time=70)
+        - stage 5: s5 (PM9/PM10, capacity=2, processing_time=200)
+        - stage 6: TM2 (机械手)
+        - stage 7: TM3 (机械手)
+        """
+        # 腔室占用追踪：chamber_slots[chamber_name] = {token_id: (start_time, machine_id), ...}
+        # 使用字典直接通过 token_id 查找，避免 FIFO 推断
+        chamber_slots: Dict[str, Dict[int, Tuple[int, int]]] = {
+            "s1": {},
+            "s2": {},
+            "s3": {},
+            "s4": {},
+            "s5": {},
+        }
+        
+        # 腔室配置
+        chamber_config = {
+            "s1": {"stage": 1, "capacity": 2, "proc_time": 70},
+            "s2": {"stage": 2, "capacity": 1, "proc_time": 0},
+            "s3": {"stage": 3, "capacity": 4, "proc_time": 600},
+            "s4": {"stage": 4, "capacity": 1, "proc_time": 70},
+            "s5": {"stage": 5, "capacity": 2, "proc_time": 200},
+        }
+        
+        # 机械手 stage 映射
+        robot_stage_map = {
+            "TM2": 6,
+            "TM3": 7,
+        }
+        
         ops: List[Op] = []
-
+        
         for log in self.fire_log:
             t_name = log["t_name"]
             t1 = log["t1"]
             t2 = log["t2"]
             token_id = log.get("token_id", -1)
-
-            if t_name == "t_PM1":
-                # 找空闲 slot 记录开始时间和 token_id
-                for i in range(2):
-                    if pm1_slots[i] is None:
-                        pm1_slots[i] = (t2, token_id)
-                        break
-            elif t_name == "u_PM1_PM2":
-                # 找最早进入的 slot（FIFO），生成 Op 并释放 slot
-                occupied = [i for i in range(2) if pm1_slots[i] is not None]
-                if occupied:
-                    earliest_idx = min(occupied, key=lambda i: pm1_slots[i][0])
-                    pm1_start, pm1_token_id = pm1_slots[earliest_idx]
-                    proc_end = t1
-                    ops.append(Op(job=pm1_token_id, stage=1, machine=earliest_idx, start=pm1_start, proc_end=pm1_start+30, end=proc_end))
-                    pm1_slots[earliest_idx] = None
-
-            if t_name == "t_PM2":
-                pm2_info = (t2, token_id)
-            elif t_name == "u_PM2_LP_done" and pm2_info is not None:
-                pm2_start, pm2_token_id = pm2_info
-                proc_end = t1
-                ops.append(Op(job=pm2_token_id, stage=2, machine=0, start=pm2_start, proc_end=pm2_start+80, end=proc_end))
-                pm2_info = None
-
-            if t_name == "t_PM3":
-                pm3_info = (t2, token_id)
-            elif t_name == "u_PM3_LP_done" and pm3_info is not None:
-                pm3_start, pm3_token_id = pm3_info
-                proc_end = t1
-                ops.append(Op(job=pm3_token_id, stage=2, machine=1, start=pm3_start, proc_end=pm3_start+80, end=proc_end))
-                pm3_info = None
-
-            # 机械手动作：除加工区间外的所有变迁时间段
-            if t_name.startswith("u_"):
-                kind = 1
-            else:
-                kind = 0
-            ops.append(Op(job=token_id, stage=3, machine=0, start=t1, proc_end=t2, end=t2, is_arm=True, kind=kind))
-
-        proc_time = {1: 0, 2: 0, 3: 0}
-        capacity = {1: 2, 2: 1, 3: 1}
-        n_jobs = max(1, len(ops))
+            
+            # ========== 处理进入腔室的变迁 ==========
+            if "chamber_name" in log:
+                chamber_name = log["chamber_name"]
+                machine_id = log.get("machine_id", -1)
+                # 记录晶圆进入腔室
+                chamber_slots[chamber_name][token_id] = (t2, machine_id)
+            
+            # ========== 处理离开腔室的变迁 ==========
+            if "from_chamber" in log:
+                from_chamber = log["from_chamber"]
+                if from_chamber in chamber_slots and token_id in chamber_slots[from_chamber]:
+                    start_time, machine_id = chamber_slots[from_chamber].pop(token_id)
+                    config = chamber_config[from_chamber]
+                    proc_end = start_time + config["proc_time"]
+                    ops.append(Op(
+                        job=token_id,
+                        stage=config["stage"],
+                        machine=machine_id if machine_id >= 0 else 0,
+                        start=start_time,
+                        proc_end=proc_end,
+                        end=t1,  # 离开时间
+                    ))
+            
+            # ========== 处理机械手动作 ==========
+            if "robot_name" in log:
+                robot_name = log["robot_name"]
+                stage = robot_stage_map.get(robot_name, 6)
+                from_loc = log.get("from_loc", "")
+                to_loc = log.get("to_loc", "")
+                kind = 1 if t_name.startswith("u_") else 0
+                ops.append(Op(
+                    job=token_id,
+                    stage=stage,
+                    machine=0,  # 机械手只有一个
+                    start=t1,
+                    proc_end=t2,
+                    end=t2,
+                    is_arm=True,
+                    kind=kind,
+                    from_loc=from_loc,
+                    to_loc=to_loc,
+                ))
+        
+        # ========== 处理未完成的腔室占用（仍在加工中的晶圆）==========
+        # 如果系统结束时还有晶圆在腔室中，使用当前时间作为结束时间
+        current_time = self.time if hasattr(self, 'time') else max([log.get("t2", 0) for log in self.fire_log], default=0)
+        for chamber_name, slots_dict in chamber_slots.items():
+            config = chamber_config[chamber_name]
+            for tid, (start_time, machine_id) in slots_dict.items():
+                proc_end = start_time + config["proc_time"]
+                ops.append(Op(
+                    job=tid,
+                    stage=config["stage"],
+                    machine=machine_id if machine_id >= 0 else 0,
+                    start=start_time,
+                    proc_end=proc_end,
+                    end=current_time,  # 使用当前时间
+                ))
+        
+        # ========== 生成甘特图 ==========
+        # 计算 n_jobs（唯一晶圆数量）
+        unique_jobs = set()
+        for op in ops:
+            if op.job >= 0:  # 排除资源 token（token_id=-1）
+                unique_jobs.add(op.job)
+        n_jobs = max(1, len(unique_jobs))
+        
+        # 配置 proc_time 和 capacity
+        proc_time = {
+            1: 70,   # s1
+            2: 0,    # s2
+            3: 600,  # s3
+            4: 70,   # s4
+            5: 200,  # s5
+            6: 0,    # TM2 (机械手，无加工时间)
+            7: 0,    # TM3 (机械手，无加工时间)
+        }
+        capacity = {
+            1: 2,  # s1
+            2: 1,  # s2
+            3: 4,  # s3
+            4: 1,  # s4
+            5: 2,  # s5
+            6: 1,  # TM2
+            7: 1,  # TM3
+        }
+        
         arm_info = {"ARM1": [], "ARM2": [], "STAGE2ACT": {}}
         plot_gantt_hatched_residence(
             ops=ops,
@@ -1603,7 +1753,7 @@ class Petri:
             out_path=out_path,
             arm_info=arm_info,
             with_label=False,
-            no_arm=True,
+            no_arm=False,  # 显示机械手
             policy=2,
         )
 
@@ -1801,7 +1951,7 @@ def main():
     print("Places:", model.id2p_name)
     print("-" * 70)
 
-    max_steps = 60
+    max_steps = 300
     for step_i in range(max_steps):
         enabled = model.get_enable_t()
         enabled.append(wait_id)

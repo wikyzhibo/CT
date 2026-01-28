@@ -860,7 +860,7 @@ class PetriVisualizer:
         
         # 自动模式状态变量
         self.auto_mode = False          # 自动模式开关
-        self.auto_speed = 0.5           # 速度倍率 (1x=1s间隔)
+        self.auto_speed = 0.25           # 速度倍率 (1x=1s间隔)
         self.last_auto_step_time = 0.0  # 上次自动执行时间
         self.bug_mode = False           # Bug 模式：开启时奖励<50则停止自动模式
         
@@ -981,11 +981,11 @@ class PetriVisualizer:
         try:
             # 确保目录存在
             os.makedirs("./result", exist_ok=True)
-            
+
             # 生成输出路径（包含时间戳）
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_path = f"./result/continuous_gantt_{timestamp}.png"
-            
+
             # 调用Petri的render_gantt方法
             self.net.render_gantt(out_path=out_path)
             print(f"甘特图已保存到: {out_path}")
