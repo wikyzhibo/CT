@@ -419,7 +419,8 @@ class Petri:
         无驻留约束腔室：s2, s4（作为机械手交接点）
         
         注意：由于双路线在 s1 分流，release_chain 需要按颜色区分。
-        这里只构建路线1的链路（s1 -> s3 -> s5），路线2的 s1 -> s5 在运行时处理。
+        路线1的链路：s1 -> s3 -> s4 -> s5（s4 已纳入释放链，接受链式惩罚）。
+        路线2的链路：s1 -> s5（在运行时处理）。
         """
         self.release_chain: Dict[int, Tuple[int, int]] = {}
         
@@ -431,20 +432,28 @@ class Petri:
         
         s1_idx = get_idx("s1")
         s3_idx = get_idx("s3")
+        s4_idx = get_idx("s4")
         s5_idx = get_idx("s5")
         
         # 路线1的链路（有驻留约束的腔室之间）
         # s1 -> s3：经过 s2（交接点），预估运输时间
         if s1_idx >= 0 and s3_idx >= 0:
-            # 运输时间 = s1卸载 + d_s2运输 + s2停留 + d_s3运输 + s3装载
-            transport_s1_to_s3 = self.ttime * 4  # 约 20s
+            # 运输时间 = s1卸载 + d_s2运输 + s2装载 + s2卸载 + d_s3运输 + s3装载
+            transport_s1_to_s3 = self.T_transport * 2 + self.T_load * 4  # 约 30s
             self.release_chain[s1_idx] = (s3_idx, transport_s1_to_s3)
         
-        # s3 -> s5：经过 s4（交接点），预估运输时间
-        if s3_idx >= 0 and s5_idx >= 0:
-            # 运输时间 = s3卸载 + d_s4运输 + s4加工(70s) + d_s5运输 + s5装载
-            transport_s3_to_s5 = self.ttime * 4 + 70  # 约 90s
-            self.release_chain[s3_idx] = (s5_idx, transport_s3_to_s5)
+        # s3 -> s4 -> s5：将 s4 纳入释放链，使其接受链式惩罚
+        # s3 -> s4：预估运输时间
+        if s3_idx >= 0 and s4_idx >= 0:
+            # 运输时间 = s3卸载 + d_s4运输 + s4装载
+            transport_s3_to_s4 = self.ttime * 3  # 约 15s
+            self.release_chain[s3_idx] = (s4_idx, transport_s3_to_s4)
+        
+        # s4 -> s5：预估运输时间
+        if s4_idx >= 0 and s5_idx >= 0:
+            # 运输时间 = s4加工(70s) + s4卸载 + d_s5运输 + s5装载
+            transport_s4_to_s5 = 70 + self.ttime * 3  # 约 85s
+            self.release_chain[s4_idx] = (s5_idx, transport_s4_to_s5)
         
         # 路线2的链路：s1 -> s5（直接）
         # 存储为单独的映射，在运行时根据颜色选择
@@ -521,6 +530,8 @@ class Petri:
         """
         链式记录/更新下游腔室的预估释放时间。
         
+        对链上的每个下游腔室（包括 s4）进行释放违规检查并累加惩罚。
+        
         Args:
             token_id: 晶圆编号
             start_place_idx: 起始腔室索引
@@ -535,7 +546,7 @@ class Petri:
         current_release = start_release_time
         
         # 根据颜色选择释放链路
-        # 路线1（color=1）：使用 release_chain（s1 -> s3 -> s5）
+        # 路线1（color=1）：使用 release_chain（s1 -> s3 -> s4 -> s5）
         # 路线2（color=2）：使用 release_chain_route2（s1 -> s5）
         if wafer_color == 2 and hasattr(self, 'release_chain_route2'):
             chain = self.release_chain_route2
