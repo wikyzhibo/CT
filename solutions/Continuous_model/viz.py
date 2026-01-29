@@ -554,20 +554,6 @@ class ChamberRenderer:
         border_color = self.theme.border if status == "idle" else led_color
         pygame.draw.rect(screen, border_color, main_rect, 2, border_radius=8)
         
-        # 顶部 LED 状态条
-        led_height = 6
-        led_rect = pygame.Rect(x + 10, y + 6, width - 20, led_height)
-        pygame.draw.rect(screen, self.theme.bg_elevated, led_rect, border_radius=3)
-        
-        # LED 活跃部分
-        led_segments = 5
-        seg_width = (width - 24) // led_segments
-        active_segs = led_segments if status == "active" else (3 if status == "warning" else (led_segments if status == "danger" else 1))
-        for i in range(active_segs):
-            seg_x = x + 12 + i * (seg_width + 2)
-            seg_rect = pygame.Rect(seg_x, y + 7, seg_width - 2, led_height - 2)
-            pygame.draw.rect(screen, led_color, seg_rect, border_radius=2)
-        
         # 腔室名称（上方）
         name_surf = font_large.render(name, True, self.theme.text_primary)
         name_rect = name_surf.get_rect(centerx=x + width // 2, bottom=y - 10)
@@ -1711,6 +1697,37 @@ class PetriVisualizer:
             self.theme.glow_purple, stats_data
         )
         
+        # ===== 全部 release_time =====
+        y = self._draw_section_header(content_x, y, content_width, "RELEASE TIME", self.theme.glow_cyan)
+        max_y_rt = panel_y + panel_height - 13
+        line_height = 18
+        max_release_lines = 14
+        release_lines = 0
+        for place in self.net.marks:
+            if place.name.startswith("r_"):
+                continue
+            schedule = getattr(place, "release_schedule", None)
+            if not schedule:
+                continue
+            entries = list(schedule)[:5]  # 每 place 最多显示 5 条
+            if not entries:
+                continue
+            parts = [f"{tid}→{rt}" for (tid, rt) in entries]
+            text = f"{place.name}: {', '.join(parts)}"
+            if len(text) > 42:
+                text = text[:39] + "..."
+            surf = self.font_tiny.render(text, True, self.theme.text_secondary)
+            self.screen.blit(surf, (content_x + 4, y))
+            y += line_height
+            release_lines += 1
+            if release_lines >= max_release_lines or y >= max_y_rt - line_height:
+                break
+        if release_lines >= max_release_lines:
+            more = self.font_tiny.render("...", True, self.theme.text_muted)
+            self.screen.blit(more, (content_x + 4, y))
+            y += line_height
+        y += 6
+        
         self._draw_separator(content_x, y, content_width)
         y += 10
         
@@ -2665,20 +2682,6 @@ class PetriVisualizer:
         # 边框
         border_color = self.theme.border if status == "idle" else led_color
         pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=10)
-        
-        # 顶部 LED 条
-        led_height = 7
-        led_rect = pygame.Rect(x + 10, y + 7, size - 20, led_height)
-        pygame.draw.rect(self.screen, self.theme.bg_elevated, led_rect, border_radius=3)
-        
-        # LED 活跃段
-        led_segments = 4
-        seg_width = (size - 26) // led_segments
-        active_segs = led_segments if status in ["active", "danger"] else (2 if status == "warning" else 1)
-        for i in range(active_segs):
-            seg_x = x + 13 + i * (seg_width + 1)
-            seg_rect = pygame.Rect(seg_x, y + 8, seg_width - 2, led_height - 2)
-            pygame.draw.rect(self.screen, led_color, seg_rect, border_radius=2)
         
         # 名称（PM7/PM1/PM10 画在腔体下方，其余在上方外部）
         name_surf = self.font_medium.render(name, True, self.theme.text_primary)

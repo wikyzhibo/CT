@@ -126,7 +126,7 @@ python -m solutions.Continuous_model.viz
 
 ### ChamberRenderer
 
-腔室渲染器，支持 LED 状态条、阴影和网格背景。
+腔室渲染器，支持阴影和网格背景。（腔室顶部负载条已移除，暂不显示。）
 
 #### 主要方法
 
@@ -135,7 +135,6 @@ python -m solutions.Continuous_model.viz
 
 - `draw(screen, name, x, y, width, height, proc_time, wafers, font_large, font_small)`:
   绘制加工腔室
-  - 显示 LED 状态条
   - 网格背景
   - 阴影效果
 
@@ -244,6 +243,7 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
 - `_draw_left_panel()`: 绘制左侧面板
   - 关键指标（TIME, PROGRESS）
   - 可折叠统计分组（系统/腔室/机械手滞留时间）
+  - **RELEASE TIME**：全部 release_time，按库所展示各 place 的 release_schedule（格式：place_name: token_id→release_time）
   - 动作历史（最近6步）
   - 详细奖励分解（最近一步的非零奖励/惩罚项）
   - 趋势数据
@@ -304,6 +304,7 @@ Petri 网可视化器主类，UI/UX 优化版，支持多腔室网格布局。
   - 系统滞留时间（平均/最大/差值）
   - 腔室滞留时间（按腔室分组）
   - 机械手滞留时间（TM2/TM3）
+  - 全部 release_time（左侧面板 RELEASE TIME 区块：各库所 release_schedule，格式 place_name: token_id→release_time）
 - **动作历史**: 显示最近6步的动作和总奖励
 - **详细奖励分解**: 在 HISTORY 下方显示最近一步的详细奖励和惩罚项
   - 显示步数和动作名称（格式：Step #XX - ACTION_NAME）
