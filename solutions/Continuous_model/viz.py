@@ -980,11 +980,11 @@ class PetriVisualizer:
         """调用Petri的render_gantt方法绘制甘特图"""
         try:
             # 确保目录存在
-            os.makedirs("./result", exist_ok=True)
+            os.makedirs("./results", exist_ok=True)
 
             # 生成输出路径（包含时间戳）
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_path = f"./result/continuous_gantt_{timestamp}.png"
+            out_path = f"./results/continuous_gantt_{timestamp}.png"
 
             # 调用Petri的render_gantt方法
             self.net.render_gantt(out_path=out_path)

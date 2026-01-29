@@ -1577,37 +1577,56 @@ class Petri:
                 log_entry["from_chamber"] = from_chamber
                 log_entry["to_chamber"] = to_chamber
         
-        # 机械手动作：所有 u_ 开头的变迁都是机械手动作
-        if t_name.startswith("u_"):
-            # 确定机械手名称
-            robot_map = {
-                "u_LP1_s1": "TM2",
-                "u_LP2_s1": "TM2",
-                "u_s1_s2": "TM2",
-                "u_s1_s5": "TM2",
-                "u_s2_s3": "TM3",
-                "u_s3_s4": "TM3",
-                "u_s4_s5": "TM2",
-                "u_s5_LP_done": "TM2",
-            }
+        # 机械手动作：所有 u_ 和 t_ 开头的变迁都涉及机械手动作
+        # u_ 变迁：卸载变迁（从源库所取晶圆）
+        # t_ 变迁：装载变迁（将晶圆放入目标库所）
+        robot_map = {
+            # u_ 变迁（卸载）
+            "u_LP1_s1": "TM2",
+            "u_LP2_s1": "TM2",
+            "u_s1_s2": "TM2",
+            "u_s1_s5": "TM2",
+            "u_s2_s3": "TM3",
+            "u_s3_s4": "TM3",
+            "u_s4_s5": "TM2",
+            "u_s5_LP_done": "TM2",
+            # t_ 变迁（装载）
+            "t_s1": "TM2",
+            "t_s2": "TM2",
+            "t_s3": "TM3",
+            "t_s4": "TM3",
+            "t_s5": "TM2",
+            "t_LP_done": "TM2",
+        }
+        
+        if t_name.startswith("u_") or t_name.startswith("t_"):
             robot_name = robot_map.get(t_name, "TM2")  # 默认 TM2
             log_entry["robot_name"] = robot_name
             
             # 提取 from_loc 和 to_loc
-            if "_" in t_name[2:]:
-                parts = t_name[2:].split("_")
-                if len(parts) >= 2:
-                    # 处理特殊情况：u_LP1_s1, u_LP2_s1 -> from_loc = "LP1"/"LP2"
-                    if len(parts) >= 3 and parts[0] == "LP" and parts[1].isdigit():
-                        log_entry["from_loc"] = f"{parts[0]}{parts[1]}"  # "LP1" 或 "LP2"
-                        log_entry["to_loc"] = parts[2]
-                    # 处理特殊情况：u_s5_LP_done -> to_loc = "LP_done"
-                    elif len(parts) > 2 and parts[1] == "LP" and parts[2] == "done":
-                        log_entry["from_loc"] = parts[0]
-                        log_entry["to_loc"] = "LP_done"
-                    else:
-                        log_entry["from_loc"] = parts[0]
-                        log_entry["to_loc"] = parts[1]
+            if t_name.startswith("u_"):
+                # u_ 变迁：u_A_B -> from_loc=A, to_loc=B
+                if "_" in t_name[2:]:
+                    parts = t_name[2:].split("_")
+                    if len(parts) >= 2:
+                        # 处理特殊情况：u_LP1_s1, u_LP2_s1 -> from_loc = "LP1"/"LP2"
+                        if len(parts) >= 3 and parts[0] == "LP" and parts[1].isdigit():
+                            log_entry["from_loc"] = f"{parts[0]}{parts[1]}"  # "LP1" 或 "LP2"
+                            log_entry["to_loc"] = parts[2]
+                        # 处理特殊情况：u_s5_LP_done -> to_loc = "LP_done"
+                        elif len(parts) > 2 and parts[1] == "LP" and parts[2] == "done":
+                            log_entry["from_loc"] = parts[0]
+                            log_entry["to_loc"] = "LP_done"
+                        else:
+                            log_entry["from_loc"] = parts[0]
+                            log_entry["to_loc"] = parts[1]
+            elif t_name.startswith("t_"):
+                # t_ 变迁：t_B -> from_loc=d_B (运输位), to_loc=B (目标库所)
+                # 例如：t_s1 -> from_loc="d_s1", to_loc="s1"
+                chamber_name = t_name[2:]  # 提取 "s1", "s2" 等
+                if chamber_name in ["s1", "s2", "s3", "s4", "s5", "LP_done"]:
+                    log_entry["from_loc"] = f"d_{chamber_name}"  # 运输位
+                    log_entry["to_loc"] = chamber_name  # 目标库所
         
         self.fire_log.append(log_entry)
 
@@ -1671,22 +1690,30 @@ class Petri:
                     start_time, machine_id = chamber_slots[from_chamber].pop(token_id)
                     config = chamber_config[from_chamber]
                     proc_end = start_time + config["proc_time"]
+                    # 确保 machine_id 在有效范围内
+                    max_machine = config["capacity"]
+                    if machine_id < 0:
+                        machine_id = 0
+                    elif machine_id >= max_machine:
+                        machine_id = max_machine - 1
                     ops.append(Op(
                         job=token_id,
                         stage=config["stage"],
-                        machine=machine_id if machine_id >= 0 else 0,
+                        machine=machine_id,
                         start=start_time,
                         proc_end=proc_end,
                         end=t1,  # 离开时间
                     ))
             
             # ========== 处理机械手动作 ==========
+            # 所有 u_ 和 t_ 变迁都涉及机械手动作
             if "robot_name" in log:
                 robot_name = log["robot_name"]
                 stage = robot_stage_map.get(robot_name, 6)
                 from_loc = log.get("from_loc", "")
                 to_loc = log.get("to_loc", "")
-                kind = 1 if t_name.startswith("u_") else 0
+                # kind: 0=卸载(u_), 1=装载(t_)
+                kind = 0 if t_name.startswith("u_") else 1
                 ops.append(Op(
                     job=token_id,
                     stage=stage,
@@ -1707,23 +1734,22 @@ class Petri:
             config = chamber_config[chamber_name]
             for tid, (start_time, machine_id) in slots_dict.items():
                 proc_end = start_time + config["proc_time"]
+                # 确保 machine_id 在有效范围内
+                max_machine = config["capacity"]
+                if machine_id < 0:
+                    machine_id = 0
+                elif machine_id >= max_machine:
+                    machine_id = max_machine - 1
                 ops.append(Op(
                     job=tid,
                     stage=config["stage"],
-                    machine=machine_id if machine_id >= 0 else 0,
+                    machine=machine_id,
                     start=start_time,
                     proc_end=proc_end,
                     end=current_time,  # 使用当前时间
                 ))
         
         # ========== 生成甘特图 ==========
-        # 计算 n_jobs（唯一晶圆数量）
-        unique_jobs = set()
-        for op in ops:
-            if op.job >= 0:  # 排除资源 token（token_id=-1）
-                unique_jobs.add(op.job)
-        n_jobs = max(1, len(unique_jobs))
-        
         # 配置 proc_time 和 capacity
         proc_time = {
             1: 70,   # s1
@@ -1744,18 +1770,129 @@ class Petri:
             7: 1,  # TM3
         }
         
+        # ========== 数据验证和修正 ==========
+        # 1. 检查空 ops
+        if not ops:
+            print("警告: 没有操作数据，跳过甘特图绘制")
+            return
+        
+        # 2. 验证和修正 Op 数据
+        valid_ops = []
+        invalid_count = 0
+        for op in ops:
+            # 检查 stage 是否在 proc_time 中
+            if op.stage not in proc_time:
+                invalid_count += 1
+                continue
+            
+            # 检查 machine 是否在有效范围内
+            max_machine = capacity.get(op.stage, 0)
+            if max_machine <= 0:
+                invalid_count += 1
+                continue
+            
+            # 修正 machine_id 范围
+            if op.machine < 0:
+                op.machine = 0
+            elif op.machine >= max_machine:
+                op.machine = max_machine - 1
+            
+            # 验证时间范围
+            if op.start < 0 or op.proc_end < op.start or op.end < op.proc_end:
+                invalid_count += 1
+                continue
+            
+            valid_ops.append(op)
+        
+        if invalid_count > 0:
+            print(f"警告: 过滤了 {invalid_count} 个无效的 Op")
+        
+        if not valid_ops:
+            print("警告: 验证后没有有效的操作数据，跳过甘特图绘制")
+            return
+        
+        # 3. 计算 n_jobs（唯一晶圆数量）
+        unique_jobs = set()
+        for op in valid_ops:
+            if op.job >= 0:  # 排除资源 token（token_id=-1）
+                unique_jobs.add(op.job)
+        n_jobs = max(1, len(unique_jobs))
+        
+        # 4. 保存 ops 到文件以便检查
+        import os
+        import json
+        output_dir = os.path.dirname(out_path) if os.path.dirname(out_path) else "."
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # 保存 ops 数据
+        ops_data = []
+        for op in valid_ops:
+            ops_data.append({
+                "job": op.job,
+                "stage": op.stage,
+                "machine": op.machine,
+                "start": op.start,
+                "proc_end": op.proc_end,
+                "end": op.end,
+                "is_arm": op.is_arm,
+                "kind": op.kind,
+                "from_loc": op.from_loc,
+                "to_loc": op.to_loc,
+            })
+        
+        # 保存到 JSON 文件
+        ops_file = os.path.join(output_dir, "ops_debug.json")
+        if out_path.endswith('.png'):
+            base_name = os.path.splitext(os.path.basename(out_path))[0]
+            ops_file = os.path.join(output_dir, f"{base_name}_ops.json")
+        else:
+            base_name = os.path.basename(out_path) if os.path.basename(out_path) else "gantt"
+            ops_file = os.path.join(output_dir, f"{base_name}_ops.json")
+        
+        try:
+            with open(ops_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "n_jobs": n_jobs,
+                    "unique_jobs": sorted(list(unique_jobs)),
+                    "ops_count": len(valid_ops),
+                    "ops": ops_data
+                }, f, indent=2, ensure_ascii=False)
+            print(f"  Ops 数据已保存到: {ops_file}")
+        except Exception as e:
+            print(f"  警告: 保存 ops 数据失败: {e}")
+        
+        # 5. 确保输出目录存在并处理路径
+        # plot_gantt_hatched_residence 会在路径后追加 "{policy}_job{n_jobs}.png"
+        # 所以如果 out_path 已经包含 .png，需要去掉扩展名
+        if out_path.endswith('.png'):
+            base_path = out_path[:-4]  # 去掉 .png
+        else:
+            base_path = out_path
+        
+        # 6. 调用绘图函数
         arm_info = {"ARM1": [], "ARM2": [], "STAGE2ACT": {}}
-        plot_gantt_hatched_residence(
-            ops=ops,
-            proc_time=proc_time,
-            capacity=capacity,
-            n_jobs=n_jobs,
-            out_path=out_path,
-            arm_info=arm_info,
-            with_label=False,
-            no_arm=False,  # 显示机械手
-            policy=2,
-        )
+        try:
+            plot_gantt_hatched_residence(
+                ops=valid_ops,
+                proc_time=proc_time,
+                capacity=capacity,
+                n_jobs=n_jobs,
+                out_path=base_path,  # 传入不带 .png 的路径
+                arm_info=arm_info,
+                with_label=True,
+                no_arm=True,  # 显示机械手
+                policy=2,
+            )
+            # 实际生成的文件名
+            policy_dict = {0: 'pdr', 1: 'random', 2: 'rl'}
+            actual_path = f"{base_path}{policy_dict[2]}_job{n_jobs}.png"
+            print(f"甘特图已成功生成: {actual_path}")
+        except Exception as e:
+            print(f"绘制甘特图时发生错误: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
 
     def get_enable_t(self) -> List[int]:
