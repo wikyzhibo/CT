@@ -3,6 +3,7 @@
 /solutions/PPO/saved_models/
 /solutions/PPO/data/
 /specs/
+AGENTS.md
 
 # Python
 __pycache__/
