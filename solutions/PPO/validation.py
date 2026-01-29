@@ -133,8 +133,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_runs",
         type=int,
-        default=5,
-        help="运行次数（默认: 5）"
+        default=8,
+        help="运行次数（默认: 8）"
     )
     parser.add_argument(
         "--seed",
@@ -215,10 +215,8 @@ if __name__ == "__main__":
         # 使用相对路径
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.join(script_dir, "..", "..")
-        out_path = os.path.join(project_root, "results")
-        os.makedirs(out_path, exist_ok=True)
+        out_path = "./results/"
         net.render_gantt(out_path=out_path)
-        print(f"\n甘特图已保存到: {out_path}")
 
 
 

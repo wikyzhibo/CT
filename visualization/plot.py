@@ -75,7 +75,18 @@ def plot_gantt_hatched_residence(
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     cmap = plt.get_cmap("turbo")
-    job_color = {j: cmap((j - 1) / max(1, n_jobs - 1)) for j in range(1, n_jobs + 1)}
+    # 修复：job 可能从 0 开始，需要包含所有可能的 job 值
+    # 收集所有唯一的 job 值
+    all_jobs = set(op.job for op in ops if op.job >= 0)
+    if all_jobs:
+        min_job = min(all_jobs)
+        max_job = max(all_jobs)
+        job_range = max_job - min_job if max_job > min_job else 1
+        job_color = {j: cmap((j - min_job) / job_range) if job_range > 0 else cmap(0.5) 
+                     for j in all_jobs}
+    else:
+        # 如果没有有效的 job，使用默认颜色
+        job_color = {0: cmap(0.5)}
 
     # ARM 路径颜色分配：收集所有唯一的 (from_loc, to_loc) 组合
     arm_paths = set()
@@ -121,7 +132,13 @@ def plot_gantt_hatched_residence(
             ))
             continue
         else:
-            color = job_color[op.job]
+            # 获取作业颜色，如果不存在则使用默认颜色
+            if op.job in job_color:
+                color = job_color[op.job]
+            else:
+                # 回退：使用灰色作为默认颜色
+                color = 'gray'
+                print(f"警告: job {op.job} 不在 job_color 中，使用默认颜色")
 
         # processing (dark)
         ax.add_patch(Rectangle(
