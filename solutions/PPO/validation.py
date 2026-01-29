@@ -216,7 +216,7 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.join(script_dir, "..", "..")
         out_path = "./results/"
-        net.render_gantt(out_path=out_path)
+        net.render_gantt(out_path=out_path,policy=3)
 
 
 
