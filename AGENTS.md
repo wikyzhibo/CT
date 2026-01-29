@@ -46,26 +46,7 @@
 4. **验证方式**（如何运行/如何测试/如何回归）
 5. **风险与回滚**（可选，但建议提供）
 
-## Git Discipline (Commit / Branch)
-### Branch naming
-- 功能：`feat/<short-desc>`
-- 修复：`fix/<short-desc>`
-- 重构：`refactor/<short-desc>`
-- 实验：`exp/<short-desc>`
-- 保护 main 快照：`backup/main-before-merge` 或 `backup/main-YYYY-MM-DD`
 
-### Commit message (Conventional Commits)
-使用：
-- `feat(scope): ...`
-- `fix(scope): ...`
-- `refactor(scope): ...`
-- `docs(scope): ...`
-- `chore(scope): ...`
-- `perf(scope): ...`
-
-**要求：** 若功能变更影响文档，commit 中应体现 docs 更新：
-- 同一 commit 同时包含代码与文档，或
-- 代码 commit 后紧跟一个 `docs:` commit（不推荐拖太久）
 
 ## Safety / Collaboration
 - 任何可能需要 `git push --force` 的操作，必须先提示风险与影响范围，并给出更安全替代方案（如新建分支、revert）。
