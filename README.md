@@ -25,6 +25,12 @@
 - out.csv "输出(变迁时间，变迁序列），matlab那边的程序绘制甘特图"
 - CT.pt "policy模型文件"
 
+## Docs
+
+- docs/pn.md：`pn.py` 使用与架构概览
+- docs/pn_api.md：`pn.py` API 文档
+- docs/pn_design.md：`pn.py` 设计说明
+
 
 ## Log
 

@@ -1,3 +1,18 @@
+"""
+Petri 网调度环境（连续时间版本）。
+
+该模块实现了一个双路线、双机械手协作的半导体制造调度 Petri 网环境，支持：
+- 两条加工路线在 s1 分流（color=1 走路线1，color=2 走路线2）
+- 有/无驻留约束腔室并存（s1/s3/s5 有驻留约束，s2/s4 无驻留约束）
+- 释放时间追踪与链式违规检测（避免容量冲突）
+- 奖励塑形与向量化优化计算
+- 甘特图生成与晶圆滞留时间统计
+
+主要入口：
+- Petri: 环境类，支持 reset/step/get_enable_t/render_gantt
+- Place: 库所类，支持 token 管理与释放时间追踪
+"""
+
 from collections import deque
 from dataclasses import dataclass, field
 import numpy as np
@@ -11,6 +26,23 @@ MAX_TIME = 10000  # 例如 300s
 
 @dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 和 release_schedule 是可变字段（deque）
 class Place:
+    """
+    Petri 网库所。
+
+    属性说明：
+    - name: 库所名称
+    - capacity: 容量
+    - processing_time: 加工时间（库所驻留时间）
+    - type:
+        1=加工腔室（有驻留约束）
+        2=运输库所
+        3=空闲库所（LP）
+        4=资源库所（机械手）
+        5=无驻留约束腔室（如 s2/LLC、s4/LLD）
+    - tokens: token 队列（FIFO）
+    - release_schedule: 释放时间追踪队列 [(token_id, release_time), ...]
+    - last_machine: 上次分配的机器编号（type=1 使用）
+    """
     # 注意：不能使用 __slots__，因为 tokens 和 release_schedule 是可变字段（deque）
     # 但可以通过其他方式优化属性访问（如使用局部变量缓存）
     name: str
@@ -100,7 +132,13 @@ class Petri:
                  training_phase: Optional[int] = None,
                  reward_config: Optional[Dict[str, int]] = None) -> None:
         """
-        初始化Petri网环境。
+        初始化 Petri 网环境。
+
+        架构要点：
+        - 双路线：LP1 -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
+                  LP2 -> s1 -> s5 -> LP_done
+        - 双机械手：TM2 负责 LP1/LP2/s1/s2/s4/s5/LP_done，TM3 负责 s2/s3/s4
+        - color 路线分流：color=1 走路线1，color=2 走路线2
         
         Args:
             config: PetriEnvConfig配置对象（推荐使用）
@@ -164,7 +202,7 @@ class Petri:
         
         # 晶圆进入系统限制
         self.entered_wafer_count = 0  # 已进入系统的晶圆数
-        self.max_wafers_in_system = 5  # 最大允许进入系统的晶圆数
+        self.max_wafers_in_system = config.max_wafers_in_system  # 最大允许进入系统的晶圆数
         
         self.shot = "s"
 
@@ -488,7 +526,7 @@ class Petri:
         
         # 违规：计算惩罚（与违规时间差成正比）
         violation_gap = earliest - expected_enter_time
-        return self.c_release_violation * violation_gap
+        return self.c_release_violation * 100
 
     def _record_initial_release(self, token_id: int, enter_d_time: int, 
                                  target_place_idx: int, wafer_color: int = 0) -> float:
