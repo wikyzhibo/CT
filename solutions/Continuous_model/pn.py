@@ -111,6 +111,13 @@ class Place:
                 del self.release_schedule[i]
                 return rt
         return None
+
+    def get_release(self, token_id: int) -> Optional[int]:
+        """查询指定晶圆的释放时间（不移除）"""
+        for tid, rt in self.release_schedule:
+            if tid == token_id:
+                return rt
+        return None
     
     def earliest_release(self) -> Optional[int]:
         """
@@ -203,7 +210,7 @@ class Petri:
         # 晶圆进入系统限制
         self.entered_wafer_count = 0  # 已进入系统的晶圆数
         self.max_wafers_in_system = config.max_wafers_in_system  # 最大允许进入系统的晶圆数
-        
+
         self.shot = "s"
 
         # -----------------------
@@ -216,8 +223,11 @@ class Petri:
         # 双机械手协作：TM2 负责 LP1/LP2/s1/s2放入/s4取出/s5/LP_done，TM3 负责 s2取出/s3/s4放入
         
         # 晶圆数量分配（可配置）
-        self.n_wafer_route1 = getattr(config, 'n_wafer_route1', self.n_wafer // 2)
-        self.n_wafer_route2 = getattr(config, 'n_wafer_route2', self.n_wafer - self.n_wafer // 2)
+        # 注意：config 中 n_wafer_route1/2 可能为 None，需要检查
+        _route1 = getattr(config, 'n_wafer_route1', None)
+        _route2 = getattr(config, 'n_wafer_route2', None)
+        self.n_wafer_route1 = _route1 if _route1 is not None else self.n_wafer // 2
+        self.n_wafer_route2 = _route2 if _route2 is not None else self.n_wafer - self.n_wafer // 2
         
         modules = {
             "LP1": ModuleSpec(tokens=self.n_wafer_route1, ptime=0, capacity=self.n_wafer_route1),  # 路线1晶圆
@@ -488,9 +498,11 @@ class Petri:
             self.release_chain[s3_idx] = (s4_idx, transport_s3_to_s4)
         
         # s4 -> s5：预估运输时间
+        # 注意：release_s4 已经是 s4 的释放时间（= 进入时间 + 加工时间 70s）
+        # 所以运输时间只需要：s4卸载 + d_s5运输 + s5装载，不需要再加 70s
         if s4_idx >= 0 and s5_idx >= 0:
-            # 运输时间 = s4加工(70s) + s4卸载 + d_s5运输 + s5装载
-            transport_s4_to_s5 = 70 + self.ttime * 3  # 约 85s
+            # 运输时间 = s4卸载 + d_s5运输 + s5装载
+            transport_s4_to_s5 = self.ttime * 3  # 约 15s
             self.release_chain[s4_idx] = (s5_idx, transport_s4_to_s5)
         
         # 路线2的链路：s1 -> s5（直接）
@@ -501,43 +513,69 @@ class Petri:
             transport_s1_to_s5 = self.ttime * 2  # 约 10s
             self.release_chain_route2[s1_idx] = (s5_idx, transport_s1_to_s5)
 
-    def _check_release_violation(self, place_idx: int, expected_enter_time: int) -> float:
+    def _check_release_violation(self, place_idx: int, expected_enter_time: int) -> Tuple[float, int]:
         """
-        检查晶圆预计进入时间是否违反腔室的释放约束。
+        检查晶圆预计进入时间是否违反腔室的释放约束，并返回修正后的进入时间。
         
-        违规条件：队列已满（len >= capacity）且 expected_enter_time < earliest_release
+        容量检查逻辑：
+        - release_schedule：记录**预估中**即将进入腔室的晶圆（已承诺但未到达）
+        - tokens：记录**实际已在**腔室中的晶圆
+        - 实际占用 = len(tokens) + len(release_schedule)（两者不重叠，因为进入腔室后会从 schedule 移除）
+        
+        违规条件：实际占用 >= capacity 且 expected_enter_time < earliest_release
+        如果违规，将 expected_enter_time 修正为 earliest_release，确保后续晶圆看到正确的释放时间。
         
         Args:
             place_idx: 目标腔室索引
             expected_enter_time: 预计进入时间
             
         Returns:
-            惩罚值（0 表示不违规）
+            (penalty: float, corrected_enter_time: int)
+            - penalty: 惩罚值（0 表示不违规）
+            - corrected_enter_time: 修正后的进入时间（如果违规则为 earliest_release，否则为 expected_enter_time）
         """
         place = self.marks[place_idx]
         
-        # 如果队列未满，不违规
-        if len(place.release_schedule) < place.capacity:
-            return 0.0
+        # 计算实际占用：已在腔室中的 + 预估中即将进入的
+        # 注意：tokens 和 release_schedule 不重叠
+        # - 晶圆进入运输位时加入 release_schedule
+        # - 晶圆进入腔室时从 release_schedule 移除，同时加入 tokens
+        # - 但存在时间窗口：晶圆在运输中时同时存在于两者？
+        # 设计澄清：release_schedule 记录的是「预计进入」，晶圆实际进入腔室（t_s* 变迁）时
+        # 会调用 _update_release 而非 _pop_release，所以不会重复计算
+        # 实际上 release_schedule 的记录会在晶圆离开腔室时才 pop
+        # 因此：当晶圆在腔室中时，它同时存在于 tokens 和 release_schedule 中！
+        # 所以检查应该只用 release_schedule，因为它覆盖了所有承诺（包括已进入的）
+        actual_occupancy = len(place.release_schedule)
+        
+        # 如果占用未满，不违规
+        if actual_occupancy < place.capacity:
+            return (0.0, expected_enter_time)
         
         earliest = place.earliest_release()
         if earliest is None or expected_enter_time >= earliest:
-            return 0.0  # 不违规
+            return (0.0, expected_enter_time)  # 不违规
         
-        # 违规：计算惩罚（与违规时间差成正比）
+        # 违规：计算惩罚，并修正进入时间为 earliest_release
         violation_gap = earliest - expected_enter_time
-        return self.c_release_violation * 100
+        penalty = self.c_release_violation * 100
+        corrected_enter_time = earliest
+        return (penalty, corrected_enter_time)
 
-    def _record_initial_release(self, token_id: int, enter_d_time: int, 
-                                 target_place_idx: int, wafer_color: int = 0) -> float:
+    def _record_initial_release(self, token_id: int, enter_d_time: int,
+                                 target_place_idx: int, wafer_color: int = 0,
+                                 chain_downstream: bool = False) -> float:
         """
-        晶圆进入运输位时，记录初步预估的释放时间，并链式传播到下游腔室。
+        晶圆进入运输位时，记录初步预估的释放时间；可选链式传播到下游腔室。
+
+        按「离开才检查」规则：离开 LP 时只对 s1 记录并检查，不链式传播。
         
         Args:
             token_id: 晶圆编号
             enter_d_time: 进入运输位的时间
             target_place_idx: 目标腔室索引
             wafer_color: 晶圆颜色（1=路线1, 2=路线2）
+            chain_downstream: 是否链式传播到下游（默认 False，仅记录 target）
             
         Returns:
             违规惩罚值
@@ -545,21 +583,19 @@ class Petri:
         target_place = self.marks[target_place_idx]
         
         # 计算预估进入时间和释放时间
-        # 预估进入时间 = enter_d_time + T_transport + T_load
         expected_enter = enter_d_time + self.T_transport + self.T_load
-        # 预估释放时间 = expected_enter + processing_time
-        release_time = expected_enter + target_place.processing_time
         
-        # 检查违规
         penalty = 0.0
+        corrected_enter = expected_enter
         if self.reward_config.get('release_violation_penalty', 1):
-            penalty = self._check_release_violation(target_place_idx, expected_enter)
+            penalty, corrected_enter = self._check_release_violation(target_place_idx, expected_enter)
         
-        # 记录释放时间
+        # 使用修正后的进入时间重新计算释放时间
+        release_time = corrected_enter + target_place.processing_time
         target_place.add_release(token_id, release_time)
         
-        # 链式传播到下游腔室（根据颜色选择链路）
-        penalty += self._chain_record_release(token_id, target_place_idx, release_time, wafer_color)
+        if chain_downstream:
+            penalty += self._chain_record_release(token_id, target_place_idx, release_time, wafer_color)
         
         return penalty
 
@@ -597,12 +633,15 @@ class Petri:
             
             # 下游预估进入时间 = 当前释放时间 + 运输时间
             downstream_enter = current_release + transport_time
-            # 下游预估释放时间 = 进入时间 + 加工时间
-            downstream_release = downstream_enter + downstream_place.processing_time
             
-            # 检查下游违规
+            # 检查下游违规并获取修正后的进入时间
+            corrected_downstream_enter = downstream_enter
             if self.reward_config.get('release_violation_penalty', 1):
-                penalty += self._check_release_violation(downstream_idx, downstream_enter)
+                downstream_penalty, corrected_downstream_enter = self._check_release_violation(downstream_idx, downstream_enter)
+                penalty += downstream_penalty
+            
+            # 使用修正后的进入时间重新计算释放时间
+            downstream_release = corrected_downstream_enter + downstream_place.processing_time
             
             # 记录下游释放时间
             downstream_place.add_release(token_id, downstream_release)
@@ -613,36 +652,35 @@ class Petri:
         
         return penalty
 
-    def _update_release(self, token_id: int, actual_enter_time: int, 
-                        place_idx: int, wafer_color: int = 0) -> None:
+    def _update_release(self, token_id: int, actual_enter_time: int,
+                        place_idx: int, wafer_color: int = 0,
+                        chain_downstream: bool = True) -> None:
         """
-        晶圆实际进入腔室时，更新精确的释放时间，并链式更新下游。
+        晶圆实际进入腔室时，更新精确的释放时间；可选链式更新下游。
         
-        注意：更新操作不进行违规检测，因为这是更新已有晶圆的释放时间。
+        注意：更新操作不进行违规检测。按「离开才检查」规则，t_s1 时下游尚未写入，只更新 s1。
         
         Args:
             token_id: 晶圆编号
             actual_enter_time: 实际进入时间
             place_idx: 腔室索引
             wafer_color: 晶圆颜色（1=路线1, 2=路线2）
+            chain_downstream: 是否链式更新下游（默认 True；t_s1 时传 False）
         """
         place = self.marks[place_idx]
-        
-        # 计算新的释放时间
         new_release_time = actual_enter_time + place.processing_time
-        
-        # 更新当前腔室的释放时间
         place.update_release(token_id, new_release_time)
-        
-        # 链式更新下游（不检查违规）
-        self._chain_update_release(token_id, place_idx, new_release_time, wafer_color)
+        if chain_downstream:
+            self._chain_update_release(token_id, place_idx, new_release_time, wafer_color)
 
     def _chain_update_release(self, token_id: int, start_place_idx: int, 
                                start_release_time: int, wafer_color: int = 0) -> None:
         """
         链式更新下游腔室中指定晶圆的预估释放时间。
         
-        注意：更新操作不进行违规检测，因为这是更新已有晶圆的释放时间。
+        重要：这是更新已有记录，不是添加新记录，因此：
+        1. 不调用 _check_release_violation（当前晶圆自己的记录不应约束自己）
+        2. 不施加惩罚
         
         Args:
             token_id: 晶圆编号
@@ -665,10 +703,16 @@ class Petri:
             
             # 下游预估进入时间 = 当前释放时间 + 运输时间
             downstream_enter = current_release + transport_time
-            # 下游预估释放时间 = 进入时间 + 加工时间
+            
+            # 重要修复：更新已有记录时，不调用 _check_release_violation
+            # 因为当前晶圆自己的记录已经在 release_schedule 中，
+            # 把它自己的释放时间当作约束会导致错误的修正
+            # 违规检查只在首次添加记录（add_release）时才有意义
+            
+            # 直接使用预估进入时间计算释放时间
             downstream_release = downstream_enter + downstream_place.processing_time
             
-            # 更新下游释放时间（不检查违规）
+            # 更新下游释放时间
             downstream_place.update_release(token_id, downstream_release)
             
             # 继续链式传播
@@ -1533,17 +1577,17 @@ class Petri:
         if t_name in ("u_LP1_s1", "u_LP2_s1"):
             # 递增已进入系统的晶圆计数
             self.entered_wafer_count += 1
-            # 晶圆进入 d_s1：记录初步预估释放时间 + 链式传播
+            # 晶圆离开 LP 进入 d_s1：只对 s1 记录并检查，不链式传播（离开才检查）
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_color)
+                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_color, chain_downstream=False)
                 self._release_violation_penalty += penalty
             
         elif t_name == "t_s1":
-            # 晶圆进入 s1：更新精确释放时间 + 链式更新
+            # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                self._update_release(wafer_id, enter_new, s1_idx, wafer_color)
+                self._update_release(wafer_id, enter_new, s1_idx, wafer_color, chain_downstream=False)
             
         elif t_name == "u_s1_s2":
             # 路线1：晶圆离开 s1 去 s2，从 s1 队列移除
@@ -1552,22 +1596,123 @@ class Petri:
                 self._pop_release(wafer_id, s1_idx)
         
         elif t_name == "u_s1_s5":
-            # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除
+            # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除；对 s5 做 add_release + 违规检查（离开才检查）
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
                 self._pop_release(wafer_id, s1_idx)
+            if "s5" in self.id2p_name:
+                s5_idx = self._get_place_index("s5")
+                place_s5 = self.marks[s5_idx]
+                # 晶圆进入 d_s5 时间 = enter_new，预计进入 s5 = enter_new + T_load
+                expected_enter_s5 = enter_new + self.T_load
+                
+                penalty_s5 = 0.0
+                corrected_enter_s5 = expected_enter_s5
+                if self.reward_config.get('release_violation_penalty', 1):
+                    penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
+                    self._release_violation_penalty += penalty_s5
+                
+                # 使用修正后的进入时间重新计算释放时间
+                release_s5 = corrected_enter_s5 + place_s5.processing_time
+                place_s5.add_release(wafer_id, release_s5)
+            
+        elif t_name == "u_s2_s3":
+            # 路线1：离开 s2(LLC)，对 s3、s4 做 add_release + 违规检查（离开才检查）
+            if "s3" in self.id2p_name and "s4" in self.id2p_name:
+                s3_idx = self._get_place_index("s3")
+                s4_idx = self._get_place_index("s4")
+                place_s3 = self.marks[s3_idx]
+                place_s4 = self.marks[s4_idx]
+                expected_enter_s3 = enter_new + self.T_load
+                
+                # 检查 s3 违规并获取修正后的进入时间
+                penalty = 0.0
+                corrected_enter_s3 = expected_enter_s3
+                if self.reward_config.get('release_violation_penalty', 1):
+                    penalty_s3, corrected_enter_s3 = self._check_release_violation(s3_idx, expected_enter_s3)
+                    penalty += penalty_s3
+                
+                # 使用修正后的 s3 进入时间重新计算 s3 释放时间和 s4 进入时间
+                release_s3 = corrected_enter_s3 + place_s3.processing_time
+                transport_s3_to_s4 = self.ttime * 3
+                expected_enter_s4 = release_s3 + transport_s3_to_s4
+                
+                # 检查 s4 违规并获取修正后的进入时间
+                corrected_enter_s4 = expected_enter_s4
+                if self.reward_config.get('release_violation_penalty', 1):
+                    penalty_s4, corrected_enter_s4 = self._check_release_violation(s4_idx, expected_enter_s4)
+                    penalty += penalty_s4
+                
+                # 使用修正后的 s4 进入时间重新计算 s4 释放时间
+                release_s4 = corrected_enter_s4 + place_s4.processing_time
+                
+                place_s3.add_release(wafer_id, release_s3)
+                place_s4.add_release(wafer_id, release_s4)
+                self._release_violation_penalty += penalty
             
         elif t_name == "t_s3":
-            # 晶圆进入 s3：更新精确释放时间 + 链式更新
+            # 晶圆进入 s3：更新精确释放时间 + 链式更新 s4（s4 已在 u_s2_s3 时加入）
             if "s3" in self.id2p_name:
                 s3_idx = self._get_place_index("s3")
                 self._update_release(wafer_id, enter_new, s3_idx, wafer_color)
+        
+        elif t_name == "t_s4":
+            # 晶圆进入 s4：只更新 s4，不链式更新（s5 在 u_s4_s5 时才加入）
+            if "s4" in self.id2p_name:
+                s4_idx = self._get_place_index("s4")
+                self._update_release(wafer_id, enter_new, s4_idx, wafer_color, chain_downstream=False)
             
         elif t_name == "u_s3_s4":
             # 晶圆离开 s3：从 s3 队列移除
             if "s3" in self.id2p_name:
                 s3_idx = self._get_place_index("s3")
                 self._pop_release(wafer_id, s3_idx)
+        
+        elif t_name == "u_s4_s5":
+            # 路线1：离开 s4(LLD)，对 s5 做 add_release + 违规检查（离开才检查）；再从 s4 队列移除
+            if "s4" in self.id2p_name and "s5" in self.id2p_name:
+                s4_idx = self._get_place_index("s4")
+                s5_idx = self._get_place_index("s5")
+                place_s4 = self.marks[s4_idx]
+                place_s5 = self.marks[s5_idx]
+                release_s4 = place_s4.get_release(wafer_id)
+                if release_s4 is not None:
+                    # 修复：运输时间不需要再加 70s，因为 release_s4 已经包含了 s4 的加工时间
+                    # 运输时间 = s4卸载 + d_s5运输 + s5装载
+                    transport_s4_to_s5 = self.ttime * 3  # 约 15s
+                    expected_enter_s5 = release_s4 + transport_s4_to_s5
+                    
+                    penalty_s5 = 0.0
+                    corrected_enter_s5 = expected_enter_s5
+                    if self.reward_config.get('release_violation_penalty', 1):
+                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
+                        self._release_violation_penalty += penalty_s5
+                    
+                    # 使用修正后的进入时间重新计算释放时间
+                    release_s5 = corrected_enter_s5 + place_s5.processing_time
+                    place_s5.add_release(wafer_id, release_s5)
+                else:
+                    # 防御性处理：release_s4 为 None 时使用当前时间估算
+                    # 这种情况不应该发生，如果发生说明 u_s2_s3 时未正确写入 s4 的 release_schedule
+                    import warnings
+                    warnings.warn(
+                        f"[释放时间异常] wafer_id={wafer_id} 在 u_s4_s5 时 release_s4 为 None，"
+                        f"s4.release_schedule={list(place_s4.release_schedule)}，使用当前时间估算",
+                        RuntimeWarning
+                    )
+                    # 使用当前时间 + 运输时间作为 fallback
+                    transport_s4_to_s5 = self.ttime * 3
+                    expected_enter_s5 = enter_new + transport_s4_to_s5
+                    
+                    penalty_s5 = 0.0
+                    corrected_enter_s5 = expected_enter_s5
+                    if self.reward_config.get('release_violation_penalty', 1):
+                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
+                        self._release_violation_penalty += penalty_s5
+                    
+                    release_s5 = corrected_enter_s5 + place_s5.processing_time
+                    place_s5.add_release(wafer_id, release_s5)
+                self._pop_release(wafer_id, s4_idx)
             
         elif t_name == "t_s5":
             # 晶圆进入 s5：更新精确释放时间

@@ -185,7 +185,7 @@ def parse_args():
   python run_ppo.py --phase 1
 
   # 只训练 Phase 2，从 Phase 1 checkpoint 开始
-  python run_ppo.py --phase 2 --checkpoint saved_models/CT_phase1_best.pt
+  python run_ppo.py --phase 2 --checkpoint saved_models/30_1241.pt
 
   # 两阶段课程学习（默认，自动加载）
   python run_ppo.py --phase 1,2
@@ -194,7 +194,7 @@ def parse_args():
   python run_ppo.py --phase 1 --config data/ppo_configs/custom/my_config.json
 
   # 从中断处继续训练
-  python run_ppo.py --phase 1 --checkpoint solutions/PPO/saved_models/CT_phase1_best.pt
+  python run_ppo.py --phase 1 --checkpoint solutions/PPO/saved_models/30_1241.pt
 
   # Phase 2 从头训练（不加载 Phase 1）
   python run_ppo.py --phase 2 --no-auto-load
