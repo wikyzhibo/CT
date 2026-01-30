@@ -456,3 +456,11 @@ python -m solutions.Continuous_model.viz --no-model
   - 可折叠统计分组
   - 增强的动画效果
   - 双机械手支持
+
+
+
+## 历史版本
+
+- **测试版本**
+
+![image-20260130164810329](C:\Users\khand\OneDrive\code\dqn\CT\docs\assets\image-20260130164810329.png)
