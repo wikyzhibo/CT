@@ -6,6 +6,7 @@ from matplotlib.patches import Rectangle
 from matplotlib import patheffects
 from dataclasses import dataclass
 import numpy as np
+from matplotlib.ticker import MultipleLocator, FuncFormatter
 
 @dataclass
 class Op:
@@ -282,16 +283,27 @@ def plot_gantt_hatched_residence(
         ax.set_yticks([])
         
         # 添加垂直网格线提高时间轴可读性
-        ax.grid(True, axis='x', linestyle='--', linewidth=0.5, alpha=0.3, color='#94A3B8')
+        # 主刻度：500（显示在坐标轴上 + 大网格）
+        ax.xaxis.set_major_locator(MultipleLocator(500))
+        # 次刻度：50（只用于小网格，不显示在坐标轴）
+        ax.xaxis.set_minor_locator(MultipleLocator(50))
+        # 大网格（主刻度）
+        ax.grid(True, axis='x', which='major',
+                linestyle='--', linewidth=0.6, alpha=0.4, color='#94A3B8')
+        # 小网格（次刻度）
+        ax.grid(True, axis='x', which='minor',
+                linestyle=':', linewidth=0.4, alpha=0.4, color='#94A3B8')
+        # 只显示主刻度标签（默认就是这样，这句是保险）
+        ax.tick_params(axis='x', which='minor', bottom=False, labelbottom=False)
+        ax.set_axisbelow(True)
         
         # 优化时间轴标签
         ax.set_xlabel("Time (s)", fontsize=14, color='#1E293B', weight='normal')
         
         # 设置主要时间刻度
-        if t_max > 0:
-            major_ticks = np.arange(0, t_max * 1.02, max(50, t_max / 10))
-            ax.set_xticks(major_ticks)
-            ax.set_xticklabels([f"{int(t)}" for t in major_ticks], fontsize=11, color='#475569')
+        # 主刻度文字格式（替代 set_xticklabels）
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x)}"))
+        ax.tick_params(axis='x', which='major', labelsize=11, colors='#475569')
         
         A = [1, 2, 3, 4, 5]
         B = [1, 4, 5]
