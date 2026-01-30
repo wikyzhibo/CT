@@ -1,0 +1,322 @@
+"""
+Petri 网算法适配器
+将现有 Env_PN/Petri 环境适配为统一可视化接口
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Tuple, Any
+
+from solutions.PPO.enviroment import Env_PN
+
+from .algorithm_interface import (
+    AlgorithmAdapter,
+    ActionInfo,
+    WaferState,
+    ChamberState,
+    RobotState,
+    StateInfo,
+)
+
+
+class PetriAdapter(AlgorithmAdapter):
+    """Petri 网算法适配器"""
+
+    def __init__(self, env: Env_PN) -> None:
+        self.env = env
+        self.net = env.net
+        self._last_reward_detail: Dict[str, float] = {}
+        self._last_action_history: List[Dict[str, Any]] = []
+
+        # 腔室映射配置（迁移自 viz.py）
+        self.chamber_config = {
+            "LLA": {"source": ["LP1", "LP2"], "active": True, "proc_time": 0, "robot": "TM2"},
+            "LLB": {"source": "LP_done", "active": True, "proc_time": 0, "robot": "TM2"},
+            "PM7": {"source": "s1", "machine": 0, "active": True, "proc_time": 70, "robot": "TM2"},
+            "PM8": {"source": "s1", "machine": 1, "active": True, "proc_time": 70, "robot": "TM2"},
+            "PM9": {"source": "s5", "machine": 0, "active": True, "proc_time": 200, "robot": "TM2"},
+            "PM10": {"source": "s5", "machine": 1, "active": True, "proc_time": 200, "robot": "TM2"},
+            "LLC": {"source": "s2", "active": True, "proc_time": 0, "robot": "TM3"},
+            "LLD": {"source": "s4", "active": True, "proc_time": 70, "robot": "TM3"},
+            "PM1": {"source": "s3", "machine": 0, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM2": {"source": "s3", "machine": 1, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM3": {"source": "s3", "machine": 2, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM4": {"source": "s3", "machine": 3, "active": True, "proc_time": 600, "robot": "TM3"},
+            "PM5": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
+            "PM6": {"source": None, "active": False, "proc_time": 0, "robot": "TM3"},
+        }
+
+        self.display_chambers = list(self.chamber_config.keys())
+        self.transports_tm2 = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
+        self.transports_tm3 = ["d_s3", "d_s4"]
+        self.transports = self.transports_tm2 + self.transports_tm3
+
+    def reset(self) -> StateInfo:
+        self.env.reset()
+        return self._collect_state_info()
+
+    def step(self, action: int) -> Tuple[StateInfo, float, bool, Dict]:
+        result = self.net.step(
+            t=action if action < self.net.T else None,
+            wait=(action == self.net.T),
+            with_reward=True,
+            detailed_reward=True,
+        )
+
+        # pn.py: (done, reward_result, scrap)
+        done = bool(result[0])
+        reward_result = result[1]
+        scrap = bool(result[2]) if len(result) > 2 else False
+
+        if isinstance(reward_result, dict):
+            self._last_reward_detail = {k: float(v) for k, v in reward_result.items() if isinstance(v, (int, float))}
+            reward = float(reward_result.get("total", 0.0))
+        else:
+            self._last_reward_detail = {}
+            reward = float(reward_result)
+
+        if not done:
+            done = getattr(self.net, "done_count", 0) >= getattr(self.net, "n_wafer", 0)
+
+        state_info = self._collect_state_info()
+        info = {"done": done, "reward": reward, "scrap": scrap, "detail": self._last_reward_detail}
+        self._last_action_history.append({
+            "step": len(self._last_action_history) + 1,
+            "action": self.get_action_name(action),
+            "reward": reward,
+            "detail": self._last_reward_detail,
+        })
+        return state_info, reward, done, info
+
+    def get_action_name(self, action: int) -> str:
+        if action == self.net.T:
+            return "WAIT"
+        if 0 <= action < len(self.net.id2t_name):
+            return self._format_transition_name(self.net.id2t_name[action])
+        return f"UNKNOWN_{action}"
+
+    def get_enabled_actions(self) -> List[ActionInfo]:
+        enabled_t = set(self.net.get_enable_t())
+        actions: List[ActionInfo] = []
+        for t in range(self.net.T):
+            enabled = t in enabled_t
+            desc = "" if enabled else "当前条件不满足"
+            actions.append(ActionInfo(
+                action_id=t,
+                action_name=self._format_transition_name(self.net.id2t_name[t]),
+                enabled=enabled,
+                description=desc,
+            ))
+        actions.append(ActionInfo(
+            action_id=self.net.T,
+            action_name="WAIT",
+            enabled=True,
+            description="",
+        ))
+        return actions
+
+    def get_reward_breakdown(self) -> Dict[str, float]:
+        return dict(self._last_reward_detail or {})
+
+    def _format_transition_name(self, t_name: str) -> str:
+        """将技术性变迁名称转换为简短友好的显示格式"""
+        place_to_display = {
+            "LP1": "LP1",
+            "LP2": "LP2",
+            "s1": "PM7/PM8",
+            "s2": "LLC",
+            "s3": "PM1-4",
+            "s4": "LLD",
+            "s5": "PM9/PM10",
+            "LP_done": "LLB",
+        }
+
+        if t_name.startswith("u_"):
+            parts = t_name.split("_")
+            if len(parts) >= 3:
+                from_place = parts[1]
+                to_place = parts[2]
+                from_display = place_to_display.get(from_place, from_place)
+                to_display = place_to_display.get(to_place, to_place)
+                return f"{from_display}→{to_display}"
+        elif t_name.startswith("t_"):
+            place = t_name[2:]
+            display = place_to_display.get(place, place)
+            return display
+
+        return t_name
+
+    @property
+    def action_space_size(self) -> int:
+        return int(self.net.T)
+
+    def get_current_state(self) -> StateInfo:
+        return self._collect_state_info()
+
+    def render_gantt(self, output_path: str) -> bool:
+        try:
+            self.net.render_gantt(out_path=output_path)
+            return True
+        except Exception:
+            return False
+
+    def export_action_sequence(self) -> List[Dict[str, Any]]:
+        return list(self._last_action_history)
+
+    def _collect_state_info(self) -> StateInfo:
+        chamber_states: Dict[str, ChamberState] = {}
+        transport_states: Dict[str, ChamberState] = {}
+
+        for name, config in self.chamber_config.items():
+            chamber_states[name] = ChamberState(
+                name=name,
+                place_idx=-1,
+                capacity=0,
+                wafers=[],
+                proc_time=float(config.get("proc_time", 0)),
+                status="idle",
+                chamber_type="processing",
+            )
+
+        for t_name in self.transports:
+            transport_states[t_name] = ChamberState(
+                name=t_name,
+                place_idx=-1,
+                capacity=0,
+                wafers=[],
+                proc_time=0.0,
+                status="idle",
+                chamber_type="transport",
+            )
+
+        release_schedule: Dict[str, List[Tuple[int, int]]] = {}
+
+        for p_idx, place in enumerate(self.net.marks):
+            p_name = place.name
+            if p_name.startswith("r_"):
+                continue
+
+            release_schedule[p_name] = list(getattr(place, "release_schedule", []))
+
+            for tok in place.tokens:
+                if getattr(tok, "token_id", -1) < 0:
+                    continue
+
+                wafer_state = self._build_wafer_state(p_idx, place, tok)
+
+                if p_name in ("LP1", "LP2"):
+                    chamber_states["LLA"].wafers.append(wafer_state)
+                elif p_name == "LP_done":
+                    chamber_states["LLB"].wafers.append(wafer_state)
+                elif p_name == "s1":
+                    machine = getattr(tok, "machine", 0)
+                    chamber_states["PM7" if machine == 0 else "PM8"].wafers.append(wafer_state)
+                elif p_name == "s2":
+                    chamber_states["LLC"].wafers.append(wafer_state)
+                elif p_name == "s3":
+                    machine = getattr(tok, "machine", 0)
+                    targets = ["PM1", "PM2", "PM3", "PM4"]
+                    chamber_states[targets[machine % 4]].wafers.append(wafer_state)
+                elif p_name == "s4":
+                    chamber_states["LLD"].wafers.append(wafer_state)
+                elif p_name == "s5":
+                    machine = getattr(tok, "machine", 0)
+                    chamber_states["PM9" if machine == 0 else "PM10"].wafers.append(wafer_state)
+                elif p_name.startswith("d_") and p_name in transport_states:
+                    transport_states[p_name].wafers.append(wafer_state)
+
+        # 更新 place_idx/capacity
+        for name, chamber in chamber_states.items():
+            source = self.chamber_config[name].get("source")
+            place_name = None
+            if isinstance(source, list):
+                place_name = source[0]
+            elif isinstance(source, str):
+                place_name = source
+            if place_name is not None:
+                place = self._get_place_by_name(place_name)
+                if place is not None:
+                    chamber.place_idx = self.net.id2p_name.index(place_name)
+                    chamber.capacity = getattr(place, "capacity", 0)
+
+        for t_name, chamber in transport_states.items():
+            place = self._get_place_by_name(t_name)
+            if place is not None:
+                chamber.place_idx = self.net.id2p_name.index(t_name)
+                chamber.capacity = getattr(place, "capacity", 0)
+
+        # 计算状态
+        for chamber in list(chamber_states.values()) + list(transport_states.values()):
+            chamber.status = self._calc_chamber_status(chamber)
+
+        robot_states = self._collect_robot_states(transport_states)
+
+        return StateInfo(
+            time=float(getattr(self.net, "time", 0)),
+            chambers=list(chamber_states.values()),
+            transport_buffers=list(transport_states.values()),
+            start_buffers=[chamber_states["LLA"]],
+            end_buffers=[chamber_states["LLB"]],
+            robot_states=robot_states,
+            enabled_actions=self.get_enabled_actions(),
+            done_count=int(getattr(self.net, "done_count", 0)),
+            total_wafers=int(getattr(self.net, "n_wafer", 0)),
+            stats={
+                "release_schedule": release_schedule,
+            },
+        )
+
+    def _build_wafer_state(self, p_idx, place, tok) -> WaferState:
+        stay_time = float(getattr(tok, "stay_time", 0))
+        proc_time = float(getattr(place, "processing_time", 0))
+        place_type = int(getattr(place, "type", 0))
+        time_to_scrap = self._calc_time_to_scrap(place_type, stay_time, proc_time)
+        route_id = int(getattr(tok, "color", 0))
+
+        return WaferState(
+            token_id=int(getattr(tok, "token_id", -1)),
+            place_name=place.name,
+            place_idx=int(p_idx),
+            place_type=place_type,
+            stay_time=stay_time,
+            proc_time=proc_time,
+            time_to_scrap=time_to_scrap,
+            route_id=route_id,
+        )
+
+    def _calc_time_to_scrap(self, place_type: int, stay_time: float, proc_time: float) -> float:
+        if place_type == 1:
+            return (proc_time + float(getattr(self.net, "P_Residual_time", 0))) - stay_time
+        if place_type == 2:
+            return float(getattr(self.net, "D_Residual_time", 0)) - stay_time
+        return -1.0
+
+    def _calc_chamber_status(self, chamber: ChamberState) -> str:
+        if not chamber.wafers:
+            return "idle"
+        if chamber.chamber_type == "transport":
+            return "active"
+        min_time_to_scrap = min((w.time_to_scrap for w in chamber.wafers if w.time_to_scrap >= 0), default=9999)
+        if min_time_to_scrap <= 0:
+            return "danger"
+        if min_time_to_scrap <= 5:
+            return "warning"
+        return "active"
+
+    def _collect_robot_states(self, transport_states: Dict[str, ChamberState]) -> Dict[str, RobotState]:
+        tm2_wafers = []
+        tm3_wafers = []
+        for t_name in self.transports_tm2:
+            tm2_wafers.extend(transport_states.get(t_name, ChamberState("", -1, 0)).wafers)
+        for t_name in self.transports_tm3:
+            tm3_wafers.extend(transport_states.get(t_name, ChamberState("", -1, 0)).wafers)
+        return {
+            "TM2": RobotState(name="TM2", busy=bool(tm2_wafers), wafers=tm2_wafers),
+            "TM3": RobotState(name="TM3", busy=bool(tm3_wafers), wafers=tm3_wafers),
+        }
+
+    def _get_place_by_name(self, name: str):
+        for place in self.net.marks:
+            if place.name == name:
+                return place
+        return None

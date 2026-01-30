@@ -12,6 +12,76 @@
 python -m solutions.Continuous_model.viz
 ```
 
+## PySide6 版本
+
+PySide6 版本位于 `visualization/`，采用统一算法接口以支持后续接入更多算法。入口模块将在阶段 1 完成后提供。
+
+### PySide6 入口与核心模块
+
+- `visualization/algorithm_interface.py`: 统一算法接口
+- `visualization/petri_adapter.py`: Petri 环境适配器
+- `visualization/viewmodel.py`: UI 状态管理
+- `visualization/main.py`: PySide6 入口
+- `visualization/smoke_test.py`: 适配器冒烟测试
+
+### PySide6 已实现组件
+
+- `visualization/theme.py`: 主题配色
+- `visualization/ui_params.py`: **UI 可调参数**（布局、字号、尺寸等，各组件从此读取，便于统一调整）
+- `visualization/widgets/chamber_widget.py`: 腔室组件
+- `visualization/widgets/wafer_widget.py`: 晶圆组件
+- `visualization/widgets/robot_widget.py`: 机械手组件
+- `visualization/widgets/stats_panel.py`: 左侧统计面板
+- `visualization/widgets/control_panel.py`: 右侧控制面板
+- `visualization/widgets/center_canvas.py`: 中心布局画布
+- `visualization/main_window.py`: 主窗口（三栏布局）
+
+### PySide6 布局与界面优化
+
+- **中心画布布局**：与旧版 Pygame（viz.py）一致，采用 7 行 × 4 列网格。腔室位置：PM3/PM4 上行，PM2/PM1 左列，PM5/PM6 右列，LLC/LLD 中行，PM8/PM7、PM9/PM10 下两行左右，LLA/LLB 最下行中央。机械手 TM3、TM2 分别置于上半区与下半区的 2×2 网格中心（`center_canvas.py`），即“机械手在腔室中间”。
+- **变迁按钮短名**：右侧变迁按钮与历史记录中的动作名使用简短格式。由 `petri_adapter._format_transition_name` 提供：`u_<from>_<to>` 显示为「源→目标」（如 LP1→PM7/PM8），`t_<place>` 显示为库所显示名（如 PM7/PM8、PM1-4、LLB）。库所到显示名映射：s1→PM7/PM8、s2→LLC、s3→PM1-4、s4→LLD、s5→PM9/PM10、LP_done→LLB。
+- **左侧状态面板可读性**：系统指标使用 Consolas 13pt，分组内间距 6px；RELEASE TIME / HISTORY 文本框 11pt、最小高度 160px。主窗口样式表中 QGroupBox::title 为 13px 加粗，QLabel 12px，QTextEdit 11px，以提升清晰度。趋势图已移除，左栏仅保留 KPI、状态摘要与 HISTORY。
+- **UI 可调参数**：所有组件的布局、字号、尺寸等集中在 `visualization/ui_params.py`。`UIParams` 下分 `main_window`、`stats_panel`、`control_panel`、`center_canvas`、`chamber_item`、`robot_item` 等子配置；修改该文件中默认值即可调整界面，无需改各组件实现。启动时也可替换 `ui_params` 单例为从文件加载的实例以实现主题/布局切换。
+
+### PySide6 交互说明
+
+- 控制按钮与快捷键已在主窗口中接线（W/R/M/A/Space/ESC）
+- 速度倍率通过 `ControlPanel` 触发，映射为自动模式的时间间隔
+
+## PySide6 测试与验收
+
+```bash
+# 无 GUI 冒烟测试
+python -m visualization.smoke_test
+
+# 启动可视化
+python -m visualization.main --adapter petri
+```
+
+## PySide6 配置编辑器
+
+用于编辑 `data/petri_configs/*.json` 中的关键参数与奖励开关。
+
+```bash
+python -c "from visualization.config_editor import ConfigEditor; import sys; from PySide6.QtWidgets import QApplication; app=QApplication(sys.argv); w=ConfigEditor(); w.show(); sys.exit(app.exec())"
+```
+
+## PySide6 调试工具
+
+提供断点(step)、单步执行和状态检查器。
+
+```bash
+python -c "from visualization.debug_tools import DebugTools; import sys; from PySide6.QtWidgets import QApplication; app=QApplication(sys.argv); from visualization.petri_adapter import PetriAdapter; from solutions.PPO.enviroment import Env_PN; from visualization.viewmodel import PetriViewModel; vm=PetriViewModel(PetriAdapter(Env_PN(detailed_reward=True))); w=DebugTools(vm); w.show(); vm.reset(); sys.exit(app.exec())"
+```
+
+## PySide6 数据导出
+
+导出甘特图、统计数据与动作序列。
+
+```bash
+python -c "from visualization.export_tools import ExportTools; import sys; from PySide6.QtWidgets import QApplication; app=QApplication(sys.argv); from visualization.petri_adapter import PetriAdapter; from solutions.PPO.enviroment import Env_PN; from visualization.viewmodel import PetriViewModel; vm=PetriViewModel(PetriAdapter(Env_PN(detailed_reward=True))); w=ExportTools(vm); w.show(); vm.reset(); sys.exit(app.exec())"
+```
+
 ### 命令行参数
 
 - `--model`, `-m`: 指定模型文件路径
