@@ -251,6 +251,11 @@ class PetriAdapter(AlgorithmAdapter):
 
         robot_states = self._collect_robot_states(transport_states)
 
+        # 获取晶圆统计数据（用于左侧面板指标显示）
+        wafer_stats = {}
+        if hasattr(self.net, "calc_wafer_statistics"):
+            wafer_stats = self.net.calc_wafer_statistics()
+        
         return StateInfo(
             time=float(getattr(self.net, "time", 0)),
             chambers=list(chamber_states.values()),
@@ -263,6 +268,15 @@ class PetriAdapter(AlgorithmAdapter):
             total_wafers=int(getattr(self.net, "n_wafer", 0)),
             stats={
                 "release_schedule": release_schedule,
+                # 晶圆统计数据（与 viz.py 中 calc_wafer_statistics 一致）
+                "system_avg": wafer_stats.get("system_avg", 0.0),
+                "system_max": wafer_stats.get("system_max", 0),
+                "system_diff": wafer_stats.get("system_diff", 0.0),
+                "completed_count": wafer_stats.get("completed_count", 0),
+                "in_progress_count": wafer_stats.get("in_progress_count", 0),
+                "chambers": wafer_stats.get("chambers", {}),
+                "transports": wafer_stats.get("transports", {}),
+                "transports_detail": wafer_stats.get("transports_detail", {}),
             },
         )
 
