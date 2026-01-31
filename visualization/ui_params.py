@@ -20,7 +20,7 @@ class MainWindowParams:
     initial_x: int = 100             # 窗口初始左上角 x
     initial_y: int = 100             # 窗口初始左上角 y
     initial_width: int = 1520        # 窗口初始宽度
-    initial_height: int = 1235       # 窗口初始高度
+    initial_height: int = 1000       # 窗口初始高度
     central_spacing: int = 12        # 左/中/右三栏之间的间距 (px)
 
 
@@ -28,45 +28,59 @@ class MainWindowParams:
 class StatsPanelParams:
     """左侧统计面板：KPI、System/Chambers/Robots 摘要、RELEASE TIME、HISTORY。"""
 
-    layout_spacing: int = 14         # 整体垂直间距
+    # ───────── 布局间距 ─────────
+    layout_spacing: int = 16         # 整体垂直间距（增加以改善呼吸感）
     layout_margins: Tuple[int, int, int, int] = (14, 16, 14, 16)  # 内容边距 (左,上,右,下)
-    group_spacing: int = 12          # 组内控件间距
-    # 字号 (pt)，放大以提升可读性
-    label_font_pt: int = 20          # KPI 下方标签（如 PROGRESS）
-    kpi_font_pt: int = 20           # KPI 数字（TIME/STEP/REWARD）
-    summary_font_pt: int = 30       # System/Chambers/Robots 摘要正文
-    toolbox_tab_font_pt: int = 30    # ToolBox 标签（System/Chambers/Robots）
-    release_font_pt: int = 20       # RELEASE TIME 文本框
-    history_font_pt: int = 20       # HISTORY 文本框
-    reward_detail_font_pt: int = 20  # REWARD 明细行字号
-    # 尺寸与行数
-    progress_bar_height: int = 16   # 进度条高度 (px)
-    release_min_height: int = 100   # RELEASE TIME 最小高度 (px)
-    history_min_height: int = 100   # HISTORY 最小高度 (px)
-    summary_frame_padding: int = 10 # 摘要每页内边距
-    history_line_count: int = 6     # HISTORY 显示最近 N 条
-    font_family: str = "Consolas"   # 左栏统一字体
+    section_spacing: int = 20        # 主要区块之间的间距
+    group_spacing: int = 10          # 组内控件间距
+    card_spacing: int = 8            # 卡片之间的间距
+    card_padding: int = 12           # 卡片内边距
+    
+    # ───────── 字号 (pt) - 基于 Typography 系统 ─────────
+    # 使用标准层级确保一致性和可读性
+    section_title_font_pt: int = 10  # 区块标题 - 增大以更醒目
+    label_font_pt: int = 16          # 标签文字 (BODY)
+    kpi_font_pt: int = 18            # KPI 数值 (H2) - 突出但不过分
+    summary_font_pt: int = 18        # 摘要正文 (SMALL)
+    toolbox_tab_font_pt: int = 18    # ToolBox 标签 (BODY)
+    release_font_pt: int = 18        # RELEASE TIME (SMALL)
+    history_font_pt: int = 18        # HISTORY (SMALL)
+    reward_detail_font_pt: int = 14  # REWARD 明细 (SMALL)
+    
+    # ───────── 尺寸与行数 ─────────
+    progress_bar_height: int = 20    # 进度条高度 (px) - 增加以更显眼
+    release_min_height: int = 60     # RELEASE TIME 最小高度 (px) - 减小以允许更小的窗口
+    history_min_height: int = 80     # HISTORY 最小高度 (px) - 减小以允许更小的窗口
+    summary_frame_padding: int = 12  # 摘要每页内边距
+    history_line_count: int = 8      # HISTORY 显示最近 N 条（增加）
+    
+    # ───────── 视觉效果 ─────────
+    font_family: str = "Consolas"    # 左栏统一字体
+    use_metric_cards: bool = True    # 是否使用 MetricCard 组件
+    use_status_badges: bool = True   # 是否使用 StatusBadge 组件
+    show_trend_indicators: bool = True  # 是否显示趋势指示器
+    animate_values: bool = False     # 是否启用数值动画（可能影响性能）
 
 
 @dataclass
 class ControlPanelParams:
     """右侧控制面板：TRANSITIONS 按钮组、CONTROL 按钮与速度倍率。"""
 
-    # ───────── 标题 ─────────
-    title_font_size_px: int = 20           # 「TRANSITIONS」「CONTROL」
+    # ───────── 标题 - 基于 Typography 系统 ─────────
+    title_font_size_px: int = 20           # 「TRANSITIONS」「CONTROL」(H3)
 
     # ───────── 布局间距 ─────────
-    spacing_after_transitions: int = 12
-    spacing_after_control_title: int = 6
-    spacing_before_speed: int = 8
-    spacing_before_reset: int = 8
+    spacing_after_transitions: int = 8     # 减小间距
+    spacing_after_control_title: int = 4   # 减小间距
+    spacing_before_speed: int = 6          # 减小间距
+    spacing_before_reset: int = 6          # 减小间距
 
-    # ───────── 按钮样式（你现在缺的就是这些） ─────────
-    button_font_size_px: int = 18          # 普通控制按钮
-    transition_button_font_size_px: int = 18  # TRANSITIONS 动作按钮
-    button_padding_v: int = 8
-    button_padding_h: int = 12
-    button_min_height: int = 32
+    # ───────── 按钮样式 - 基于 Typography 系统 ─────────
+    button_font_size_px: int = 18          # 普通控制按钮 - 减小以节省空间
+    transition_button_font_size_px: int = 18  # TRANSITIONS 动作按钮 - 减小以节省空间
+    button_padding_v: int = 6              # 垂直内边距 - 减小
+    button_padding_h: int = 10             # 水平内边距 - 减小
+    button_min_height: int = 28            # 最小高度 - 减小
 
     # ───────── 速度倍率 ─────────
     speed_options: List[int] = field(default_factory=lambda: [1, 2, 5, 10])
@@ -93,13 +107,16 @@ class ChamberItemParams:
     grid_step: int = 12       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
-    name_font_pt: int = 17    # 腔室名称字号
-    wafer_radius: int = 42    # 晶圆圆半径 (px)
+    
+    # ───────── 字号 - 基于 Typography 系统 ─────────
+    name_font_pt: int = 14    # 腔室名称 (H3)
+    wafer_font_pt: int = 12   # 晶圆内主数字（剩余时间）(BODY)
+    wafer_id_font_pt: int = 10   # 晶圆内 #token_id 次要字号 (CAPTION)
+    extra_count_font_pt: int = 11   # 「+N」多晶圆提示 (SMALL)
+    
     progress_ring_width: int = 3   # 进度环线宽 (px)
     progress_ring_offset: int = 4 # 进度环相对晶圆半径的外扩 (px)
-    wafer_font_pt: int = 14   # 晶圆内主数字（剩余时间）字号
-    wafer_id_font_pt: int = 14   # 晶圆内 #token_id 次要字号
-    extra_count_font_pt: int = 14   # 「+N」多晶圆提示字号
+    wafer_radius: int = 42    # 晶圆圆半径 (px)
     inner_margin: int = 2     # 卡片内边距（相对边框）
     text_margin: int = 6      # 文字与边缘间距
 
@@ -115,9 +132,12 @@ class RobotItemParams:
     grid_step: int = 12       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
-    title_font_pt: int = 17   # 机械手名称（TM2/TM3）字号
-    status_font_pt: int = 12  # BUSY/IDLE 字号
-    wafers_font_pt: int = 10  # 「Wafers: N」字号
+    
+    # ───────── 字号 - 基于 Typography 系统 ─────────
+    title_font_pt: int = 14   # 机械手名称（TM2/TM3）(H3)
+    status_font_pt: int = 11  # BUSY/IDLE (SMALL)
+    wafers_font_pt: int = 10  # 「Wafers: N」(CAPTION)
+    
     led_offset: int = 8       # 状态灯距左上角偏移 (px)
     title_left_offset: int = 24  # 标题文字左偏移（为 LED 留空）(px)
     inner_margin: int = 2    # 卡片内边距

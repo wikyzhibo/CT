@@ -26,8 +26,10 @@ class PetriMainWindow(QMainWindow):
         self._model_handler = None
         p = ui_params.main_window
 
-        self.setWindowTitle("晶圆加工控制台 - PySide6")
+        self.setWindowTitle("晶圆加工控制台")
         self.setGeometry(p.initial_x, p.initial_y, p.initial_width, p.initial_height)
+        # 强制应用窗口大小，确保每次启动都使用 ui_params 中的值
+        self.resize(p.initial_width, p.initial_height)
 
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
@@ -131,38 +133,36 @@ class PetriMainWindow(QMainWindow):
         QGroupBox {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 8px;
-            margin-top: 10px;
-            padding: 10px 14px;
+            margin-top: 28px;
+            padding: 18px 20px;
+            background-color: rgba{(*t.bg_surface, 0.3)};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 6px 0 6px;
-            font-size: 15px;
-            font-weight: bold;
+            left: 12px;
+            padding: 0 8px;
+            font-size: 24pt;
+            font-weight: 700;
             color: rgb{t.accent_cyan};
+            letter-spacing: 0.5px;
         }}
 
-        /* -------- 全局默认文字（别锁死关键组件） -------- */
-        QLabel {{
-            color: rgb{t.text_primary};
-            font-size: 13px;   /* 默认小字，关键的用 ID 覆盖 */
-        }}
-
-        /* -------- StatsPanel：KPI 强制覆盖（必须更具体才压得住全局） -------- */
+        /* -------- StatsPanel：KPI 强制覆盖（使用 pt 单位与 QFont 一致） -------- */
         QLabel#KpiLabel {{
-            font-size: {sp.kpi_font_pt}px;
-            font-weight: 800;
+            font-size: {sp.kpi_font_pt}pt;
+            font-weight: 700;
             color: rgb{t.text_kpi};
+            letter-spacing: 0.5px;
         }}
         QLabel#BigLabel {{
-            font-size: {sp.label_font_pt}px;
-            font-weight: 800;
+            font-size: {sp.label_font_pt}pt;
+            font-weight: 600;
             color: rgb{t.text_primary};
         }}
         QLabel#DetailLabel {{
-            font-size: {sp.reward_detail_font_pt}px;
+            font-size: {sp.reward_detail_font_pt}pt;
             color: rgb{t.text_muted};
+            line-height: 1.5;
         }}
 
         /* -------- Buttons -------- */
@@ -171,8 +171,10 @@ class PetriMainWindow(QMainWindow):
             color: rgb{t.text_primary};
             border: 1px solid rgb{t.border};
             border-radius: 6px;
-            padding: 8px 12px;
-            font-size: {getattr(cp, "button_font_size_px", 13)}px;
+            padding: {cp.button_padding_v}px {cp.button_padding_h}px;
+            font-size: {cp.button_font_size_px}px;
+            min-height: {cp.button_min_height}px;
+            font-weight: 500;
         }}
         QPushButton:hover {{
             background-color: rgb{t.bg_elevated};
@@ -185,28 +187,74 @@ class PetriMainWindow(QMainWindow):
         }}
         QPushButton#TransitionButton:enabled {{
             border-color: rgb{t.accent_cyan};
-            font-size: {getattr(cp, "transition_button_font_size_px", getattr(cp, "button_font_size_px", 13))}px;
+            font-size: {cp.transition_button_font_size_px}px;
         }}
 
         /* -------- TextEdit -------- */
         QTextEdit {{
             background-color: rgb{t.bg_deep};
             border: 1px solid rgb{t.border};
+            border-radius: 4px;
             color: rgb{t.text_secondary};
-            font-size: 12px;
+            font-family: "{sp.font_family}";
+            font-size: {sp.release_font_pt}pt;
+            padding: 8px;
+            selection-background-color: rgb{t.accent_cyan};
+            line-height: 1.5;
         }}
 
-        /* -------- ProgressBar -------- */
+        /* -------- ProgressBar (默认样式，可被动态覆盖) -------- */
         QProgressBar {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
             text-align: center;
             background-color: rgb{t.bg_deep};
-            font-size: 12px;
+            font-size: {sp.label_font_pt}pt;
+            min-height: {sp.progress_bar_height}px;
+            font-weight: 600;
         }}
         QProgressBar::chunk {{
             background-color: rgb{t.accent_cyan};
             border-radius: 3px;
+        }}
+        
+        /* -------- ToolBox -------- */
+        QToolBox::tab {{
+            font-size: {sp.toolbox_tab_font_pt}pt;
+            font-weight: 600;
+            background-color: rgb{t.bg_surface};
+            border: 1px solid rgb{t.border};
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin: 2px;
+        }}
+        QToolBox::tab:hover {{
+            background-color: rgb{t.bg_elevated};
+            border-color: rgb{t.border_active};
+        }}
+        QToolBox::tab:selected {{
+            background-color: rgb{t.bg_elevated};
+            border-color: rgb{t.accent_cyan};
+            border-width: 2px;
+            color: rgb{t.accent_cyan};
+        }}
+        
+        /* -------- ScrollBar -------- */
+        QScrollBar:vertical {{
+            background-color: rgb{t.bg_deep};
+            width: 12px;
+            border-radius: 6px;
+        }}
+        QScrollBar::handle:vertical {{
+            background-color: rgb{t.bg_elevated};
+            border-radius: 6px;
+            min-height: 20px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background-color: rgb{t.border};
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
         }}
         """
         self.setStyleSheet(qss)

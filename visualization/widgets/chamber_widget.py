@@ -55,34 +55,71 @@ class ChamberWidget(QWidget):
         self._draw_wafer(painter, rect)
 
     def _draw_background(self, painter: QPainter, rect: QRectF) -> None:
-        """绘制圆角矩形背景和网格纹理。"""
+        """绘制圆角矩形背景和网格纹理，增强视觉层次。"""
         p = self._p
-        painter.setPen(QPen(self.theme.qcolor(self.theme.border)))
-        painter.setBrush(QBrush(self.theme.qcolor(self.theme.bg_surface)))
+        
+        # 1. 绘制阴影效果（外扩的深色边框）
+        shadow_rect = rect.adjusted(-2, -2, 2, 2)
+        shadow_color = QColor(0, 0, 0, 60)  # 半透明黑色
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(shadow_color))
+        painter.drawRoundedRect(shadow_rect, p.corner_radius + 2, p.corner_radius + 2)
+        
+        # 2. 绘制主背景（更亮的背景色）
+        bg_color = self.theme.qcolor(self.theme.bg_elevated)  # 使用更亮的背景
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
-
-        painter.setPen(QPen(self.theme.qcolor(self.theme.border_muted)))
-        for x in range(int(rect.left()), int(rect.right()), p.grid_step):
+        
+        # 3. 绘制边框（更粗、更明显）
+        border_pen = QPen(self.theme.qcolor(self.theme.border))
+        border_pen.setWidth(2)  # 加粗边框
+        painter.setPen(border_pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
+        
+        # 4. 绘制网格（更明显的网格线）
+        grid_color = QColor(*self.theme.border_muted)
+        grid_color.setAlpha(100)  # 增加透明度使网格更明显
+        grid_pen = QPen(grid_color)
+        grid_pen.setWidth(1)
+        painter.setPen(grid_pen)
+        
+        # 绘制垂直网格线
+        for x in range(int(rect.left()) + p.grid_step, int(rect.right()), p.grid_step):
             painter.drawLine(x, int(rect.top()), x, int(rect.bottom()))
-        for y in range(int(rect.top()), int(rect.bottom()), p.grid_step):
+        # 绘制水平网格线
+        for y in range(int(rect.top()) + p.grid_step, int(rect.bottom()), p.grid_step):
             painter.drawLine(int(rect.left()), y, int(rect.right()), y)
 
     def _draw_status_led(self, painter: QPainter, rect: QRectF) -> None:
-        """右上角状态灯：danger→红 / warning→黄 / active→绿 / idle→灰。"""
+        """右上角状态灯：danger→红 / warning→黄 / active→绿 / idle→灰，带发光效果。"""
         p = self._p
         status_color = self._get_status_color()
-        led_rect = QRectF(rect.right() - p.led_size - 6, rect.top() + 6, p.led_size, p.led_size)
+        led_size = p.led_size + 2  # 增大 LED
+        led_rect = QRectF(rect.right() - led_size - 8, rect.top() + 8, led_size, led_size)
+        
+        # 绘制发光效果（外圈）
+        glow_rect = led_rect.adjusted(-2, -2, 2, 2)
+        glow_color = QColor(*status_color)
+        glow_color.setAlpha(80)
         painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(glow_color))
+        painter.drawEllipse(glow_rect)
+        
+        # 绘制 LED 本体
         painter.setBrush(QBrush(self.theme.qcolor(status_color)))
         painter.drawEllipse(led_rect)
 
     def _draw_title(self, painter: QPainter, rect: QRectF) -> None:
-        """左上角绘制腔室名称。"""
+        """左上角绘制腔室名称，使用更大更粗的字体。"""
         p = self._p
-        painter.setPen(self.theme.qcolor(self.theme.text_primary))
-        painter.setFont(QFont(p.font_family, p.name_font_pt))
+        # 使用更醒目的颜色和字体
+        title_font = QFont(p.font_family, p.name_font_pt, QFont.Bold)
+        painter.setFont(title_font)
+        painter.setPen(self.theme.qcolor(self.theme.accent_cyan))  # 使用强调色
         painter.drawText(
-            rect.adjusted(p.text_margin, 4, -p.text_margin, -4),
+            rect.adjusted(p.text_margin + 2, 8, -p.text_margin, -4),
             Qt.AlignTop | Qt.AlignLeft,
             self.chamber.name,
         )
@@ -130,7 +167,9 @@ class ChamberWidget(QWidget):
             #painter.setFont(QFont(p.font_family, p.wafer_font_pt))
             #painter.drawText(top_rect, Qt.AlignHCenter | Qt.AlignVCenter, str(remaining))
 
-            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+            # 使用更大更粗的字体
+            wafer_font = QFont(p.font_family, p.wafer_id_font_pt + 2, QFont.Bold)
+            painter.setFont(wafer_font)
             if remaining == 0:
                 overtime = max(0, int(wafer.stay_time - wafer.proc_time))
                 done_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}s"
@@ -142,10 +181,11 @@ class ChamberWidget(QWidget):
             # 运输位等非加工：上 #id，下 Ns
             stay_s = int(wafer.stay_time)
 
-            painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+            # 使用更大更粗的字体
+            painter.setFont(QFont(p.font_family, p.wafer_font_pt + 2, QFont.Bold))
             painter.drawText(top_rect, Qt.AlignHCenter | Qt.AlignVCenter, f"#{wafer.token_id}")
 
-            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt, QFont.DemiBold))
             painter.drawText(bot_rect, Qt.AlignHCenter | Qt.AlignVCenter, f"{stay_s}s")
 
         # 多晶圆显示 +N（放在卡片右下角）

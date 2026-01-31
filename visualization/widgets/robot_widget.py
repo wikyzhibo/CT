@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..algorithm_interface import RobotState
 from ..theme import ColorTheme
+from ..ui_params import ui_params
 
 
 class RobotWidget(QWidget):
@@ -29,6 +30,7 @@ class RobotWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect().adjusted(4, 4, -4, -4)
+        p = ui_params.robot_item
 
         painter.setPen(QPen(self.theme.qcolor(self.theme.border)))
         painter.setBrush(QBrush(self.theme.qcolor(self.theme.bg_surface)))
@@ -40,16 +42,19 @@ class RobotWidget(QWidget):
         painter.setBrush(QBrush(self.theme.qcolor(status_color)))
         painter.drawEllipse(led_rect)
 
+        # 机械手名称 (H3 - 14pt)
         painter.setPen(self.theme.qcolor(self.theme.text_primary))
-        painter.setFont(QFont("Consolas", 10))
+        painter.setFont(QFont(p.font_family, p.title_font_pt))
         painter.drawText(rect.adjusted(20, 4, -6, -4), Qt.AlignTop | Qt.AlignLeft, self.robot.name)
 
+        # 状态文字 (SMALL - 11pt)
         painter.setPen(self.theme.qcolor(self.theme.text_secondary))
-        painter.setFont(QFont("Consolas", 9))
+        painter.setFont(QFont(p.font_family, p.status_font_pt))
         status_text = "BUSY" if self.robot.busy else "IDLE"
         painter.drawText(rect.adjusted(6, 24, -6, -6), Qt.AlignLeft | Qt.AlignTop, status_text)
 
+        # 晶圆数量 (CAPTION - 10pt)
         painter.setPen(self.theme.qcolor(self.theme.text_muted))
-        painter.setFont(QFont("Consolas", 8))
+        painter.setFont(QFont(p.font_family, p.wafers_font_pt))
         count_text = f"Wafers: {len(self.robot.wafers)}"
         painter.drawText(rect.adjusted(6, 40, -6, -6), Qt.AlignLeft | Qt.AlignTop, count_text)

@@ -42,31 +42,60 @@ class ChamberItem(QGraphicsItem):
             border = self.theme.border_muted
             grid_color = self.theme.dim_color(self.theme.border_muted, 0.6)
         else:
-            bg = self.theme.bg_surface
+            bg = self.theme.bg_elevated  # 使用更亮的背景
             border = self.theme.accent_cyan if (not is_idle or flash) else self.theme.border_muted
             grid_color = self.theme.border_muted
 
-        pen_width = 2 if flash else 1
-        painter.setPen(QPen(self.theme.qcolor(border), pen_width))
+        # 1. 绘制阴影
+        shadow_rect = rect.adjusted(-2, -2, 2, 2)
+        shadow_color = QColor(0, 0, 0, 60)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(shadow_color))
+        painter.drawRoundedRect(shadow_rect, p.corner_radius + 2, p.corner_radius + 2)
+
+        # 2. 绘制背景
         painter.setBrush(QBrush(self.theme.qcolor(bg)))
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
 
+        # 3. 绘制边框（加粗）
+        pen_width = 3 if flash else 2
+        painter.setPen(QPen(self.theme.qcolor(border), pen_width))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
+
+        # 4. 绘制网格（增强可见度）
+        grid_qcolor = QColor(*grid_color)
+        grid_qcolor.setAlpha(100)
+        painter.setPen(QPen(grid_qcolor))
         step = p.grid_step
-        painter.setPen(QPen(self.theme.qcolor(grid_color)))
-        for x in range(int(rect.left()), int(rect.right()), step):
+        for x in range(int(rect.left()) + step, int(rect.right()), step):
             painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom()))
-        for y in range(int(rect.top()), int(rect.bottom()), step):
+        for y in range(int(rect.top()) + step, int(rect.bottom()), step):
             painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
 
+        # 5. 状态 LED（带发光）
         status_color = self._status_color()
-        led = QRectF(rect.right() - p.led_size - 6, rect.top() + 6, p.led_size, p.led_size)
+        led_size = p.led_size + 2
+        led = QRectF(rect.right() - led_size - 8, rect.top() + 8, led_size, led_size)
+        
+        # 发光效果
+        glow_rect = led.adjusted(-2, -2, 2, 2)
+        glow_color = QColor(*status_color)
+        glow_color.setAlpha(80)
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(glow_color))
+        painter.drawEllipse(glow_rect)
+        
+        # LED 本体
         painter.setBrush(QBrush(self.theme.qcolor(status_color)))
         painter.drawEllipse(led)
 
-        painter.setPen(self.theme.qcolor(self.theme.text_primary))
-        painter.setFont(QFont(p.font_family, p.name_font_pt))
-        painter.drawText(rect.adjusted(p.text_margin, 4, -p.text_margin, -4), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self.chamber.name)
+        # 6. 腔室名称（使用强调色和粗体）
+        title_font = QFont(p.font_family, p.name_font_pt, QFont.Bold)
+        painter.setFont(title_font)
+        painter.setPen(self.theme.qcolor(self.theme.accent_cyan))
+        painter.drawText(rect.adjusted(p.text_margin + 2, 8, -p.text_margin, -4), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self.chamber.name)
 
         if self.chamber.wafers:
             self._draw_wafer(painter, rect)
@@ -131,26 +160,27 @@ class ChamberItem(QGraphicsItem):
             remaining = max(0, int(wafer.proc_time - wafer.stay_time))
             if remaining > 0:
                 painter.setPen(self.theme.qcolor(fill))
-                painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+                # 增大字体
+                painter.setFont(QFont(p.font_family, p.wafer_font_pt + 2, QFont.Bold))
                 painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, str(remaining))
                 painter.setPen(self.theme.qcolor(self.theme.text_muted))
-                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt + 1, QFont.DemiBold))
                 painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
             else:
                 overtime = int(wafer.stay_time - wafer.proc_time)
                 done_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}s"
                 painter.setPen(self.theme.qcolor(fill))
-                painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+                painter.setFont(QFont(p.font_family, p.wafer_font_pt + 2, QFont.Bold))
                 painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, done_text)
                 painter.setPen(self.theme.qcolor(self.theme.text_muted))
-                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt + 1, QFont.DemiBold))
                 painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
         else:
             painter.setPen(self.theme.qcolor(self.theme.text_primary))
-            painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+            painter.setFont(QFont(p.font_family, p.wafer_font_pt + 2, QFont.Bold))
             painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
             painter.setPen(self.theme.qcolor(self.theme.text_secondary))
-            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt, QFont.DemiBold))
             painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"{int(wafer.stay_time)}s")
 
         if len(self.chamber.wafers) > 1:

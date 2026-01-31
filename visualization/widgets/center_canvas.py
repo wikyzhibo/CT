@@ -25,7 +25,8 @@ class CenterCanvas(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setBackgroundBrush(QBrush(self.theme.qcolor(self.theme.bg_fog)))
+        # 使用更深的背景色以增强与腔室卡片的对比
+        self.setBackgroundBrush(QBrush(self.theme.qcolor(self.theme.bg_deepest)))
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.chambers: Dict[str, ChamberItem] = {}
         self.robots: Dict[str, RobotItem] = {}

@@ -53,15 +53,15 @@ class WaferWidget(QWidget):
             )
             painter.drawArc(ring_rect, 90 * 16, -int(360 * 16 * progress))
 
-        # Token ID
+        # Token ID (CAPTION - 10pt)
         painter.setPen(self.theme.qcolor(self.theme.text_primary))
         font = QFont("Consolas", 10)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignCenter, str(self.wafer.token_id))
 
-        # 状态文本（底部）
+        # 状态文本（底部）(TINY - 9pt)
         painter.setPen(self.theme.qcolor(self.theme.text_muted))
-        small_font = QFont("Consolas", 8)
+        small_font = QFont("Consolas", 9)
         painter.setFont(small_font)
         status_text = f"{int(self.wafer.stay_time)}s"
         painter.drawText(0, rect.bottom() + 2, self.width(), 12, Qt.AlignCenter, status_text)
