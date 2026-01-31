@@ -41,11 +41,11 @@ class StatsPanelParams:
     section_title_font_pt: int = 10  # 区块标题 - 增大以更醒目
     label_font_pt: int = 16          # 标签文字 (BODY)
     kpi_font_pt: int = 18            # KPI 数值 (H2) - 突出但不过分
-    summary_font_pt: int = 18        # 摘要正文 (SMALL)
+    summary_font_pt: int = 15        # 摘要正文 (SMALL)
     toolbox_tab_font_pt: int = 18    # ToolBox 标签 (BODY)
-    release_font_pt: int = 18        # RELEASE TIME (SMALL)
-    history_font_pt: int = 18        # HISTORY (SMALL)
-    reward_detail_font_pt: int = 14  # REWARD 明细 (SMALL)
+    release_font_pt: int = 15        # RELEASE TIME (SMALL)
+    history_font_pt: int = 15        # HISTORY (SMALL)
+    reward_detail_font_pt: int = 15  # REWARD 明细 (SMALL)
     
     # ───────── 尺寸与行数 ─────────
     progress_bar_height: int = 20    # 进度条高度 (px) - 增加以更显眼

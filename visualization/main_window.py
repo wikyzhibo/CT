@@ -133,7 +133,7 @@ class PetriMainWindow(QMainWindow):
         QGroupBox {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 8px;
-            margin-top: 28px;
+            margin-top: 24px;
             padding: 18px 20px;
             background-color: rgba{(*t.bg_surface, 0.3)};
         }}
@@ -141,7 +141,7 @@ class PetriMainWindow(QMainWindow):
             subcontrol-origin: margin;
             left: 12px;
             padding: 0 8px;
-            font-size: 24pt;
+            font-size: 18pt;
             font-weight: 700;
             color: rgb{t.accent_cyan};
             letter-spacing: 0.5px;

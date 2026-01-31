@@ -101,11 +101,11 @@ class StatsPanel(QScrollArea):
         # 直接设置标题样式以确保字号生效
         group.setStyleSheet(f"""
             QGroupBox {{
-                font-size: 24pt;
+                font-size: 18pt;
                 font-weight: 700;
             }}
             QGroupBox::title {{
-                font-size: 24pt;
+                font-size: 18pt;
                 font-weight: 700;
             }}
         """)
@@ -184,7 +184,7 @@ class StatsPanel(QScrollArea):
         
         # System 摘要
         system_group = QGroupBox("🖥️ System")
-        system_group.setStyleSheet("QGroupBox { font-size: 24pt; font-weight: 700; } QGroupBox::title { font-size: 24pt; font-weight: 700; }")
+        system_group.setStyleSheet("QGroupBox { font-size: 18pt; font-weight: 700; } QGroupBox::title { font-size: 18pt; font-weight: 700; }")
         system_layout = QVBoxLayout(system_group)
         system_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding, 
                                         p.summary_frame_padding, p.summary_frame_padding)
@@ -196,7 +196,7 @@ class StatsPanel(QScrollArea):
         
         # Chambers 摘要
         chambers_group = QGroupBox("⚙️ Chambers")
-        chambers_group.setStyleSheet("QGroupBox { font-size: 24pt; font-weight: 700; } QGroupBox::title { font-size: 24pt; font-weight: 700; }")
+        chambers_group.setStyleSheet("QGroupBox { font-size: 18pt; font-weight: 700; } QGroupBox::title { font-size: 18pt; font-weight: 700; }")
         chambers_layout = QVBoxLayout(chambers_group)
         chambers_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding,
                                           p.summary_frame_padding, p.summary_frame_padding)
@@ -208,7 +208,7 @@ class StatsPanel(QScrollArea):
         
         # Robots 摘要
         robots_group = QGroupBox("🤖 Robots")
-        robots_group.setStyleSheet("QGroupBox { font-size: 24pt; font-weight: 700; } QGroupBox::title { font-size: 24pt; font-weight: 700; }")
+        robots_group.setStyleSheet("QGroupBox { font-size: 18pt; font-weight: 700; } QGroupBox::title { font-size: 18pt; font-weight: 700; }")
         robots_layout = QVBoxLayout(robots_group)
         robots_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding,
                                         p.summary_frame_padding, p.summary_frame_padding)
@@ -233,7 +233,7 @@ class StatsPanel(QScrollArea):
         """创建 RELEASE TIME 区块：只读文本框，展示各库所 token_id→release_time。"""
         p = ui_params.stats_panel
         group = QGroupBox("RELEASE TIME")
-        group.setStyleSheet("QGroupBox { font-size: 24pt; font-weight: 700; } QGroupBox::title { font-size: 24pt; font-weight: 700; }")
+        group.setStyleSheet("QGroupBox { font-size: 18pt; font-weight: 700; } QGroupBox::title { font-size: 18pt; font-weight: 700; }")
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
         self.release_text = QTextEdit()
@@ -247,7 +247,7 @@ class StatsPanel(QScrollArea):
         """创建 HISTORY 区块：只读文本框，展示最近 N 步动作及奖励。"""
         p = ui_params.stats_panel
         group = QGroupBox("HISTORY")
-        group.setStyleSheet("QGroupBox { font-size: 24pt; font-weight: 700; } QGroupBox::title { font-size: 24pt; font-weight: 700; }")
+        group.setStyleSheet("QGroupBox { font-size: 18pt; font-weight: 700; } QGroupBox::title { font-size: 18pt; font-weight: 700; }")
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
         self.history_text = QTextEdit()
@@ -291,26 +291,73 @@ class StatsPanel(QScrollArea):
         """)
 
     def _update_summary(self, state: StateInfo) -> None:
-        """更新 ToolBox 三页：System（含 stats）、Chambers、Robots。"""
-        system_lines = [
-            f"Time: {int(state.time)}",
-            f"Wafers: {state.done_count}/{state.total_wafers}",
-            f"Chambers: {len(state.chambers)}",
-        ]
-        for k, v in sorted(state.stats.items()):
-            if k == "release_schedule":  # 单独在 RELEASE TIME 区块展示
-                continue
-            if isinstance(v, (int, float)):
-                system_lines.append(f"{k}: {v}")
-            elif isinstance(v, dict):
-                system_lines.append(f"{k}: {len(v)} items")
+        """更新三个摘要区块：System（仅关键指标）、Chambers（分组统计）、Robots（停留时间）。"""
+        
+        # ========== System 区块：紧凑显示 ==========
+        system_avg = state.stats.get("system_avg", 0.0)
+        system_max = state.stats.get("system_max", 0)
+        system_diff = state.stats.get("system_diff", 0.0)
+        
+        system_html = f"""
+        <div style='line-height: 1.4;'>
+            <p style='margin: 2px 0;'><span style='color: rgb{self.theme.text_secondary};'>Avg:</span> <span style='font-size: 15pt; font-weight: 700; color: rgb{self.theme.text_kpi};'>{system_avg:.1f}</span></p>
+            <p style='margin: 2px 0;'><span style='color: rgb{self.theme.text_secondary};'>Max:</span> <span style='font-size: 15pt; font-weight: 700; color: rgb{self.theme.text_kpi};'>{system_max}</span></p>
+            <p style='margin: 2px 0;'><span style='color: rgb{self.theme.text_secondary};'>Diff:</span> <span style='font-size: 15pt; font-weight: 700; color: rgb{self.theme.text_kpi};'>{system_diff:.1f}</span></p>
+        </div>
+        """
+        self.system_summary_label.setText(system_html)
+        self.system_summary_label.setTextFormat(Qt.RichText)
+        
+        # ========== Chambers 区块：3行紧凑显示 ==========
+        chambers_data = state.stats.get("chambers", {})
+        
+        # 提取各组数据
+        pm78_data = chambers_data.get("PM7/8", {})
+        pm1234_data = chambers_data.get("PM1/2/3/4", {})
+        pm910_data = chambers_data.get("PM9/10", {})
+        
+        def format_chamber_line(name: str, data: dict) -> str:
+            """格式化腔室组为单行显示"""
+            avg = data.get("avg", 0.0)
+            max_time = data.get("max", 0)
+            
+            # 根据数值选择颜色
+            if avg > 0:
+                avg_color = self.theme.success if avg < 100 else (self.theme.warning if avg < 200 else self.theme.danger)
             else:
-                system_lines.append(f"{k}: {v}")
-        self.system_summary_label.setText("\n".join(system_lines))
-        chamber_lines = [f"{c.name}: {c.status}" for c in state.chambers]  # 腔室名: 状态
-        self.chambers_summary_label.setText("\n".join(chamber_lines) if chamber_lines else "—")
-        robot_lines = [f"{name}: {'BUSY' if r.busy else 'IDLE'}" for name, r in state.robot_states.items()]  # 机械手: 状态
-        self.robots_summary_label.setText("\n".join(robot_lines) if robot_lines else "—")
+                avg_color = self.theme.text_muted
+                
+            return f"""<p style='margin: 2px 0;'><span style='color: rgb{self.theme.accent_cyan}; font-weight: 600;'>{name}:</span> <span style='color: rgb{self.theme.text_secondary};'>Avg</span> <span style='font-size: 14pt; font-weight: 700; color: rgb{avg_color};'>{avg:.1f}</span> <span style='color: rgb{self.theme.text_secondary};'>Max</span> <span style='font-size: 14pt; font-weight: 700; color: rgb{self.theme.text_kpi};'>{max_time}</span></p>"""
+        
+        chambers_html = f"""
+        <div style='line-height: 1.4;'>
+            {format_chamber_line("PM7/8", pm78_data)}
+            {format_chamber_line("PM1-4", pm1234_data)}
+            {format_chamber_line("PM9/10", pm910_data)}
+        </div>
+        """
+        self.chambers_summary_label.setText(chambers_html)
+        self.chambers_summary_label.setTextFormat(Qt.RichText)
+        
+        # ========== Robots 区块：2行紧凑显示 ==========
+        transports_data = state.stats.get("transports", {})
+        robot_avg = transports_data.get("avg", 0.0)
+        robot_max = transports_data.get("max", 0)
+        
+        # 根据数值选择颜色
+        if robot_avg > 0:
+            robot_color = self.theme.success if robot_avg < 10 else (self.theme.warning if robot_avg < 20 else self.theme.danger)
+        else:
+            robot_color = self.theme.text_muted
+        
+        robots_html = f"""
+        <div style='line-height: 1.4;'>
+            <p style='margin: 2px 0;'><span style='color: rgb{self.theme.text_secondary};'>Avg:</span> <span style='font-size: 15pt; font-weight: 700; color: rgb{robot_color};'>{robot_avg:.1f}</span></p>
+            <p style='margin: 2px 0;'><span style='color: rgb{self.theme.text_secondary};'>Max:</span> <span style='font-size: 15pt; font-weight: 700; color: rgb{self.theme.text_kpi};'>{robot_max}</span></p>
+        </div>
+        """
+        self.robots_summary_label.setText(robots_html)
+        self.robots_summary_label.setTextFormat(Qt.RichText)
 
     def _update_release_schedule(self, state: StateInfo) -> None:
         """从 state.stats['release_schedule'] 解析，格式 place_name: tid->rt, tid->rt。"""
