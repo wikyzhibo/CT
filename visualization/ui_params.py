@@ -26,40 +26,53 @@ class MainWindowParams:
 
 @dataclass
 class StatsPanelParams:
-    """左侧统计面板：KPI、System/Chambers/Robots 摘要、RELEASE TIME、HISTORY。"""
+    """左侧统计面板：KPI 仪表盘、摘要、RELEASE TIME、HISTORY。"""
 
     # ───────── 布局间距 ─────────
-    layout_spacing: int = 16         # 整体垂直间距（增加以改善呼吸感）
-    layout_margins: Tuple[int, int, int, int] = (14, 16, 14, 16)  # 内容边距 (左,上,右,下)
-    section_spacing: int = 20        # 主要区块之间的间距
-    group_spacing: int = 10          # 组内控件间距
-    card_spacing: int = 8            # 卡片之间的间距
-    card_padding: int = 12           # 卡片内边距
+    layout_spacing: int = 12         # 整体垂直间距
+    layout_margins: Tuple[int, int, int, int] = (10, 12, 10, 12)  # 内容边距 (左,上,右,下)
+    section_spacing: int = 16        # 主要区块之间的间距
+    group_spacing: int = 8           # 组内控件间距
     
-    # ───────── 字号 (pt) - 基于 Typography 系统 ─────────
-    # 使用标准层级确保一致性和可读性
-    section_title_font_pt: int = 10  # 区块标题 - 增大以更醒目
-    label_font_pt: int = 16          # 标签文字 (BODY)
-    kpi_font_pt: int = 18            # KPI 数值 (H2) - 突出但不过分
-    summary_font_pt: int = 15        # 摘要正文 (SMALL)
-    toolbox_tab_font_pt: int = 18    # ToolBox 标签 (BODY)
-    release_font_pt: int = 15        # RELEASE TIME (SMALL)
-    history_font_pt: int = 15        # HISTORY (SMALL)
-    reward_detail_font_pt: int = 15  # REWARD 明细 (SMALL)
+    # ───────── KPI 卡片参数 ─────────
+    kpi_card_padding: int = 10       # KPI 卡片内边距
+    kpi_card_radius: int = 6         # KPI 卡片圆角
+    kpi_card_height: int = 60        # KPI 卡片固定高度
+    kpi_card_spacing: int = 8        # KPI 卡片之间间距
+    kpi_grid_columns: int = 2        # KPI 网格列数
     
-    # ───────── 尺寸与行数 ─────────
-    progress_bar_height: int = 20    # 进度条高度 (px) - 增加以更显眼
-    release_min_height: int = 60     # RELEASE TIME 最小高度 (px) - 减小以允许更小的窗口
-    history_min_height: int = 80     # HISTORY 最小高度 (px) - 减小以允许更小的窗口
-    summary_frame_padding: int = 12  # 摘要每页内边距
-    history_line_count: int = 8      # HISTORY 显示最近 N 条（增加）
+    # ───────── 字号 (pt) ─────────
+    section_title_font_pt: int = 12  # 区块标题
+    kpi_label_font_pt: int = 10      # KPI 标签（如 TIME, STEP）
+    kpi_value_font_pt: int = 18      # KPI 数值（大号）
+    label_font_pt: int = 11          # 普通标签文字
+    summary_key_font_pt: int = 10    # 摘要 Key 字号
+    summary_value_font_pt: int = 11  # 摘要 Value 字号
+    toolbox_tab_font_pt: int = 12    # GroupBox 标题
+    release_font_pt: int = 10        # RELEASE TIME
+    history_font_pt: int = 10        # HISTORY
+    reward_detail_font_pt: int = 10  # REWARD 明细
+    
+    # ───────── 摘要布局参数 ─────────
+    summary_row_spacing: int = 4     # 摘要行间距
+    summary_key_width: int = 80      # 摘要 Key 列宽度
+    summary_frame_padding: int = 8   # 摘要区域内边距
+    
+    # ───────── 进度条参数 ─────────
+    progress_bar_height: int = 16    # 进度条高度 (px)
+    progress_label_spacing: int = 4  # 进度条与标签间距
+    
+    # ───────── 固定高度区域 ─────────
+    release_fixed_height: int = 80   # RELEASE TIME 固定高度
+    history_fixed_height: int = 100  # HISTORY 固定高度
+    history_line_count: int = 8      # HISTORY 显示最近 N 条
     
     # ───────── 视觉效果 ─────────
     font_family: str = "Consolas"    # 左栏统一字体
-    use_metric_cards: bool = True    # 是否使用 MetricCard 组件
+    use_metric_cards: bool = True    # 是否使用 KPI 卡片组件
     use_status_badges: bool = True   # 是否使用 StatusBadge 组件
-    show_trend_indicators: bool = True  # 是否显示趋势指示器
-    animate_values: bool = False     # 是否启用数值动画（可能影响性能）
+    show_trend_indicators: bool = False  # 是否显示趋势指示器
+    animate_values: bool = False     # 是否启用数值动画
 
 
 @dataclass

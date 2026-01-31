@@ -147,23 +147,7 @@ class PetriMainWindow(QMainWindow):
             letter-spacing: 0.5px;
         }}
 
-        /* -------- StatsPanel：KPI 强制覆盖（使用 pt 单位与 QFont 一致） -------- */
-        QLabel#KpiLabel {{
-            font-size: {sp.kpi_font_pt}pt;
-            font-weight: 700;
-            color: rgb{t.text_kpi};
-            letter-spacing: 0.5px;
-        }}
-        QLabel#BigLabel {{
-            font-size: {sp.label_font_pt}pt;
-            font-weight: 600;
-            color: rgb{t.text_primary};
-        }}
-        QLabel#DetailLabel {{
-            font-size: {sp.reward_detail_font_pt}pt;
-            color: rgb{t.text_muted};
-            line-height: 1.5;
-        }}
+        /* -------- (StatsPanel styles moved to internal stylesheet) -------- */
 
         /* -------- Buttons -------- */
         QPushButton {{
