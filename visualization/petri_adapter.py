@@ -28,6 +28,10 @@ class PetriAdapter(AlgorithmAdapter):
         self._last_reward_detail: Dict[str, float] = {}
         self._last_action_history: List[Dict[str, Any]] = []
 
+        # 确保可视化模式下启用统计
+        if hasattr(self.net, 'enable_statistics'):
+            self.net.enable_statistics = True
+
         # 腔室映射配置（迁移自 viz.py）
         self.chamber_config = {
             "LLA": {"source": ["LP1", "LP2"], "active": True, "proc_time": 0, "robot": "TM2"},

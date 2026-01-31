@@ -518,6 +518,147 @@ python -m solutions.Continuous_model.viz --no-model
 3. **模型格式**: 模型文件必须是 PyTorch 格式，且与环境的动作空间匹配
 4. **性能**: 在低性能设备上可以关闭动画以提高性能
 
+## 统一数据接口标准
+
+### 数据流架构
+
+可视化系统采用统一的数据接口，从 `pn.py` 到可视化界面的数据流如下：
+
+```
+pn.py (Petri.calc_wafer_statistics)
+    ↓
+petri_adapter.py (_collect_state_info)
+    ↓
+StateInfo.stats 字典
+    ↓
+stats_panel.py (可视化显示)
+```
+
+### 数据源层 - pn.py
+
+#### `Petri.calc_wafer_statistics()` 方法
+
+**用途**: 计算所有可视化所需的统计指标
+
+**性能优化**: 仅在 `enable_statistics=True` 时执行计算，训练模式下返回空字典以避免性能开销
+
+**返回值结构**:
+
+```python
+{
+    # 系统级指标
+    "system_avg": float,        # 系统平均停留时间
+    "system_max": float,        # 系统最大停留时间
+    "system_diff": float,       # 最大-最小时间差
+    "completed_count": int,     # 已完成晶圆数
+    "in_progress_count": int,   # 进行中晶圆数
+    
+    # 腔室级指标
+    "chambers": {
+        "s1": {"avg": float, "max": float},
+        "s2": {"avg": float, "max": float},
+        "s3": {"avg": float, "max": float},
+        "s4": {"avg": float, "max": float},
+        "s5": {"avg": float, "max": float},
+    },
+    
+    # 机械手级指标（按机械手分组）
+    "transports": {
+        "TM2": {"avg": float, "max": float},
+        "TM3": {"avg": float, "max": float},
+    },
+    
+    # 运输库所详细指标（按库所分组）
+    "transports_detail": {
+        "d_s1": {"avg": float, "max": float},
+        "d_s2": {"avg": float, "max": float},
+        "d_s3": {"avg": float, "max": float},
+        "d_s4": {"avg": float, "max": float},
+        "d_s5": {"avg": float, "max": float},
+        "d_LP_done": {"avg": float, "max": float},
+    },
+}
+```
+
+**库所类型分类**:
+- `type=1`: 加工腔室（有驻留约束），如 s1, s3, s5
+- `type=2`: 运输库所，如 d_s1, d_s2, d_s3, d_s4, d_s5, d_LP_done
+- `type=5`: 无驻留约束腔室，如 s2 (LLC), s4 (LLD)
+
+**机械手分组**:
+- `TM2`: 负责 d_s1, d_s2, d_s5, d_LP_done
+- `TM3`: 负责 d_s3, d_s4
+
+### 数据传输层 - petri_adapter.py
+
+`PetriAdapter` 在初始化时自动启用统计模式：
+
+```python
+# 确保可视化模式下启用统计
+if hasattr(self.net, 'enable_statistics'):
+    self.net.enable_statistics = True
+```
+
+在 `_collect_state_info()` 中调用统计方法并打包到 `StateInfo.stats`：
+
+```python
+wafer_stats = {}
+if hasattr(self.net, "calc_wafer_statistics"):
+    wafer_stats = self.net.calc_wafer_statistics()
+
+StateInfo(
+    ...
+    stats={
+        "release_schedule": release_schedule,  # 释放计划
+        **wafer_stats,  # 统计指标（展开）
+    },
+)
+```
+
+### 数据展示层 - stats_panel.py
+
+从 `StateInfo.stats` 读取数据并显示：
+
+```python
+# 系统级指标
+system_avg = state.stats.get("system_avg", 0.0)
+system_max = state.stats.get("system_max", 0.0)
+system_diff = state.stats.get("system_diff", 0.0)
+
+# 腔室级指标
+chambers = state.stats.get("chambers", {})
+for place_name, metrics in chambers.items():
+    avg = metrics.get("avg", 0.0)
+    max_time = metrics.get("max", 0.0)
+
+# 机械手级指标
+transports = state.stats.get("transports", {})
+for robot_name, metrics in transports.items():
+    avg = metrics.get("avg", 0.0)
+    max_time = metrics.get("max", 0.0)
+```
+
+### 性能优化
+
+**训练模式** (`enable_statistics=False`):
+- `calc_wafer_statistics()` 直接返回空字典 `{}`
+- 无任何统计计算开销，适用于大规模训练
+
+**可视化模式** (`enable_statistics=True`):
+- `calc_wafer_statistics()` 执行完整统计计算
+- 返回所有可视化所需指标
+- 由 `petri_adapter` 在初始化时自动启用
+
+### 扩展指南
+
+添加新的统计指标：
+
+1. 在 `pn.py` 的 `calc_wafer_statistics()` 中添加计算逻辑
+2. 将新指标添加到返回字典中
+3. 在 `stats_panel.py` 中读取并显示新指标
+4. 更新本文档的接口标准
+
+
 ## 更新日志
 
 - **UI/UX 优化版**: 

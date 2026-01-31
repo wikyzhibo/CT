@@ -137,7 +137,8 @@ class Petri:
     def __init__(self, config: Optional[PetriEnvConfig] = None,
                  stop_on_scrap: Optional[bool] = None,
                  training_phase: Optional[int] = None,
-                 reward_config: Optional[Dict[str, int]] = None) -> None:
+                 reward_config: Optional[Dict[str, int]] = None,
+                 enable_statistics: bool = False) -> None:
         """
         初始化 Petri 网环境。
 
@@ -325,6 +326,9 @@ class Petri:
         # 晶圆滞留时间统计追踪
         # {token_id: {enter_system, exit_system, chambers: {name: {enter, exit}}, transports: {name: {enter, exit}}}}
         self.wafer_stats: Dict[int, Dict[str, Any]] = {}
+        
+        # 可视化统计开关（训练模式下为 False，避免性能开销）
+        self.enable_statistics = enable_statistics
 
     @staticmethod
     def _clone_marks(marks: List["Place"]) -> List[Place]:
@@ -2270,6 +2274,132 @@ class Petri:
         if with_reward:
             return finish, reward_result, False
         return finish, False
+
+    def calc_wafer_statistics(self) -> Dict[str, Any]:
+        """
+        计算晶圆统计数据，用于可视化界面显示。
+        
+        注意：仅在 enable_statistics=True 时返回完整数据，
+        否则返回空字典以避免训练时的性能开销。
+        
+        Returns:
+            字典包含：
+            - system_avg: 系统平均停留时间
+            - system_max: 系统最大停留时间
+            - system_diff: 最大-最小时间差
+            - completed_count: 已完成晶圆数
+            - in_progress_count: 进行中晶圆数
+            - chambers: {place_name: {avg, max}} 各腔室统计
+            - transports: {robot_name: {avg, max}} 机械手统计
+            - transports_detail: {place_name: {avg, max}} 运输库所详细统计
+        """
+        if not self.enable_statistics:
+            return {}  # 训练模式下跳过统计计算
+        
+        # 收集所有晶圆的停留时间
+        all_stay_times = []
+        chamber_stats = {}  # {place_name: [stay_times]}
+        transport_stats = {}  # {place_name: [stay_times]}
+        
+        # 遍历所有库所收集数据
+        for place in self.marks:
+            if place.name.startswith("r_"):  # 跳过资源库所（机械手）
+                continue
+            
+            place_stay_times = []
+            for token in place.tokens:
+                stay_time = float(getattr(token, "stay_time", 0))
+                all_stay_times.append(stay_time)
+                place_stay_times.append(stay_time)
+            
+            # 按库所类型分类
+            if place.type == 1:  # 加工腔室（有驻留约束）
+                chamber_stats[place.name] = place_stay_times
+            elif place.type == 2:  # 运输库所
+                transport_stats[place.name] = place_stay_times
+            elif place.type == 5:  # 无驻留约束腔室（s2/s4）
+                chamber_stats[place.name] = place_stay_times
+        
+        # 计算系统级指标
+        if all_stay_times:
+            system_avg = float(np.mean(all_stay_times))
+            system_max = float(np.max(all_stay_times))
+            system_min = float(np.min(all_stay_times))
+            system_diff = system_max - system_min
+        else:
+            system_avg = 0.0
+            system_max = 0.0
+            system_diff = 0.0
+        
+        # 计算各腔室统计
+        chambers_result = {}
+        for place_name, stay_times in chamber_stats.items():
+            if stay_times:
+                chambers_result[place_name] = {
+                    "avg": float(np.mean(stay_times)),
+                    "max": float(np.max(stay_times)),
+                }
+            else:
+                chambers_result[place_name] = {"avg": 0.0, "max": 0.0}
+        
+        # 计算运输库所详细统计
+        transports_detail = {}
+        for place_name, stay_times in transport_stats.items():
+            if stay_times:
+                transports_detail[place_name] = {
+                    "avg": float(np.mean(stay_times)),
+                    "max": float(np.max(stay_times)),
+                }
+            else:
+                transports_detail[place_name] = {"avg": 0.0, "max": 0.0}
+        
+        # 按机械手分组统计（TM2/TM3）
+        # TM2 负责: d_s1, d_s2, d_s5, d_LP_done
+        # TM3 负责: d_s3, d_s4
+        tm2_places = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
+        tm3_places = ["d_s3", "d_s4"]
+        
+        tm2_times = []
+        tm3_times = []
+        
+        for place_name, stay_times in transport_stats.items():
+            if place_name in tm2_places:
+                tm2_times.extend(stay_times)
+            elif place_name in tm3_places:
+                tm3_times.extend(stay_times)
+        
+        transports_result = {}
+        if tm2_times:
+            transports_result["TM2"] = {
+                "avg": float(np.mean(tm2_times)),
+                "max": float(np.max(tm2_times)),
+            }
+        else:
+            transports_result["TM2"] = {"avg": 0.0, "max": 0.0}
+        
+        if tm3_times:
+            transports_result["TM3"] = {
+                "avg": float(np.mean(tm3_times)),
+                "max": float(np.max(tm3_times)),
+            }
+        else:
+            transports_result["TM3"] = {"avg": 0.0, "max": 0.0}
+        
+        # 统计完成和进行中的晶圆数
+        completed_count = int(getattr(self, "done_count", 0))
+        in_progress_count = sum(len(p.tokens) for p in self.marks if not p.name.startswith("r_"))
+        
+        return {
+            "system_avg": system_avg,
+            "system_max": system_max,
+            "system_diff": system_diff,
+            "completed_count": completed_count,
+            "in_progress_count": in_progress_count,
+            "chambers": chambers_result,
+            "transports": transports_result,
+            "transports_detail": transports_detail,
+        }
+
 
 
 def main():
