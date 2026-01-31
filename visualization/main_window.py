@@ -1,12 +1,27 @@
 """
-主窗口 - 三栏布局
+主窗口 - 三栏布局 + 无边框 + 圆角阴影
+
+改进：
+1) 无模型时禁用 Model Step/Auto Mode
+2) Reset 时停止 Auto 模式
+3) 无边框窗口支持拖动（智能判断可拖动区域）
+4) 圆角 + 外阴影效果
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QLinearGradient, QPalette, QBrush
-from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import (
+    QLinearGradient, QPalette, QBrush, QIcon, QMouseEvent, 
+    QPainter, QColor, QPainterPath, QRegion
+)
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QApplication,
+    QGraphicsDropShadowEffect, QPushButton, QLineEdit, QTextEdit,
+    QScrollBar, QListWidget, QComboBox, QSpinBox, QSlider
+)
 
 from .theme import ColorTheme
 from .ui_params import ui_params
@@ -16,45 +31,119 @@ from .widgets.center_canvas import CenterCanvas
 from .widgets.control_panel import ControlPanel
 
 
+class RoundedContainer(QWidget):
+    """圆角容器，用于绘制圆角背景"""
+    
+    def __init__(self, theme: ColorTheme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.radius = ui_params.main_window.window_corner_radius
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 绘制圆角背景
+        path = QPainterPath()
+        path.addRoundedRect(self.rect(), self.radius, self.radius)
+        
+        # 使用渐变背景
+        grad = QLinearGradient(0, 0, 0, self.height())
+        grad.setColorAt(0, self.theme.qcolor(self.theme.bg_deepest))
+        grad.setColorAt(1, self.theme.qcolor(self.theme.bg_fog))
+        
+        painter.fillPath(path, QBrush(grad))
+        
+        # 绘制边框
+        painter.setPen(QColor(*self.theme.border_muted))
+        painter.drawPath(path)
+
+
 class PetriMainWindow(QMainWindow):
-    """主窗口 - 三栏布局"""
+    """主窗口 - 三栏布局 + 圆角阴影"""
+
+    # 不可拖动的控件类型
+    NON_DRAGGABLE_WIDGETS = (
+        QPushButton, QLineEdit, QTextEdit, QScrollBar, 
+        QListWidget, QComboBox, QSpinBox, QSlider
+    )
 
     def __init__(self, viewmodel: PetriViewModel):
         super().__init__()
         self.viewmodel = viewmodel
         self.theme = ColorTheme()
         self._model_handler = None
+        self._drag_pos: QPoint | None = None
         p = ui_params.main_window
 
         self.setWindowTitle("晶圆加工控制台")
-        self.setGeometry(p.initial_x, p.initial_y, p.initial_width, p.initial_height)
-        # 强制应用窗口大小，确保每次启动都使用 ui_params 中的值
-        self.resize(p.initial_width, p.initial_height)
+        
+        # 无边框 + 透明背景（为阴影留空）
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        
+        # 窗口大小（包含阴影边距）
+        margin = p.shadow_margin
+        self.setGeometry(
+            p.initial_x - margin, 
+            p.initial_y - margin, 
+            p.initial_width + margin * 2, 
+            p.initial_height + margin * 2
+        )
 
-        central_widget = QWidget()
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(p.central_spacing)
+        # 外层容器（用于阴影）
+        outer_widget = QWidget()
+        outer_widget.setStyleSheet("background: transparent;")
+        outer_layout = QVBoxLayout(outer_widget)
+        outer_layout.setContentsMargins(margin, margin, margin, margin)
+        outer_layout.setSpacing(0)
+        
+        # 圆角内容容器
+        self.content_container = RoundedContainer(self.theme)
+        
+        # 添加阴影效果
+        shadow = QGraphicsDropShadowEffect(self.content_container)
+        shadow.setBlurRadius(p.shadow_blur_radius)
+        shadow.setOffset(p.shadow_offset, p.shadow_offset)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        self.content_container.setGraphicsEffect(shadow)
+        
+        outer_layout.addWidget(self.content_container)
+        
+        # 内容布局
+        content_layout = QHBoxLayout(self.content_container)
+        content_layout.setSpacing(p.central_spacing)
+        content_layout.setContentsMargins(12, 12, 12, 12)
 
         self.left_panel = StatsPanel(self.theme)
         self.left_panel.setFixedWidth(p.left_panel_width)
-        main_layout.addWidget(self.left_panel)
+        content_layout.addWidget(self.left_panel)
 
         self.center_canvas = CenterCanvas(self.theme)
-        main_layout.addWidget(self.center_canvas, stretch=1)
+        content_layout.addWidget(self.center_canvas, stretch=1)
 
         self.right_panel = ControlPanel(self.theme)
         self.right_panel.setFixedWidth(p.right_panel_width)
-        main_layout.addWidget(self.right_panel)
+        content_layout.addWidget(self.right_panel)
 
-        self.setCentralWidget(central_widget)
-        self._set_background_gradient(central_widget)
+        self.setCentralWidget(outer_widget)
 
         self._connect_signals()
         self._apply_stylesheet()
+        
+        # 初始化时禁用模型按钮
+        self._update_model_buttons_state()
 
     def set_model_handler(self, handler) -> None:
         """设置模型动作获取器"""
         self._model_handler = handler
+        self._update_model_buttons_state()
+
+    def _update_model_buttons_state(self) -> None:
+        """根据模型加载状态更新按钮启用状态"""
+        has_model = self._model_handler is not None
+        self.right_panel.set_model_enabled(has_model)
 
     def _connect_signals(self) -> None:
         self.viewmodel.state_updated.connect(self._on_state_updated)
@@ -66,8 +155,8 @@ class PetriMainWindow(QMainWindow):
         self.right_panel.action_clicked.connect(self._on_action_clicked)
         self.right_panel.random_clicked.connect(self._on_random_clicked)
         self.right_panel.model_step_clicked.connect(self._on_model_step_clicked)
-        self.right_panel.model_auto_toggled.connect(self.viewmodel.set_auto_mode)
-        self.right_panel.reset_clicked.connect(self.viewmodel.reset)
+        self.right_panel.model_auto_toggled.connect(self._on_model_auto_toggled)
+        self.right_panel.reset_clicked.connect(self._on_reset_clicked)
         self.right_panel.speed_changed.connect(self._on_speed_changed)
 
     def _on_state_updated(self, state) -> None:
@@ -100,54 +189,29 @@ class PetriMainWindow(QMainWindow):
         if action is not None:
             self.viewmodel.execute_action(action)
 
+    def _on_model_auto_toggled(self, enabled: bool) -> None:
+        if enabled and self._model_handler is None:
+            return
+        self.viewmodel.set_auto_mode(enabled)
+
+    def _on_reset_clicked(self) -> None:
+        """先停止 Auto 模式，再重置环境"""
+        if self.viewmodel.auto_mode:
+            self.viewmodel.set_auto_mode(False)
+        self.viewmodel.reset()
+
     def _on_speed_changed(self, speed: float) -> None:
         self.viewmodel.set_auto_speed(1.0 / max(1.0, speed))
 
-    def _set_background_gradient(self, widget: QWidget) -> None:
-        grad = QLinearGradient(0, 0, 0, 1)
-        grad.setColorAt(0, self.theme.qcolor(self.theme.bg_deepest))
-        grad.setColorAt(1, self.theme.qcolor(self.theme.bg_fog))
-        widget.setAutoFillBackground(True)
-        pal = widget.palette()
-        pal.setBrush(QPalette.Window, QBrush(grad))
-        widget.setPalette(pal)
-
     def _apply_stylesheet(self) -> None:
         t = self.theme
-
-        # 读取可调参数（避免写死）
         sp = ui_params.stats_panel
         cp = ui_params.control_panel
 
         qss = f"""
-        QMainWindow {{
-            background-color: rgb{t.bg_deepest};
-        }}
-
         QWidget {{
             color: rgb{t.text_primary};
-            background-color: rgb{t.bg_deepest};
         }}
-
-        /* -------- GroupBox -------- */
-        QGroupBox {{
-            border: 1px solid rgb{t.border_muted};
-            border-radius: 8px;
-            margin-top: 24px;
-            padding: 18px 20px;
-            background-color: rgba{(*t.bg_surface, 0.3)};
-        }}
-        QGroupBox::title {{
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 8px;
-            font-size: 18pt;
-            font-weight: 700;
-            color: rgb{t.accent_cyan};
-            letter-spacing: 0.5px;
-        }}
-
-        /* -------- (StatsPanel styles moved to internal stylesheet) -------- */
 
         /* -------- Buttons -------- */
         QPushButton {{
@@ -184,10 +248,9 @@ class PetriMainWindow(QMainWindow):
             font-size: {sp.release_font_pt}pt;
             padding: 8px;
             selection-background-color: rgb{t.accent_cyan};
-            line-height: 1.5;
         }}
 
-        /* -------- ProgressBar (默认样式，可被动态覆盖) -------- */
+        /* -------- ProgressBar -------- */
         QProgressBar {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
@@ -202,36 +265,15 @@ class PetriMainWindow(QMainWindow):
             border-radius: 3px;
         }}
         
-        /* -------- ToolBox -------- */
-        QToolBox::tab {{
-            font-size: {sp.toolbox_tab_font_pt}pt;
-            font-weight: 600;
-            background-color: rgb{t.bg_surface};
-            border: 1px solid rgb{t.border};
-            border-radius: 6px;
-            padding: 10px 12px;
-            margin: 2px;
-        }}
-        QToolBox::tab:hover {{
-            background-color: rgb{t.bg_elevated};
-            border-color: rgb{t.border_active};
-        }}
-        QToolBox::tab:selected {{
-            background-color: rgb{t.bg_elevated};
-            border-color: rgb{t.accent_cyan};
-            border-width: 2px;
-            color: rgb{t.accent_cyan};
-        }}
-        
         /* -------- ScrollBar -------- */
         QScrollBar:vertical {{
             background-color: rgb{t.bg_deep};
-            width: 12px;
-            border-radius: 6px;
+            width: 10px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:vertical {{
             background-color: rgb{t.bg_elevated};
-            border-radius: 6px;
+            border-radius: 5px;
             min-height: 20px;
         }}
         QScrollBar::handle:vertical:hover {{
@@ -243,19 +285,73 @@ class PetriMainWindow(QMainWindow):
         """
         self.setStyleSheet(qss)
 
+    # ===== 无边框窗口拖动（智能判断） =====
+    
+    def _is_draggable_pos(self, pos: QPoint) -> bool:
+        """判断点击位置是否可拖动
+        
+        规则：
+        1. 必须在内容容器内
+        2. 不能在交互控件上
+        """
+        # 转换到全局坐标再到内容容器坐标
+        global_pos = self.mapToGlobal(pos)
+        container_pos = self.content_container.mapFromGlobal(global_pos)
+        
+        # 检查是否在容器内
+        if not self.content_container.rect().contains(container_pos):
+            return False
+        
+        # 检查点击位置的控件
+        child = self.childAt(pos)
+        if child is None:
+            return True  # 空白区域可拖动
+        
+        # 遍历父控件检查是否是交互控件
+        widget = child
+        while widget is not None and widget != self:
+            if isinstance(widget, self.NON_DRAGGABLE_WIDGETS):
+                return False
+            # 检查 QGraphicsView（画布也不拖动）
+            if widget.__class__.__name__ == 'QGraphicsView':
+                return False
+            widget = widget.parent()
+        
+        return True
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._is_draggable_pos(event.position().toPoint()):
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
     def keyPressEvent(self, event) -> None:
         key = event.key()
-        if key == Qt.Key_W:
+        if key == Qt.Key.Key_W:
             self._on_action_clicked(self.viewmodel.adapter.action_space_size)
-        elif key == Qt.Key_R:
+        elif key == Qt.Key.Key_R:
             self._on_random_clicked()
-        elif key == Qt.Key_M:
+        elif key == Qt.Key.Key_M:
             self._on_model_step_clicked()
-        elif key == Qt.Key_A:
-            self.viewmodel.set_auto_mode(not self.viewmodel.auto_mode)
-        elif key == Qt.Key_Space:
-            self.viewmodel.reset()
-        elif key == Qt.Key_Escape:
+        elif key == Qt.Key.Key_A:
+            if self._model_handler is not None:
+                self.viewmodel.set_auto_mode(not self.viewmodel.auto_mode)
+        elif key == Qt.Key.Key_Space:
+            self._on_reset_clicked()
+        elif key == Qt.Key.Key_Escape:
             self.close()
         else:
             super().keyPressEvent(event)

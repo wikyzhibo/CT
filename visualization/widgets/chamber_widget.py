@@ -215,7 +215,7 @@ class ChamberWidget(QWidget):
             stay = int(wafer.stay_time)
             if wafer.time_to_scrap <= 0:
                 return self.theme.danger
-            if proc > 0 and stay >= proc + 15:
+            if proc > 0 and stay >= proc + 20:
                 return self.theme.danger
             if proc > 0 and stay >= proc:
                 return self.theme.warning

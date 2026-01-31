@@ -1,6 +1,10 @@
 """
-PySide6 主题配色
-从 Pygame viz.py 的 ColorTheme 迁移
+PySide6 主题配色 - 工业控制台风格
+
+改进：
+- 更清晰的背景层次对比
+- 更柔和的晶圆状态色（降低饱和度）
+- 更干净的边框层级
 """
 
 from dataclasses import dataclass
@@ -12,47 +16,47 @@ from PySide6.QtGui import QColor
 @dataclass
 class ColorTheme:
     # 主色调
-    primary: Tuple[int, int, int] = (0, 255, 65)
+    primary: Tuple[int, int, int] = (0, 230, 80)  # 降低亮度
     secondary: Tuple[int, int, int] = (0, 143, 17)
-    accent: Tuple[int, int, int] = (0, 200, 255)
+    accent: Tuple[int, int, int] = (0, 180, 230)  # 降低亮度
 
-    # 状态色
-    success: Tuple[int, int, int] = (0, 255, 65)
-    warning: Tuple[int, int, int] = (255, 184, 0)
-    danger: Tuple[int, int, int] = (255, 51, 51)
-    info: Tuple[int, int, int] = (59, 130, 246)
+    # 状态色（降低饱和度，更工业化）
+    success: Tuple[int, int, int] = (50, 205, 100)     # 柔和绿
+    warning: Tuple[int, int, int] = (235, 170, 50)     # 柔和橙黄
+    danger: Tuple[int, int, int] = (220, 80, 80)       # 柔和红
+    info: Tuple[int, int, int] = (80, 140, 220)        # 柔和蓝
 
-    # 背景层次（深蓝黑工业风）
-    bg_deepest: Tuple[int, int, int] = (14, 18, 26)
-    bg_fog: Tuple[int, int, int] = (22, 28, 38)
-    bg_deep: Tuple[int, int, int] = (28, 35, 45)
-    bg_surface: Tuple[int, int, int] = (40, 48, 60)
-    bg_elevated: Tuple[int, int, int] = (55, 65, 78)
+    # 背景层次（更强对比）
+    bg_deepest: Tuple[int, int, int] = (10, 12, 18)    # 最深背景
+    bg_fog: Tuple[int, int, int] = (18, 22, 30)        # 画布背景
+    bg_deep: Tuple[int, int, int] = (24, 30, 40)       # IDLE 卡片
+    bg_surface: Tuple[int, int, int] = (38, 46, 58)    # 普通卡片
+    bg_elevated: Tuple[int, int, int] = (52, 62, 76)   # 激活卡片
 
-    # 边框
-    border: Tuple[int, int, int] = (70, 85, 105)
-    border_muted: Tuple[int, int, int] = (50, 62, 78)
-    border_active: Tuple[int, int, int] = (0, 255, 65)
+    # 边框（更干净的层级）
+    border: Tuple[int, int, int] = (60, 75, 95)        # 普通边框
+    border_muted: Tuple[int, int, int] = (40, 52, 68)  # 淡边框
+    border_active: Tuple[int, int, int] = (0, 200, 255) # 激活边框
 
     # 文字
-    text_primary: Tuple[int, int, int] = (230, 237, 243)
-    text_secondary: Tuple[int, int, int] = (139, 148, 158)
-    text_muted: Tuple[int, int, int] = (100, 110, 125)
-    text_kpi: Tuple[int, int, int] = (0, 200, 255)
-    accent_cyan: Tuple[int, int, int] = (0, 200, 255)
-    complete_orange: Tuple[int, int, int] = (255, 140, 50)
+    text_primary: Tuple[int, int, int] = (230, 235, 240)
+    text_secondary: Tuple[int, int, int] = (145, 155, 165)
+    text_muted: Tuple[int, int, int] = (90, 100, 115)
+    text_kpi: Tuple[int, int, int] = (0, 180, 230)
+    accent_cyan: Tuple[int, int, int] = (0, 180, 230)
+    complete_orange: Tuple[int, int, int] = (235, 140, 60)
 
-    # 按钮分类颜色
-    btn_transition: Tuple[int, int, int] = (0, 200, 255)
-    btn_wait: Tuple[int, int, int] = (255, 184, 0)
-    btn_random: Tuple[int, int, int] = (168, 85, 247)
-    btn_model: Tuple[int, int, int] = (0, 255, 65)
-    btn_auto: Tuple[int, int, int] = (255, 107, 53)
-    btn_speed: Tuple[int, int, int] = (59, 130, 246)
-    btn_reset: Tuple[int, int, int] = (255, 51, 51)
-    btn_gantt: Tuple[int, int, int] = (59, 130, 246)
-    btn_save: Tuple[int, int, int] = (0, 255, 65)
-    btn_bug: Tuple[int, int, int] = (255, 184, 0)
+    # 按钮分类颜色（更柔和）
+    btn_transition: Tuple[int, int, int] = (0, 170, 220)
+    btn_wait: Tuple[int, int, int] = (220, 165, 40)
+    btn_random: Tuple[int, int, int] = (145, 90, 210)
+    btn_model: Tuple[int, int, int] = (50, 200, 90)
+    btn_auto: Tuple[int, int, int] = (220, 100, 60)
+    btn_speed: Tuple[int, int, int] = (70, 130, 210)
+    btn_reset: Tuple[int, int, int] = (200, 70, 70)
+    btn_gantt: Tuple[int, int, int] = (70, 130, 210)
+    btn_save: Tuple[int, int, int] = (50, 200, 90)
+    btn_bug: Tuple[int, int, int] = (220, 165, 40)
 
     def qcolor(self, color: Tuple[int, int, int], alpha: int | None = None) -> QColor:
         if alpha is None:

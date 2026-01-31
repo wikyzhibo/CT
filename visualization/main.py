@@ -1,13 +1,19 @@
 """
 PySide6 可视化入口
+
+改进：
+- 正确设置应用图标（任务栏 + 窗口）
+- Windows 下设置 AppUserModelID
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import ctypes
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from solutions.PPO.enviroment import Env_PN
@@ -15,6 +21,33 @@ from solutions.PPO.enviroment import Env_PN
 from .petri_adapter import PetriAdapter
 from .viewmodel import PetriViewModel
 from .main_window import PetriMainWindow
+
+
+def set_app_icon(app: QApplication) -> QIcon | None:
+    """设置应用图标，返回图标对象或 None"""
+    assets_dir = Path(__file__).resolve().parent.parent / "assets"
+    icon_candidates = ["app.ico", "app.png", "icon.ico", "icon.png"]
+    
+    for icon_name in icon_candidates:
+        icon_path = assets_dir / icon_name
+        if icon_path.exists():
+            icon = QIcon(str(icon_path))
+            app.setWindowIcon(icon)
+            print(f"✓ 图标加载成功: {icon_path}")
+            return icon
+    
+    print("⚠ 未找到应用图标文件，使用默认图标")
+    return None
+
+
+def set_windows_app_id():
+    """设置 Windows AppUserModelID，使任务栏图标正确显示"""
+    if sys.platform == "win32":
+        try:
+            app_id = "ct.visualization.wafer.1.0"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception:
+            pass  # 忽略错误
 
 
 def build_adapter(adapter_name: str) -> PetriAdapter:
@@ -116,11 +149,22 @@ def main() -> int:
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     args = parser.parse_args()
 
+    # Windows 任务栏图标 fix
+    set_windows_app_id()
+
     adapter = build_adapter(args.adapter)
     viewmodel = PetriViewModel(adapter)
 
     app = QApplication(sys.argv)
+    
+    # 设置应用图标（在创建窗口之前）
+    app_icon = set_app_icon(app)
+    
     window = PetriMainWindow(viewmodel)
+    
+    # 窗口也设置图标
+    if app_icon:
+        window.setWindowIcon(app_icon)
     
     # 加载模型（如果指定）
     if not args.no_model:
@@ -153,4 +197,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

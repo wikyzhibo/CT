@@ -1,17 +1,10 @@
 """
 左侧统计面板 (StatsPanel) - 仪表盘布局
 
-展示系统运行时的 KPI、进度、摘要、释放计划和动作历史。
-采用全部展开的仪表盘布局，不使用折叠/Accordion。
-
-区块结构（自上而下）:
-- KPI 网格: TIME / STEP / REWARD（2×2 卡片布局）
-- PROGRESS: 进度条独立行
-- 摘要区块: System / Chambers / Robots（Key-Value 两列对齐）
-- RELEASE TIME: 固定高度 QTextEdit，内部滚动
-- HISTORY: 固定高度 QTextEdit，内部滚动
-
-布局参数由 ui_params.stats_panel 控制。
+改进：
+- REWARDS 面板固定高度，只显示非零项，按绝对值排序
+- System 区块压缩为单行
+- 统一背景色，消除条纹不一致
 """
 
 from __future__ import annotations
@@ -19,18 +12,20 @@ from __future__ import annotations
 from typing import Dict, Any, List
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
-    QFormLayout,
     QLabel,
     QFrame,
     QTextEdit,
     QProgressBar,
+    QListWidget,
+    QListWidgetItem,
     QSizePolicy,
+    QAbstractItemView,
 )
 
 from ..algorithm_interface import StateInfo
@@ -39,7 +34,7 @@ from ..ui_params import ui_params
 
 
 class KPICard(QFrame):
-    """KPI 卡片组件：带背景、圆角、内边距的数值显示卡片"""
+    """KPI 卡片组件"""
     
     def __init__(self, label: str, theme: ColorTheme, parent=None) -> None:
         super().__init__(parent)
@@ -53,59 +48,22 @@ class KPICard(QFrame):
                                   p.kpi_card_padding, p.kpi_card_padding)
         layout.setSpacing(2)
         
-        # 标签
         self.label_widget = QLabel(label)
         self.label_widget.setObjectName("KPICardLabel")
         layout.addWidget(self.label_widget)
         
-        # 数值
         self.value_widget = QLabel("0")
         self.value_widget.setObjectName("KPICardValue")
         layout.addWidget(self.value_widget)
         
         self.setFixedHeight(p.kpi_card_height)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     
     def set_value(self, value: str) -> None:
-        """更新数值显示"""
         self.value_widget.setText(value)
     
     def set_value_color(self, color: tuple) -> None:
-        """设置数值颜色"""
-        self.value_widget.setStyleSheet(f"color: rgb{color};")
-
-
-class SummaryRow(QWidget):
-    """摘要行组件：Key-Value 两列对齐显示"""
-    
-    def __init__(self, key: str, theme: ColorTheme, parent=None) -> None:
-        super().__init__(parent)
-        self.theme = theme
-        
-        p = ui_params.stats_panel
-        
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        
-        # Key 列
-        self.key_label = QLabel(key)
-        self.key_label.setObjectName("SummaryKey")
-        self.key_label.setFixedWidth(p.summary_key_width)
-        self.key_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(self.key_label)
-        
-        # Value 列
-        self.value_label = QLabel("—")
-        self.value_label.setObjectName("SummaryValue")
-        self.value_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(self.value_label, 1)
-    
-    def set_value(self, value: str, color: tuple = None) -> None:
-        """更新数值"""
-        self.value_label.setText(value)
-        if color:
-            self.value_label.setStyleSheet(f"color: rgb{color};")
+        self.value_widget.setStyleSheet(f"color: rgb{color}; background: transparent;")
 
 
 class SectionHeader(QLabel):
@@ -116,8 +74,40 @@ class SectionHeader(QLabel):
         self.setObjectName("SectionHeader")
 
 
+class MetricRow(QFrame):
+    """指标行组件：统一背景，Key-Value 对齐"""
+    
+    def __init__(self, theme: ColorTheme, parent=None) -> None:
+        super().__init__(parent)
+        self.theme = theme
+        self.setObjectName("MetricRow")
+        
+        p = ui_params.stats_panel
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(p.summary_frame_padding, 4, p.summary_frame_padding, 4)
+        layout.setSpacing(p.summary_row_spacing)
+        
+        self.key_label = QLabel()
+        self.key_label.setObjectName("MetricKey")
+        layout.addWidget(self.key_label)
+        
+        self.value_label = QLabel()
+        self.value_label.setObjectName("MetricValue")
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self.value_label, 1)
+    
+    def set_data(self, key: str, value: str, value_color: tuple = None) -> None:
+        self.key_label.setText(key)
+        self.value_label.setText(value)
+        if value_color:
+            self.value_label.setStyleSheet(f"color: rgb{value_color}; background: transparent;")
+        else:
+            self.value_label.setStyleSheet("background: transparent;")
+
+
 class StatsPanel(QWidget):
-    """左侧统计面板：仪表盘布局，全部展开，不折叠。"""
+    """左侧统计面板：仪表盘布局，全部展开。"""
 
     def __init__(self, theme: ColorTheme, parent=None) -> None:
         super().__init__(parent)
@@ -128,7 +118,7 @@ class StatsPanel(QWidget):
         
         # 主布局
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setAlignment(Qt.AlignTop)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.main_layout.setSpacing(p.section_spacing)
         self.main_layout.setContentsMargins(*p.layout_margins)
         
@@ -138,13 +128,22 @@ class StatsPanel(QWidget):
         # 2. 进度条区域
         self._create_progress_section()
         
-        # 3. 摘要区域（System / Chambers / Robots）
-        self._create_summary_section()
+        # 3. System 单行显示
+        self._create_system_section()
         
-        # 4. RELEASE TIME 区域
+        # 4. Chambers 摘要
+        self._create_chambers_section()
+        
+        # 5. Robots 摘要
+        self._create_robots_section()
+        
+        # 6. REWARDS 区块（固定高度，只显示非零项）
+        self._create_rewards_section()
+        
+        # 7. RELEASE TIME 区域
         self._create_release_section()
         
-        # 5. HISTORY 区域
+        # 8. HISTORY 区域
         self._create_history_section()
         
         # 弹性空间
@@ -154,42 +153,28 @@ class StatsPanel(QWidget):
         self._apply_styles()
 
     def _create_kpi_section(self) -> None:
-        """创建 KPI 网格区域：TIME / STEP / REWARD"""
         p = ui_params.stats_panel
         
-        # 区块标题
         header = SectionHeader("MONITOR")
         self.main_layout.addWidget(header)
         
-        # KPI 网格容器
         kpi_container = QWidget()
         kpi_layout = QGridLayout(kpi_container)
         kpi_layout.setSpacing(p.kpi_card_spacing)
         kpi_layout.setContentsMargins(0, 0, 0, 0)
         
-        # TIME 卡片
         self.time_card = KPICard("TIME", self.theme)
         kpi_layout.addWidget(self.time_card, 0, 0)
         
-        # STEP 卡片
         self.step_card = KPICard("STEP", self.theme)
         kpi_layout.addWidget(self.step_card, 0, 1)
         
-        # REWARD 卡片（跨两列）
         self.reward_card = KPICard("REWARD", self.theme)
         kpi_layout.addWidget(self.reward_card, 1, 0, 1, 2)
         
         self.main_layout.addWidget(kpi_container)
-        
-        # REWARD 明细
-        self.reward_detail = QLabel()
-        self.reward_detail.setObjectName("RewardDetail")
-        self.reward_detail.setWordWrap(True)
-        self.reward_detail.setTextFormat(Qt.RichText)
-        self.main_layout.addWidget(self.reward_detail)
 
     def _create_progress_section(self) -> None:
-        """创建进度条区域"""
         p = ui_params.stats_panel
         
         progress_container = QWidget()
@@ -197,12 +182,10 @@ class StatsPanel(QWidget):
         progress_layout.setContentsMargins(0, 0, 0, 0)
         progress_layout.setSpacing(p.progress_label_spacing)
         
-        # 进度标签
         self.progress_label = QLabel("PROGRESS: 0%")
         self.progress_label.setObjectName("ProgressLabel")
         progress_layout.addWidget(self.progress_label)
         
-        # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("MainProgressBar")
         self.progress_bar.setRange(0, 100)
@@ -213,73 +196,113 @@ class StatsPanel(QWidget):
         
         self.main_layout.addWidget(progress_container)
 
-    def _create_summary_section(self) -> None:
-        """创建摘要区域：System / Chambers / Robots"""
+    def _create_system_section(self) -> None:
+        """System 区块：单行显示 Avg | Max | Diff"""
         p = ui_params.stats_panel
         
-        # ===== System 区块 =====
-        system_header = SectionHeader("SYSTEM")
-        self.main_layout.addWidget(system_header)
+        header = SectionHeader("SYSTEM")
+        self.main_layout.addWidget(header)
         
-        system_container = QFrame()
-        system_container.setObjectName("SummaryFrame")
-        system_layout = QVBoxLayout(system_container)
-        system_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding,
-                                         p.summary_frame_padding, p.summary_frame_padding)
-        system_layout.setSpacing(p.summary_row_spacing)
+        self.system_row = QFrame()
+        self.system_row.setObjectName("MetricRow")
+        row_layout = QHBoxLayout(self.system_row)
+        row_layout.setContentsMargins(p.summary_frame_padding, 6, p.summary_frame_padding, 6)
+        row_layout.setSpacing(12)
         
-        self.sys_avg_row = SummaryRow("Avg", self.theme)
-        self.sys_max_row = SummaryRow("Max", self.theme)
-        self.sys_diff_row = SummaryRow("Diff", self.theme)
+        # Avg
+        avg_container = QWidget()
+        avg_layout = QHBoxLayout(avg_container)
+        avg_layout.setContentsMargins(0, 0, 0, 0)
+        avg_layout.setSpacing(4)
+        avg_key = QLabel("Avg")
+        avg_key.setObjectName("MetricKey")
+        self.sys_avg_value = QLabel("0.0")
+        self.sys_avg_value.setObjectName("MetricValue")
+        avg_layout.addWidget(avg_key)
+        avg_layout.addWidget(self.sys_avg_value)
+        row_layout.addWidget(avg_container)
         
-        system_layout.addWidget(self.sys_avg_row)
-        system_layout.addWidget(self.sys_max_row)
-        system_layout.addWidget(self.sys_diff_row)
+        sep1 = QLabel("|")
+        sep1.setObjectName("MetricSeparator")
+        row_layout.addWidget(sep1)
         
-        self.main_layout.addWidget(system_container)
+        # Max
+        max_container = QWidget()
+        max_layout = QHBoxLayout(max_container)
+        max_layout.setContentsMargins(0, 0, 0, 0)
+        max_layout.setSpacing(4)
+        max_key = QLabel("Max")
+        max_key.setObjectName("MetricKey")
+        self.sys_max_value = QLabel("0")
+        self.sys_max_value.setObjectName("MetricValue")
+        max_layout.addWidget(max_key)
+        max_layout.addWidget(self.sys_max_value)
+        row_layout.addWidget(max_container)
         
-        # ===== Chambers 区块 =====
-        chambers_header = SectionHeader("CHAMBERS")
-        self.main_layout.addWidget(chambers_header)
+        sep2 = QLabel("|")
+        sep2.setObjectName("MetricSeparator")
+        row_layout.addWidget(sep2)
         
-        chambers_container = QFrame()
-        chambers_container.setObjectName("SummaryFrame")
-        chambers_layout = QVBoxLayout(chambers_container)
-        chambers_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding,
-                                           p.summary_frame_padding, p.summary_frame_padding)
-        chambers_layout.setSpacing(p.summary_row_spacing)
+        # Diff
+        diff_container = QWidget()
+        diff_layout = QHBoxLayout(diff_container)
+        diff_layout.setContentsMargins(0, 0, 0, 0)
+        diff_layout.setSpacing(4)
+        diff_key = QLabel("Diff")
+        diff_key.setObjectName("MetricKey")
+        self.sys_diff_value = QLabel("0.0")
+        self.sys_diff_value.setObjectName("MetricValue")
+        diff_layout.addWidget(diff_key)
+        diff_layout.addWidget(self.sys_diff_value)
+        row_layout.addWidget(diff_container)
         
-        self.pm78_row = SummaryRow("PM7/8", self.theme)
-        self.pm1234_row = SummaryRow("PM1-4", self.theme)
-        self.pm910_row = SummaryRow("PM9/10", self.theme)
+        row_layout.addStretch()
         
-        chambers_layout.addWidget(self.pm78_row)
-        chambers_layout.addWidget(self.pm1234_row)
-        chambers_layout.addWidget(self.pm910_row)
+        self.main_layout.addWidget(self.system_row)
+
+    def _create_chambers_section(self) -> None:
+        header = SectionHeader("CHAMBERS")
+        self.main_layout.addWidget(header)
         
-        self.main_layout.addWidget(chambers_container)
+        self.pm78_row = MetricRow(self.theme)
+        self.pm1234_row = MetricRow(self.theme)
+        self.pm910_row = MetricRow(self.theme)
         
-        # ===== Robots 区块 =====
-        robots_header = SectionHeader("ROBOTS")
-        self.main_layout.addWidget(robots_header)
+        self.main_layout.addWidget(self.pm78_row)
+        self.main_layout.addWidget(self.pm1234_row)
+        self.main_layout.addWidget(self.pm910_row)
+
+    def _create_robots_section(self) -> None:
+        header = SectionHeader("ROBOTS")
+        self.main_layout.addWidget(header)
         
-        robots_container = QFrame()
-        robots_container.setObjectName("SummaryFrame")
-        robots_layout = QVBoxLayout(robots_container)
-        robots_layout.setContentsMargins(p.summary_frame_padding, p.summary_frame_padding,
-                                         p.summary_frame_padding, p.summary_frame_padding)
-        robots_layout.setSpacing(p.summary_row_spacing)
+        self.robot_avg_row = MetricRow(self.theme)
+        self.robot_max_row = MetricRow(self.theme)
         
-        self.robot_avg_row = SummaryRow("Avg", self.theme)
-        self.robot_max_row = SummaryRow("Max", self.theme)
+        self.main_layout.addWidget(self.robot_avg_row)
+        self.main_layout.addWidget(self.robot_max_row)
+
+    def _create_rewards_section(self) -> None:
+        """REWARDS 区块：固定高度，只显示非零项，按绝对值排序"""
+        p = ui_params.stats_panel
         
-        robots_layout.addWidget(self.robot_avg_row)
-        robots_layout.addWidget(self.robot_max_row)
+        header = SectionHeader("REWARDS")
+        self.main_layout.addWidget(header)
         
-        self.main_layout.addWidget(robots_container)
+        # 固定高度容器
+        self.rewards_container = QFrame()
+        self.rewards_container.setObjectName("RewardsContainer")
+        self.rewards_container.setFixedHeight(p.rewards_fixed_height)
+        
+        self.rewards_layout = QVBoxLayout(self.rewards_container)
+        self.rewards_layout.setContentsMargins(p.summary_frame_padding, 6, 
+                                               p.summary_frame_padding, 6)
+        self.rewards_layout.setSpacing(p.rewards_item_spacing)
+        self.rewards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.main_layout.addWidget(self.rewards_container)
 
     def _create_release_section(self) -> None:
-        """创建 RELEASE TIME 区域：固定高度，内部滚动"""
         p = ui_params.stats_panel
         
         header = SectionHeader("RELEASE")
@@ -289,50 +312,47 @@ class StatsPanel(QWidget):
         self.release_text.setObjectName("ReleaseText")
         self.release_text.setReadOnly(True)
         self.release_text.setFixedHeight(p.release_fixed_height)
-        self.release_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.release_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.release_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.release_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
         self.main_layout.addWidget(self.release_text)
 
     def _create_history_section(self) -> None:
-        """创建 HISTORY 区域：固定高度，内部滚动"""
         p = ui_params.stats_panel
         
         header = SectionHeader("HISTORY")
         self.main_layout.addWidget(header)
         
-        self.history_text = QTextEdit()
-        self.history_text.setObjectName("HistoryText")
-        self.history_text.setReadOnly(True)
-        self.history_text.setFixedHeight(p.history_fixed_height)
-        self.history_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.history_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.history_list = QListWidget()
+        self.history_list.setObjectName("HistoryList")
+        self.history_list.setFixedHeight(p.history_fixed_height)
+        self.history_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
-        self.main_layout.addWidget(self.history_text)
+        self.main_layout.addWidget(self.history_list)
 
     def _apply_styles(self) -> None:
-        """应用组件内部样式（覆盖全局 QSS）"""
         t = self.theme
         p = ui_params.stats_panel
         
         qss = f"""
-        /* ===== StatsPanel 根容器 ===== */
         #StatsPanelRoot {{
             background-color: transparent;
         }}
         
-        /* ===== 区块标题 ===== */
         #SectionHeader {{
             font-size: {p.section_title_font_pt}pt;
             font-weight: 700;
             color: rgb{t.accent_cyan};
             padding: 2px 0;
             margin: 0;
+            background: transparent;
         }}
         
-        /* ===== KPI 卡片 ===== */
         #KPICard {{
-            background-color: rgba{(*t.bg_surface, 0.5)};
+            background-color: rgba{(*t.bg_surface, 0.4)};
             border: 1px solid rgb{t.border_muted};
             border-radius: {p.kpi_card_radius}px;
         }}
@@ -340,18 +360,20 @@ class StatsPanel(QWidget):
             font-size: {p.kpi_label_font_pt}pt;
             font-weight: 600;
             color: rgb{t.text_secondary};
+            background-color: transparent;
         }}
         #KPICardValue {{
             font-size: {p.kpi_value_font_pt}pt;
             font-weight: 700;
             color: rgb{t.text_kpi};
+            background-color: transparent;
         }}
         
-        /* ===== 进度条 ===== */
         #ProgressLabel {{
             font-size: {p.label_font_pt}pt;
             font-weight: 600;
             color: rgb{t.text_primary};
+            background-color: transparent;
         }}
         #MainProgressBar {{
             border: 1px solid rgb{t.border_muted};
@@ -363,32 +385,30 @@ class StatsPanel(QWidget):
             border-radius: 3px;
         }}
         
-        /* ===== 摘要区域 ===== */
-        #SummaryFrame {{
-            background-color: rgba{(*t.bg_surface, 0.3)};
+        #MetricRow, #RewardsContainer {{
+            background-color: rgb{t.bg_deep};
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
         }}
-        #SummaryKey {{
+        #MetricKey {{
             font-size: {p.summary_key_font_pt}pt;
             font-weight: 600;
-            color: rgb{t.text_secondary};
+            color: rgb{t.text_muted};
+            background-color: transparent;
         }}
-        #SummaryValue {{
+        #MetricValue {{
             font-size: {p.summary_value_font_pt}pt;
             font-weight: 700;
             color: rgb{t.text_kpi};
+            background-color: transparent;
+        }}
+        #MetricSeparator {{
+            font-size: {p.summary_key_font_pt}pt;
+            color: rgb{t.border_muted};
+            background-color: transparent;
         }}
         
-        /* ===== Reward 明细 ===== */
-        #RewardDetail {{
-            font-size: {p.reward_detail_font_pt}pt;
-            color: rgb{t.text_muted};
-            padding: 4px 0;
-        }}
-        
-        /* ===== 文本框 ===== */
-        #ReleaseText, #HistoryText {{
+        #ReleaseText {{
             background-color: rgb{t.bg_deep};
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
@@ -397,51 +417,137 @@ class StatsPanel(QWidget):
             font-size: {p.release_font_pt}pt;
             padding: 6px;
         }}
+        
+        #HistoryList {{
+            background-color: rgb{t.bg_deep};
+            border: 1px solid rgb{t.border_muted};
+            border-radius: 4px;
+            outline: none;
+        }}
+        #HistoryList::item {{
+            color: rgb{t.text_secondary};
+            font-family: "{p.font_family}";
+            font-size: {p.history_font_pt}pt;
+            padding: 2px 6px;
+            border: none;
+            background-color: transparent;
+        }}
+        
+        .RewardItem {{
+            font-size: {p.rewards_item_font_pt}pt;
+            background: transparent;
+        }}
         """
         self.setStyleSheet(qss)
 
-    # ===== 公共更新接口（保持不变） =====
+    # ===== 公共更新接口 =====
 
     def update_state(self, state: StateInfo, action_history: List[Dict[str, Any]], 
                      trend_data: Dict[str, List[float]] | None = None) -> None:
-        """全量刷新：KPI、摘要、释放计划、历史。"""
         self._update_metrics(state)
         self._update_summary(state)
         self._update_release_schedule(state)
         self._update_history(action_history)
 
     def update_reward(self, total_reward: float, detail: Dict[str, float]) -> None:
-        """单独刷新奖励：总奖励 + 明细（带颜色编码）。"""
-        self.reward_card.set_value(f"{total_reward:.2f}")
-        
-        # 明细显示
-        detail_parts = []
-        for k, v in sorted(detail.items()):
-            color = self.theme.success if v >= 0 else self.theme.danger
-            detail_parts.append(f'<span style="color: rgb{color};">{k}: {v:+.2f}</span>')
-        
-        if detail_parts:
-            self.reward_detail.setText(" | ".join(detail_parts))
+        """更新奖励：总奖励 + 明细（只显示非零项，按绝对值排序）"""
+        # 更新总奖励
+        if total_reward > 0:
+            color = self.theme.success
+        elif total_reward < 0:
+            color = self.theme.danger
         else:
-            self.reward_detail.setText("")
+            color = self.theme.text_kpi
+        self.reward_card.set_value(f"{total_reward:.2f}")
+        self.reward_card.set_value_color(color)
+        
+        # 清理旧的明细
+        while self.rewards_layout.count():
+            item = self.rewards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # 过滤非零项并按绝对值排序
+        non_zero_items = [(k, v) for k, v in detail.items() if abs(v) > 0.001]
+        sorted_items = sorted(non_zero_items, key=lambda x: abs(x[1]), reverse=True)
+        
+        p = ui_params.stats_panel
+        max_items = p.rewards_max_items
+        
+        # 显示前 N 项
+        display_items = sorted_items[:max_items]
+        remaining = len(sorted_items) - max_items
+        
+        for name, value in display_items:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            
+            # 名称
+            name_label = QLabel(name)
+            name_label.setStyleSheet(f"""
+                font-size: {p.rewards_item_font_pt}pt;
+                color: rgb{self.theme.text_secondary};
+                background: transparent;
+            """)
+            row_layout.addWidget(name_label)
+            
+            row_layout.addStretch()
+            
+            # 值（降低饱和度）
+            if value > 0:
+                base_color = self.theme.success
+            else:
+                base_color = self.theme.danger
+            # 降低饱和度
+            value_color = tuple(int(c * 0.75 + 60) for c in base_color)
+            
+            value_label = QLabel(f"{value:+.2f}")
+            value_label.setStyleSheet(f"""
+                font-size: {p.rewards_item_font_pt}pt;
+                font-weight: 600;
+                color: rgb{value_color};
+                background: transparent;
+            """)
+            row_layout.addWidget(value_label)
+            
+            self.rewards_layout.addWidget(row)
+        
+        # 显示剩余项数
+        if remaining > 0:
+            more_label = QLabel(f"+{remaining} more...")
+            more_label.setStyleSheet(f"""
+                font-size: {p.rewards_item_font_pt - 1}pt;
+                color: rgb{self.theme.text_muted};
+                background: transparent;
+                font-style: italic;
+            """)
+            self.rewards_layout.addWidget(more_label)
+        
+        # 如果没有非零项
+        if not display_items:
+            empty_label = QLabel("—")
+            empty_label.setStyleSheet(f"""
+                font-size: {p.rewards_item_font_pt}pt;
+                color: rgb{self.theme.text_muted};
+                background: transparent;
+            """)
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.rewards_layout.addWidget(empty_label)
 
     def update_step(self, step: int) -> None:
-        """单独刷新步数。"""
         self.step_card.set_value(str(step))
 
     def _update_metrics(self, state: StateInfo) -> None:
-        """更新 KPI 卡片和进度条"""
-        # TIME
         self.time_card.set_value(str(int(state.time)))
         
-        # PROGRESS
         progress = 0
         if state.total_wafers > 0:
             progress = int((state.done_count / state.total_wafers) * 100)
         self.progress_label.setText(f"PROGRESS: {progress}% ({state.done_count}/{state.total_wafers})")
         self.progress_bar.setValue(progress)
         
-        # 进度条颜色
         if progress < 30:
             color = self.theme.danger
         elif progress < 70:
@@ -449,7 +555,6 @@ class StatsPanel(QWidget):
         else:
             color = self.theme.success
         
-        p = ui_params.stats_panel
         self.progress_bar.setStyleSheet(f"""
             #MainProgressBar {{
                 border: 1px solid rgb{self.theme.border_muted};
@@ -463,18 +568,14 @@ class StatsPanel(QWidget):
         """)
 
     def _update_summary(self, state: StateInfo) -> None:
-        """更新摘要区域：System / Chambers / Robots"""
-        
-        # ===== System =====
         system_avg = state.stats.get("system_avg", 0.0)
         system_max = state.stats.get("system_max", 0)
         system_diff = state.stats.get("system_diff", 0.0)
         
-        self.sys_avg_row.set_value(f"{system_avg:.1f}")
-        self.sys_max_row.set_value(str(system_max))
-        self.sys_diff_row.set_value(f"{system_diff:.1f}")
+        self.sys_avg_value.setText(f"{system_avg:.1f}")
+        self.sys_max_value.setText(str(system_max))
+        self.sys_diff_value.setText(f"{system_diff:.1f}")
         
-        # ===== Chambers =====
         chambers_data = state.stats.get("chambers", {})
         
         pm78 = chambers_data.get("PM7/8", {})
@@ -486,27 +587,23 @@ class StatsPanel(QWidget):
             max_time = data.get("max", 0)
             return f"Avg {avg:.1f}  Max {max_time}"
         
-        self.pm78_row.set_value(format_chamber(pm78))
-        self.pm1234_row.set_value(format_chamber(pm1234))
-        self.pm910_row.set_value(format_chamber(pm910))
+        self.pm78_row.set_data("PM7/8", format_chamber(pm78))
+        self.pm1234_row.set_data("PM1-4", format_chamber(pm1234))
+        self.pm910_row.set_data("PM9/10", format_chamber(pm910))
         
-        # ===== Robots =====
         transports = state.stats.get("transports", {})
         robot_avg = transports.get("avg", 0.0)
         robot_max = transports.get("max", 0)
         
-        # 颜色编码
+        color = None
         if robot_avg > 0:
             color = self.theme.success if robot_avg < 10 else (
                 self.theme.warning if robot_avg < 20 else self.theme.danger)
-        else:
-            color = None
         
-        self.robot_avg_row.set_value(f"{robot_avg:.1f}", color)
-        self.robot_max_row.set_value(str(robot_max))
+        self.robot_avg_row.set_data("Avg", f"{robot_avg:.1f}", color)
+        self.robot_max_row.set_data("Max", str(robot_max))
 
     def _update_release_schedule(self, state: StateInfo) -> None:
-        """更新 RELEASE TIME 区域"""
         schedule = state.stats.get("release_schedule", {})
         lines = []
         for place_name, items in schedule.items():
@@ -517,28 +614,22 @@ class StatsPanel(QWidget):
         self.release_text.setText("\n".join(lines) if lines else "—")
 
     def _update_history(self, action_history: List[Dict[str, Any]]) -> None:
-        """更新 HISTORY 区域"""
         n = ui_params.stats_panel.history_line_count
-        lines = []
+        
+        self.history_list.clear()
+        
         for item in action_history[-n:]:
             reward = item['reward']
             if reward > 0:
-                color = f"color: rgb{self.theme.success};"
+                color = self.theme.success
             elif reward < 0:
-                color = f"color: rgb{self.theme.danger};"
+                color = self.theme.danger
             else:
-                color = f"color: rgb{self.theme.text_muted};"
+                color = self.theme.text_muted
             
-            lines.append(
-                f'#{item["step"]} {item["action"]} '
-                f'<span style="{color} font-weight: bold;">({reward:+.2f})</span>'
-            )
-        
-        if lines:
-            self.history_text.setHtml("<br>".join(lines))
-        else:
-            self.history_text.clear()
+            list_item = QListWidgetItem(f"#{item['step']} {item['action']} ({reward:+.2f})")
+            list_item.setForeground(QColor(*color))
+            self.history_list.addItem(list_item)
 
     def apply_params(self) -> None:
-        """根据 ui_params 重新应用样式（热更新用）"""
         self._apply_styles()
