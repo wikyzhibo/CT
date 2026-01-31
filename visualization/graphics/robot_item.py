@@ -76,7 +76,7 @@ class RobotItem(QGraphicsItem):
             self._draw_status_text(painter, rect)
 
     def _draw_wafer(self, painter: QPainter, rect: QRectF) -> None:
-        """中心绘制主晶圆；多晶圆时右下角显示 +N。"""
+        """中心绘制主晶圆；机械手中显示编号+停留时间，配色 viz：正常绿、超时红。"""
         ch = self._ch
         wafer = self.robot.wafers[0]
         cx = rect.center().x()
@@ -97,9 +97,30 @@ class RobotItem(QGraphicsItem):
             ring_rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
             painter.drawArc(ring_rect, 90 * 16, -int(360 * 16 * progress))
 
-        painter.setPen(self.theme.qcolor(self.theme.text_primary))
-        painter.setFont(QFont(ch.font_family, ch.wafer_font_pt))
-        painter.drawText(QRectF(cx - r, cy - r, r * 2, r * 2), Qt.AlignmentFlag.AlignCenter, str(wafer.token_id))
+        # 机械手晶圆：编号(上) + 停留时间(下)，配色 viz
+        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+            remaining = max(0, int(wafer.proc_time - wafer.stay_time))
+            if remaining > 0:
+                painter.setPen(self.theme.qcolor(fill))
+                painter.setFont(QFont(ch.font_family, ch.wafer_font_pt))
+                painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, str(remaining))
+            else:
+                painter.setPen(self.theme.qcolor(fill))
+                painter.setFont(QFont(ch.font_family, ch.wafer_font_pt))
+                overtime = int(wafer.stay_time - wafer.proc_time)
+                done_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}s"
+                painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, done_text)
+            painter.setPen(self.theme.qcolor(self.theme.text_muted))
+            painter.setFont(QFont(ch.font_family, ch.wafer_id_font_pt))
+            painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
+        else:
+            painter.setPen(self.theme.qcolor(self.theme.text_primary))
+            painter.setFont(QFont(ch.font_family, ch.wafer_font_pt))
+            painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
+            time_color = fill if fill != self.theme.success else self.theme.text_primary
+            painter.setPen(self.theme.qcolor(time_color))
+            painter.setFont(QFont(ch.font_family, ch.wafer_id_font_pt))
+            painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"{int(wafer.stay_time)}s")
 
         if len(self.robot.wafers) > 1:
             painter.setPen(self.theme.qcolor(self.theme.text_muted))
@@ -115,6 +136,7 @@ class RobotItem(QGraphicsItem):
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _get_wafer_color(self, wafer: WaferState):
+        """机械手晶圆配色对齐 viz：运输位 stay<7 绿，7–10 黄，≥10 红。"""
         if wafer.place_type == 1:
             if wafer.time_to_scrap <= 0:
                 return self.theme.danger
@@ -123,8 +145,13 @@ class RobotItem(QGraphicsItem):
             if wafer.time_to_scrap <= 5:
                 return self.theme.warning
             return self.theme.success
-        if wafer.place_type == 2:
-            return self.theme.info
+        if wafer.place_type == 2:  # 运输位：正常绿，超时红
+            stay = int(wafer.stay_time)
+            if stay >= 10:
+                return self.theme.danger
+            if stay >= 7:
+                return self.theme.warning
+            return self.theme.success
         return self.theme.secondary
 
     def update_state(self, robot: RobotState) -> None:

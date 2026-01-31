@@ -112,14 +112,22 @@ class PetriMainWindow(QMainWindow):
 
     def _apply_stylesheet(self) -> None:
         t = self.theme
+
+        # 读取可调参数（避免写死）
+        sp = ui_params.stats_panel
+        cp = ui_params.control_panel
+
         qss = f"""
         QMainWindow {{
             background-color: rgb{t.bg_deepest};
         }}
+
         QWidget {{
             color: rgb{t.text_primary};
             background-color: rgb{t.bg_deepest};
         }}
+
+        /* -------- GroupBox -------- */
         QGroupBox {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 8px;
@@ -134,17 +142,37 @@ class PetriMainWindow(QMainWindow):
             font-weight: bold;
             color: rgb{t.accent_cyan};
         }}
+
+        /* -------- 全局默认文字（别锁死关键组件） -------- */
         QLabel {{
             color: rgb{t.text_primary};
-            font-size: 13px;
+            font-size: 13px;   /* 默认小字，关键的用 ID 覆盖 */
         }}
+
+        /* -------- StatsPanel：KPI 强制覆盖（必须更具体才压得住全局） -------- */
+        QLabel#KpiLabel {{
+            font-size: {sp.kpi_font_pt}px;
+            font-weight: 800;
+            color: rgb{t.text_kpi};
+        }}
+        QLabel#BigLabel {{
+            font-size: {sp.label_font_pt}px;
+            font-weight: 800;
+            color: rgb{t.text_primary};
+        }}
+        QLabel#DetailLabel {{
+            font-size: {sp.reward_detail_font_pt}px;
+            color: rgb{t.text_muted};
+        }}
+
+        /* -------- Buttons -------- */
         QPushButton {{
             background-color: rgb{t.bg_surface};
             color: rgb{t.text_primary};
             border: 1px solid rgb{t.border};
             border-radius: 6px;
             padding: 8px 12px;
-            font-size: 13px;
+            font-size: {getattr(cp, "button_font_size_px", 13)}px;
         }}
         QPushButton:hover {{
             background-color: rgb{t.bg_elevated};
@@ -157,18 +185,24 @@ class PetriMainWindow(QMainWindow):
         }}
         QPushButton#TransitionButton:enabled {{
             border-color: rgb{t.accent_cyan};
+            font-size: {getattr(cp, "transition_button_font_size_px", getattr(cp, "button_font_size_px", 13))}px;
         }}
+
+        /* -------- TextEdit -------- */
         QTextEdit {{
             background-color: rgb{t.bg_deep};
             border: 1px solid rgb{t.border};
             color: rgb{t.text_secondary};
             font-size: 12px;
         }}
+
+        /* -------- ProgressBar -------- */
         QProgressBar {{
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
             text-align: center;
             background-color: rgb{t.bg_deep};
+            font-size: 12px;
         }}
         QProgressBar::chunk {{
             background-color: rgb{t.accent_cyan};

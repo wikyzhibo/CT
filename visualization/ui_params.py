@@ -32,8 +32,8 @@ class StatsPanelParams:
     layout_margins: Tuple[int, int, int, int] = (14, 16, 14, 16)  # 内容边距 (左,上,右,下)
     group_spacing: int = 12          # 组内控件间距
     # 字号 (pt)，放大以提升可读性
-    label_font_pt: int = 50          # KPI 下方标签（如 PROGRESS）
-    kpi_font_pt: int = 30           # KPI 数字（TIME/STEP/REWARD）
+    label_font_pt: int = 20          # KPI 下方标签（如 PROGRESS）
+    kpi_font_pt: int = 20           # KPI 数字（TIME/STEP/REWARD）
     summary_font_pt: int = 30       # System/Chambers/Robots 摘要正文
     toolbox_tab_font_pt: int = 30    # ToolBox 标签（System/Chambers/Robots）
     release_font_pt: int = 20       # RELEASE TIME 文本框
@@ -97,7 +97,8 @@ class ChamberItemParams:
     wafer_radius: int = 42    # 晶圆圆半径 (px)
     progress_ring_width: int = 3   # 进度环线宽 (px)
     progress_ring_offset: int = 4 # 进度环相对晶圆半径的外扩 (px)
-    wafer_font_pt: int = 18   # 晶圆内 token_id 字号
+    wafer_font_pt: int = 14   # 晶圆内主数字（剩余时间）字号
+    wafer_id_font_pt: int = 14   # 晶圆内 #token_id 次要字号
     extra_count_font_pt: int = 14   # 「+N」多晶圆提示字号
     inner_margin: int = 2     # 卡片内边距（相对边框）
     text_margin: int = 6      # 文字与边缘间距
@@ -114,7 +115,7 @@ class RobotItemParams:
     grid_step: int = 12       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
-    title_font_pt: int = 14   # 机械手名称（TM2/TM3）字号
+    title_font_pt: int = 17   # 机械手名称（TM2/TM3）字号
     status_font_pt: int = 12  # BUSY/IDLE 字号
     wafers_font_pt: int = 10  # 「Wafers: N」字号
     led_offset: int = 8       # 状态灯距左上角偏移 (px)

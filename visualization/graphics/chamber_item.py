@@ -81,19 +81,30 @@ class ChamberItem(QGraphicsItem):
         return self.theme.text_muted
 
     def _get_wafer_color(self, wafer: WaferState):
-        if wafer.place_type == 1:
+        """配色对齐 viz.py：加工腔 stay/proc 判断，运输位 stay 7/10 阈值。"""
+        if wafer.place_type == 1:  # 加工腔室
+            proc = getattr(wafer, "proc_time", 0) or 0
+            stay = int(wafer.stay_time)
             if wafer.time_to_scrap <= 0:
                 return self.theme.danger
-            if getattr(wafer, "proc_time", 0) and wafer.stay_time >= wafer.proc_time:
-                return getattr(self.theme, "complete_orange", self.theme.warning)
+            if proc > 0 and stay >= proc + 15:
+                return self.theme.danger
+            if proc > 0 and stay >= proc:
+                return self.theme.warning
             if wafer.time_to_scrap <= 5:
                 return self.theme.warning
             return self.theme.success
-        if wafer.place_type == 2:
-            return self.theme.info
+        if wafer.place_type == 2:  # 运输位
+            stay = int(wafer.stay_time)
+            if stay >= 10:
+                return self.theme.danger
+            if stay >= 7:
+                return self.theme.warning
+            return self.theme.success
         return self.theme.secondary
 
     def _draw_wafer(self, painter: QPainter, rect: QRectF) -> None:
+        """晶圆内显示：加工腔为剩余时间+编号；非加工为编号+停留时间。布局对齐 viz。"""
         p = self._p
         wafer = self.chamber.wafers[0]
         cx = rect.center().x()
@@ -114,9 +125,33 @@ class ChamberItem(QGraphicsItem):
             ring_rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
             painter.drawArc(ring_rect, 90 * 16, -int(360 * 16 * progress))
 
-        painter.setPen(self.theme.qcolor(self.theme.text_primary))
-        painter.setFont(QFont(p.font_family, p.wafer_font_pt))
-        painter.drawText(QRectF(cx - r, cy - r, r * 2, r * 2), Qt.AlignmentFlag.AlignCenter, str(wafer.token_id))
+        # 内部信息：加工腔 剩余时间(大) + #编号(小)；非加工 编号 + 停留时间
+        wafer_rect = QRectF(cx - r, cy - r, r * 2, r * 2)
+        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+            remaining = max(0, int(wafer.proc_time - wafer.stay_time))
+            if remaining > 0:
+                painter.setPen(self.theme.qcolor(fill))
+                painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+                painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, str(remaining))
+                painter.setPen(self.theme.qcolor(self.theme.text_muted))
+                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+                painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
+            else:
+                overtime = int(wafer.stay_time - wafer.proc_time)
+                done_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}s"
+                painter.setPen(self.theme.qcolor(fill))
+                painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+                painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, done_text)
+                painter.setPen(self.theme.qcolor(self.theme.text_muted))
+                painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+                painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
+        else:
+            painter.setPen(self.theme.qcolor(self.theme.text_primary))
+            painter.setFont(QFont(p.font_family, p.wafer_font_pt))
+            painter.drawText(QRectF(cx - r, cy - r - 8, r * 2, 28), Qt.AlignmentFlag.AlignCenter, f"#{wafer.token_id}")
+            painter.setPen(self.theme.qcolor(self.theme.text_secondary))
+            painter.setFont(QFont(p.font_family, p.wafer_id_font_pt))
+            painter.drawText(QRectF(cx - r, cy - 4, r * 2, 24), Qt.AlignmentFlag.AlignCenter, f"{int(wafer.stay_time)}s")
 
         if len(self.chamber.wafers) > 1:
             painter.setPen(self.theme.qcolor(self.theme.text_muted))
