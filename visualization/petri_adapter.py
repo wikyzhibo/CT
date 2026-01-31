@@ -278,7 +278,7 @@ class PetriAdapter(AlgorithmAdapter):
                 "system_diff": wafer_stats.get("system_diff", 0.0),
                 "completed_count": wafer_stats.get("completed_count", 0),
                 "in_progress_count": wafer_stats.get("in_progress_count", 0),
-                "chambers": wafer_stats.get("chambers", {}),
+                "chambers": self._remap_chamber_stats(wafer_stats.get("chambers", {})),
                 "transports": wafer_stats.get("transports", {}),
                 "transports_detail": wafer_stats.get("transports_detail", {}),
             },
@@ -338,3 +338,16 @@ class PetriAdapter(AlgorithmAdapter):
             if place.name == name:
                 return place
         return None
+
+    def _remap_chamber_stats(self, raw_chambers: Dict[str, Any]) -> Dict[str, Any]:
+        """将内部腔室名称映射为 UI 显示名称"""
+        mapping = {
+            "s1": "PM7/8",
+            "s3": "PM1/2/3/4",
+            "s5": "PM9/10",
+        }
+        remaped = {}
+        for k, v in raw_chambers.items():
+            new_key = mapping.get(k, k)
+            remaped[new_key] = v
+        return remaped

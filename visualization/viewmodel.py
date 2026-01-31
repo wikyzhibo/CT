@@ -100,8 +100,25 @@ class PetriViewModel(QObject):
         if self.auto_mode:
             self.auto_timer.start(int(self.auto_speed * 1000))
 
+    def set_agent_callback(self, callback) -> None:
+        """设置自动模式下的智能体回调"""
+        self.agent_callback = callback
+
     @Slot()
     def _auto_step(self) -> None:
+        # 优先使用智能体回调
+        if hasattr(self, 'agent_callback') and self.agent_callback:
+            try:
+                action = self.agent_callback()
+                if action is not None:
+                    self.execute_action(action)
+                return
+            except Exception as e:
+                print(f"Agent callback error: {e}")
+                self.set_auto_mode(False)
+                return
+
+        # 降级到随机游走
         actions = self.adapter.get_enabled_actions()
         enabled = [a.action_id for a in actions if a.enabled]
         if not enabled:

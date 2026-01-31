@@ -138,6 +138,7 @@ class PetriMainWindow(QMainWindow):
     def set_model_handler(self, handler) -> None:
         """设置模型动作获取器"""
         self._model_handler = handler
+        self.viewmodel.set_agent_callback(handler)
         self._update_model_buttons_state()
 
     def _update_model_buttons_state(self) -> None:

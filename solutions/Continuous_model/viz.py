@@ -1048,7 +1048,7 @@ class PetriVisualizer:
         }, batch_size=[1])
         
         with torch.no_grad():
-            with set_exploration_type(ExplorationType.RANDOM):
+            with set_exploration_type(ExplorationType.MODE):
                 td = self.policy(td)
         
         return td["action"].item()

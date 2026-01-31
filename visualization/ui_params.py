@@ -15,19 +15,19 @@ from typing import List, Tuple
 class MainWindowParams:
     """主窗口：三栏布局宽度、初始几何、中央间距。"""
 
-    left_panel_width: int = 350      # 左栏固定宽度 (px)
+    left_panel_width: int = 300      # 左栏固定宽度 (px)
     right_panel_width: int = 300     # 右栏固定宽度 (px)
     initial_x: int = 100             # 窗口初始左上角 x
     initial_y: int = 100             # 窗口初始左上角 y
-    initial_width: int = 1420        # 窗口初始宽度
+    initial_width: int = 1350        # 窗口初始宽度
     initial_height: int = 1000       # 窗口初始高度
     central_spacing: int = 12        # 左/中/右三栏之间的间距 (px)
     
     # ───────── 无边框窗口参数 ─────────
-    window_corner_radius: int = 12   # 窗口圆角半径 (px)
+    window_corner_radius: int = 20   # 窗口圆角半径 (px)
     shadow_blur_radius: int = 20     # 阴影模糊半径 (px)
-    shadow_offset: int = 4           # 阴影偏移 (px)
-    shadow_margin: int = 25          # 窗口边距（为阴影留空）(px)
+    shadow_offset: int = 5           # 阴影偏移 (px)
+    shadow_margin: int = 40          # 窗口边距（为阴影留空）(px)
     drag_region_height: int = 60     # 顶部拖动区域高度 (px)
 
 
@@ -49,16 +49,16 @@ class StatsPanelParams:
     kpi_grid_columns: int = 2        # KPI 网格列数
     
     # ───────── 字号 (pt) ─────────
-    section_title_font_pt: int = 12  # 区块标题
+    section_title_font_pt: int = 14  # 区块标题
     kpi_label_font_pt: int = 10      # KPI 标签（如 TIME, STEP）
     kpi_value_font_pt: int = 18      # KPI 数值（大号）
     label_font_pt: int = 11          # 普通标签文字
     summary_key_font_pt: int = 10    # 摘要 Key 字号
     summary_value_font_pt: int = 11  # 摘要 Value 字号
     toolbox_tab_font_pt: int = 12    # GroupBox 标题
-    release_font_pt: int = 10        # RELEASE TIME
-    history_font_pt: int = 10        # HISTORY
-    reward_detail_font_pt: int = 10  # REWARD 明细
+    release_font_pt: int = 12        # RELEASE TIME
+    history_font_pt: int = 12        # HISTORY
+    reward_detail_font_pt: int = 12  # REWARD 明细
     
     # ───────── 摘要布局参数 ─────────
     summary_row_spacing: int = 4     # 摘要行间距
@@ -77,7 +77,7 @@ class StatsPanelParams:
     # ───────── Rewards 区块参数 ─────────
     rewards_fixed_height: int = 100  # REWARDS 区块固定高度 (px)
     rewards_max_items: int = 6       # REWARDS 最多显示条目数
-    rewards_item_font_pt: int = 10   # REWARDS 条目字号
+    rewards_item_font_pt: int = 12   # REWARDS 条目字号
     rewards_item_spacing: int = 2    # REWARDS 条目行间距
     
     # ───────── 视觉效果 ─────────

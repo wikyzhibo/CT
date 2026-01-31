@@ -57,16 +57,13 @@ def build_adapter(adapter_name: str) -> PetriAdapter:
     return PetriAdapter(env)
 
 
+
+
+
+
 def load_model(model_path: str, adapter: PetriAdapter):
     """
     加载训练好的模型
-    
-    Args:
-        model_path: 模型文件路径
-        adapter: Petri 适配器
-        
-    Returns:
-        模型动作获取函数
     """
     import torch
     from tensordict import TensorDict
@@ -78,8 +75,11 @@ def load_model(model_path: str, adapter: PetriAdapter):
     try:
         # 获取环境参数
         n_actions = adapter.env.n_actions
+        # Ensure we get the correct obs dim
         n_obs = adapter.env.observation_spec["observation"].shape[0]
         
+        print(f"[DEBUG] Model Params: n_actions={n_actions}, n_obs={n_obs}")
+
         # 构建模型架构（与训练时相同）
         policy_backbone = MaskedPolicyHead(
             hidden=256, 
@@ -101,7 +101,7 @@ def load_model(model_path: str, adapter: PetriAdapter):
         )
         
         # 加载 state_dict
-        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
         policy.load_state_dict(state_dict)
         policy.eval()
         
@@ -110,27 +110,39 @@ def load_model(model_path: str, adapter: PetriAdapter):
         # 创建模型动作获取函数
         def get_model_action() -> int:
             """使用模型预测动作"""
-            # 获取观察和动作掩码
-            obs = adapter.env._build_obs()
-            action_mask_indices = adapter.net.get_enable_t()
-            action_mask = torch.zeros(n_actions, dtype=torch.bool)
-            action_mask[action_mask_indices] = True
-            action_mask[adapter.net.T] = True  # WAIT 动作
-            
-            # 构建 TensorDict
-            td = TensorDict({
-                "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0),
-                "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0),
-                "action_mask": action_mask.unsqueeze(0),
-            }, batch_size=[1])
-            
-            # 使用模型预测
-            with torch.no_grad():
-                with set_exploration_type(ExplorationType.MODE):
-                    td = policy(td)
-                    action = td["action"].item()
-            
-            return int(action)
+            try:
+                # 获取观察和动作掩码
+                obs = adapter.env._build_obs()
+                action_mask_indices = adapter.net.get_enable_t()
+                
+                # [DEBUG] Check mask indices
+                # print(f"[DEBUG] Mask indices: {action_mask_indices}")
+
+                action_mask = torch.zeros(n_actions, dtype=torch.bool)
+                action_mask[action_mask_indices] = True
+                action_mask[adapter.net.T] = True  # WAIT 动作
+                
+                # 构建 TensorDict
+                # MaskedPolicyHead expects 'observation_f' (float) based on models.py
+                td = TensorDict({
+                    "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0),
+                    "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0),
+                    "action_mask": action_mask.unsqueeze(0),
+                }, batch_size=[1])
+                
+                # 使用模型预测
+                with torch.no_grad():
+                    # explicitly set mode to MODE (ArgMax) to match viz.py manual fix
+                    with set_exploration_type(ExplorationType.MODE):
+                        td = policy(td)
+                        action = td["action"].item()
+                
+                return int(action)
+            except Exception as e:
+                print(f"[ERROR] Inference Failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
         
         return get_model_action
         

@@ -330,6 +330,8 @@ class StatsPanel(QWidget):
         self.history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.history_list.setWordWrap(False)
+        self.history_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         
         self.main_layout.addWidget(self.history_list)
 
