@@ -86,29 +86,29 @@ class CenterCanvasParams:
 class ChamberItemParams:
     """腔室卡片 (QGraphicsItem)：尺寸、状态闪烁、网格、晶圆与进度环。"""
 
-    w: int = 130              # 卡片宽度 (px)
-    h: int = 130              # 卡片高度 (px)
+    w: int = 140              # 卡片宽度 (px)
+    h: int = 140              # 卡片高度 (px)
     flash_ms: int = 450       # 状态变化时边框高亮持续时间 (ms)
     corner_radius: int = 6    # 圆角半径 (px)
     grid_step: int = 12       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
-    name_font_pt: int = 11    # 腔室名称字号
+    name_font_pt: int = 17    # 腔室名称字号
     wafer_radius: int = 42    # 晶圆圆半径 (px)
     progress_ring_width: int = 3   # 进度环线宽 (px)
     progress_ring_offset: int = 4 # 进度环相对晶圆半径的外扩 (px)
-    wafer_font_pt: int = 10   # 晶圆内 token_id 字号
-    extra_count_font_pt: int = 9   # 「+N」多晶圆提示字号
+    wafer_font_pt: int = 18   # 晶圆内 token_id 字号
+    extra_count_font_pt: int = 14   # 「+N」多晶圆提示字号
     inner_margin: int = 2     # 卡片内边距（相对边框）
     text_margin: int = 6      # 文字与边缘间距
 
 
 @dataclass
 class RobotItemParams:
-    """机械手卡片 (QGraphicsItem)：尺寸、状态闪烁、网格、标题与状态文字。"""
+    """机械手卡片 (QGraphicsItem)：与腔室同尺寸，腔室式布局（名称在上、晶圆居中）。"""
 
-    w: int = 260              # 卡片宽度 (px)
-    h: int = 100              # 卡片高度 (px)
+    w: int = 140              # 与腔室一致 (px)
+    h: int = 140              # 与腔室一致 (px)
     flash_ms: int = 450       # IDLE↔BUSY 变化时边框高亮持续时间 (ms)
     corner_radius: int = 6    # 圆角半径 (px)
     grid_step: int = 12       # 背景网格线间距 (px)

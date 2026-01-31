@@ -28,7 +28,7 @@ PySide6 版本位于 `visualization/`，采用统一算法接口以支持后续�
 
 - `visualization/theme.py`: 主题配色
 - `visualization/ui_params.py`: **UI 可调参数**（布局、字号、尺寸等，各组件从此读取，便于统一调整）
-- `visualization/widgets/chamber_widget.py`: 腔室组件
+- `visualization/widgets/chamber_widget.py`: 腔室组件（与 ChamberItem 共用 `ui_params.chamber_item` 可调参数）
 - `visualization/widgets/wafer_widget.py`: 晶圆组件
 - `visualization/widgets/robot_widget.py`: 机械手组件
 - `visualization/widgets/stats_panel.py`: 左侧统计面板

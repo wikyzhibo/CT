@@ -49,21 +49,16 @@ class CenterCanvas(QGraphicsView):
         ch_item = ui_params.chamber_item
         r_item = ui_params.robot_item
         cw, ch = cc.cell_w, cc.cell_h
+
+        # 腔室网格位置 (row, col)，7 行 × 4 列
         positions = {
-            "PM3": (0, 1),
-            "PM4": (0, 2),
-            "PM2": (1, 0),
-            "PM1": (2, 0),
-            "PM5": (1, 3),
-            "PM6": (2, 3),
-            "LLC": (3, 1),
-            "LLD": (3, 2),
-            "PM8": (4, 0),
-            "PM7": (5, 0),
-            "PM9": (4, 3),
-            "PM10": (5, 3),
-            "LLA": (6, 1),
-            "LLB": (6, 2),
+            "PM3": (0, 1), "PM4": (0, 2),
+            "PM2": (1, 0), "PM1": (2, 0),
+            "PM5": (1, 3), "PM6": (2, 3),
+            "LLC": (3, 1), "LLD": (3, 2),
+            "PM8": (4, 0), "PM7": (5, 0),
+            "PM9": (4, 3), "PM10": (5, 3),
+            "LLA": (6, 1), "LLB": (6, 2),
         }
 
         for chamber in state.chambers:
@@ -73,15 +68,27 @@ class CenterCanvas(QGraphicsView):
             self.scene.addItem(item)
             item.setPos(col * cw + (cw - ch_item.w) / 2, row * ch + (ch - ch_item.h) / 2)
 
+        # 机械手置于所管辖腔室的几何中心
+        TM2_CHAMBERS = ["LLA", "LLB", "PM7", "PM8", "PM9", "PM10", "LLC", "LLD"]
+        TM3_CHAMBERS = ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"]
+        robot_chambers = {"TM2": TM2_CHAMBERS, "TM3": TM3_CHAMBERS}
+
         for name, robot in state.robot_states.items():
             item = RobotItem(robot, self.theme)
             self.robots[name] = item
             self.scene.addItem(item)
-            if name == "TM3":
-                cx, cy = 1.5 * cw, 1.5 * ch
-                item.setPos(cx - r_item.w / 2, cy - r_item.h / 2)
-            elif name == "TM2":
-                cx, cy = 1.5 * cw, 4.5 * ch
+            chamber_names = robot_chambers.get(name, [])
+            if chamber_names:
+                cx, cy = self._center_of_chambers(positions, chamber_names, cw, ch)
                 item.setPos(cx - r_item.w / 2, cy - r_item.h / 2)
 
         self.scene.setSceneRect(0, 0, 4 * cw, 7 * ch)
+
+    def _center_of_chambers(self, positions: dict, names: list, cw: float, ch: float) -> tuple[float, float]:
+        """计算若干腔室网格中心的几何中心 (px)。"""
+        xs, ys = [], []
+        for name in names:
+            row, col = positions.get(name, (0, 0))
+            xs.append((col + 0.5) * cw)
+            ys.append((row + 0.5) * ch)
+        return sum(xs) / len(xs), sum(ys) / len(ys)

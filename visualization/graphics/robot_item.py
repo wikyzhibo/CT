@@ -1,5 +1,5 @@
 """
-机械手 QGraphicsItem - 与腔室卡片一致风格
+机械手 QGraphicsItem - 腔室式卡片：与腔室同尺寸、同布局（名称在上、晶圆居中）
 """
 
 from __future__ import annotations
@@ -8,19 +8,20 @@ from PySide6.QtCore import Qt, QRectF, QDateTime, QTimer
 from PySide6.QtGui import QPainter, QPen, QBrush, QFont
 from PySide6.QtWidgets import QGraphicsItem
 
-from ..algorithm_interface import RobotState
+from ..algorithm_interface import RobotState, WaferState
 from ..theme import ColorTheme
 from ..ui_params import ui_params
 
 
 class RobotItem(QGraphicsItem):
-    """机械手卡片：与腔室统一视觉，标题置顶、状态灯在角；状态变化时边框闪烁"""
+    """机械手卡片：腔室式布局，名称置顶、状态灯右上、有晶圆时中心显示晶圆"""
 
     def __init__(self, robot: RobotState, theme: ColorTheme, parent=None) -> None:
         super().__init__(parent)
         self.robot = robot
         self.theme = theme
         self._p = ui_params.robot_item
+        self._ch = ui_params.chamber_item  # 晶圆绘制复用腔室参数
         self._last_busy: bool | None = None
         self._flash_until_ms: int = 0
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
@@ -30,48 +31,101 @@ class RobotItem(QGraphicsItem):
 
     def paint(self, painter: QPainter, option, widget) -> None:
         p = self._p
+        ch = self._ch
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(p.inner_margin, p.inner_margin, p.w - p.inner_margin * 2, p.h - p.inner_margin * 2)
 
         is_busy = self.robot.busy
         now_ms = QDateTime.currentMSecsSinceEpoch()
         flash = now_ms < self._flash_until_ms
-        bg = self.theme.bg_surface
-        if flash:
-            border = self.theme.accent_cyan
+
+        if is_busy or flash:
+            bg = self.theme.bg_surface
+            border = self.theme.accent_cyan if (is_busy or flash) else self.theme.border_muted
+            grid_color = self.theme.border_muted
         else:
-            border = self.theme.accent_cyan if is_busy else self.theme.border_muted
+            bg = self.theme.bg_deep
+            border = self.theme.border_muted
+            grid_color = self.theme.dim_color(self.theme.border_muted, 0.6)
+
         pen_width = 2 if flash else 1
         painter.setPen(QPen(self.theme.qcolor(border), pen_width))
         painter.setBrush(QBrush(self.theme.qcolor(bg)))
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
 
         step = p.grid_step
-        grid_color = self.theme.dim_color(self.theme.border_muted, 0.7)
         painter.setPen(QPen(self.theme.qcolor(grid_color)))
         for x in range(int(rect.left()), int(rect.right()), step):
             painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom()))
         for y in range(int(rect.top()), int(rect.bottom()), step):
             painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
 
-        status_color = self.theme.success if self.robot.busy else self.theme.text_muted
-        led = QRectF(rect.left() + p.led_offset, rect.top() + p.led_offset, p.led_size, p.led_size)
+        status_color = self.theme.success if is_busy else self.theme.text_muted
+        led = QRectF(rect.right() - p.led_size - 6, rect.top() + 6, p.led_size, p.led_size)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(self.theme.qcolor(status_color)))
         painter.drawEllipse(led)
 
         painter.setPen(self.theme.qcolor(self.theme.text_primary))
         painter.setFont(QFont(p.font_family, p.title_font_pt))
-        painter.drawText(rect.adjusted(p.title_left_offset, 6, -p.text_margin, -4), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self.robot.name)
+        painter.drawText(rect.adjusted(p.text_margin, 4, -p.text_margin, -4), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self.robot.name)
 
-        painter.setPen(self.theme.qcolor(self.theme.text_secondary))
-        painter.setFont(QFont(p.font_family, p.status_font_pt))
-        status_text = "BUSY" if self.robot.busy else "IDLE"
-        painter.drawText(rect.adjusted(p.text_margin, 32, -p.text_margin, -4), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, status_text)
+        if self.robot.wafers:
+            self._draw_wafer(painter, rect)
+        else:
+            self._draw_status_text(painter, rect)
 
+    def _draw_wafer(self, painter: QPainter, rect: QRectF) -> None:
+        """中心绘制主晶圆；多晶圆时右下角显示 +N。"""
+        ch = self._ch
+        wafer = self.robot.wafers[0]
+        cx = rect.center().x()
+        cy = rect.center().y()
+        r = ch.wafer_radius
+
+        fill = self._get_wafer_color(wafer)
+        painter.setPen(QPen(self.theme.qcolor(self.theme.border)))
+        painter.setBrush(QBrush(self.theme.qcolor(fill)))
+        painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+
+        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+            progress = min(1.0, max(0.0, wafer.stay_time / wafer.proc_time))
+            ring_pen = QPen(self.theme.qcolor(self.theme.accent_cyan), ch.progress_ring_width)
+            painter.setPen(ring_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            ring_r = r + ch.progress_ring_offset
+            ring_rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
+            painter.drawArc(ring_rect, 90 * 16, -int(360 * 16 * progress))
+
+        painter.setPen(self.theme.qcolor(self.theme.text_primary))
+        painter.setFont(QFont(ch.font_family, ch.wafer_font_pt))
+        painter.drawText(QRectF(cx - r, cy - r, r * 2, r * 2), Qt.AlignmentFlag.AlignCenter, str(wafer.token_id))
+
+        if len(self.robot.wafers) > 1:
+            painter.setPen(self.theme.qcolor(self.theme.text_muted))
+            painter.setFont(QFont(ch.font_family, ch.extra_count_font_pt))
+            painter.drawText(rect.adjusted(0, 0, -ch.text_margin, -ch.text_margin), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight, f"+{len(self.robot.wafers) - 1}")
+
+    def _draw_status_text(self, painter: QPainter, rect: QRectF) -> None:
+        """无晶圆时中心显示 IDLE / BUSY。"""
+        p = self._p
         painter.setPen(self.theme.qcolor(self.theme.text_muted))
-        painter.setFont(QFont(p.font_family, p.wafers_font_pt))
-        painter.drawText(rect.adjusted(p.text_margin, 52, -p.text_margin, -4), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, f"Wafers: {len(self.robot.wafers)}")
+        painter.setFont(QFont(p.font_family, p.status_font_pt))
+        text = "BUSY" if self.robot.busy else "IDLE"
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _get_wafer_color(self, wafer: WaferState):
+        if wafer.place_type == 1:
+            if wafer.time_to_scrap <= 0:
+                return self.theme.danger
+            if getattr(wafer, "proc_time", 0) and wafer.stay_time >= wafer.proc_time:
+                return getattr(self.theme, "complete_orange", self.theme.warning)
+            if wafer.time_to_scrap <= 5:
+                return self.theme.warning
+            return self.theme.success
+        if wafer.place_type == 2:
+            return self.theme.info
+        return self.theme.secondary
 
     def update_state(self, robot: RobotState) -> None:
         prev = self._last_busy
