@@ -3090,6 +3090,7 @@ def main():
     
     print()
     env = Env_PN()
+    env.net.enable_statistics = True  # Enable statistics tracking for visualization
     visualizer = PetriVisualizer(env, model_path=model_path)
     visualizer.run()
 
