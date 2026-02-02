@@ -28,6 +28,7 @@ class WaferState:
     proc_time: float
     time_to_scrap: float  # -1 表示无超时风险
     route_id: int = 0  # 路线 ID (用于颜色区分)
+    step: int = 0      # 当前步骤索引
 
 
 @dataclass

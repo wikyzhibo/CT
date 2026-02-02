@@ -28,7 +28,7 @@ class MainWindowParams:
     shadow_blur_radius: int = 20     # 阴影模糊半径 (px)
     shadow_offset: int = 5           # 阴影偏移 (px)
     shadow_margin: int = 40          # 窗口边距（为阴影留空）(px)
-    drag_region_height: int = 60     # 顶部拖动区域高度 (px)
+    drag_region_height: int = 80     # 顶部拖动区域高度 (px)
 
 
 @dataclass
@@ -129,20 +129,20 @@ class ChamberItemParams:
     w: int = 140              # 卡片宽度 (px)
     h: int = 140              # 卡片高度 (px)
     flash_ms: int = 450       # 状态变化时边框高亮持续时间 (ms)
-    corner_radius: int = 6    # 圆角半径 (px)
-    grid_step: int = 12       # 背景网格线间距 (px)
+    corner_radius: int = 10    # 圆角半径 (px)
+    grid_step: int = 15       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
     
     # ───────── 字号 - 基于 Typography 系统 ─────────
-    name_font_pt: int = 14    # 腔室名称 (H3)
-    wafer_font_pt: int = 12   # 晶圆内主数字（剩余时间）(BODY)
-    wafer_id_font_pt: int = 10   # 晶圆内 #token_id 次要字号 (CAPTION)
+    name_font_pt: int = 18    # 腔室名称 (H3)
+    wafer_font_pt: int = 14   # 晶圆内主数字（剩余时间）(BODY)
+    wafer_id_font_pt: int = 12   # 晶圆内 #token_id 次要字号 (CAPTION)
     extra_count_font_pt: int = 11   # 「+N」多晶圆提示 (SMALL)
     
     progress_ring_width: int = 3   # 进度环线宽 (px)
     progress_ring_offset: int = 4 # 进度环相对晶圆半径的外扩 (px)
-    wafer_radius: int = 42    # 晶圆圆半径 (px)
+    wafer_radius: int = 45    # 晶圆圆半径 (px)
     inner_margin: int = 2     # 卡片内边距（相对边框）
     text_margin: int = 6      # 文字与边缘间距
 
@@ -154,8 +154,8 @@ class RobotItemParams:
     w: int = 140              # 与腔室一致 (px)
     h: int = 140              # 与腔室一致 (px)
     flash_ms: int = 450       # IDLE↔BUSY 变化时边框高亮持续时间 (ms)
-    corner_radius: int = 6    # 圆角半径 (px)
-    grid_step: int = 12       # 背景网格线间距 (px)
+    corner_radius: int = 10    # 圆角半径 (px)
+    grid_step: int = 15       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
     

@@ -51,9 +51,10 @@ class PetriAdapter(AlgorithmAdapter):
         }
 
         self.display_chambers = list(self.chamber_config.keys())
-        self.transports_tm2 = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
-        self.transports_tm3 = ["d_s3", "d_s4"]
-        self.transports = self.transports_tm2 + self.transports_tm3
+        # 双运输库所模式：d_TM2 和 d_TM3
+        self.transports = ["d_TM2", "d_TM3"]
+        self.transports_tm2 = []
+        self.transports_tm3 = []
 
     def reset(self) -> StateInfo:
         self.env.reset()
@@ -391,7 +392,7 @@ class PetriAdapter(AlgorithmAdapter):
         proc_time = float(getattr(place, "processing_time", 0))
         place_type = int(getattr(place, "type", 0))
         time_to_scrap = self._calc_time_to_scrap(place_type, stay_time, proc_time)
-        route_id = int(getattr(tok, "color", 0))
+        route_id = int(getattr(tok, "route_type", 0))
 
         return WaferState(
             token_id=int(getattr(tok, "token_id", -1)),
@@ -402,6 +403,7 @@ class PetriAdapter(AlgorithmAdapter):
             proc_time=proc_time,
             time_to_scrap=time_to_scrap,
             route_id=route_id,
+            step=int(getattr(tok, "step", 0)),
         )
 
     def _calc_time_to_scrap(self, place_type: int, stay_time: float, proc_time: float) -> float:
@@ -426,10 +428,13 @@ class PetriAdapter(AlgorithmAdapter):
     def _collect_robot_states(self, transport_states: Dict[str, ChamberState]) -> Dict[str, RobotState]:
         tm2_wafers = []
         tm3_wafers = []
-        for t_name in self.transports_tm2:
-            tm2_wafers.extend(transport_states.get(t_name, ChamberState("", -1, 0)).wafers)
-        for t_name in self.transports_tm3:
-            tm3_wafers.extend(transport_states.get(t_name, ChamberState("", -1, 0)).wafers)
+        
+        # 直接根据运输库所名称分发
+        if "d_TM2" in transport_states:
+            tm2_wafers.extend(transport_states["d_TM2"].wafers)
+        if "d_TM3" in transport_states:
+            tm3_wafers.extend(transport_states["d_TM3"].wafers)
+                    
         return {
             "TM2": RobotState(name="TM2", busy=bool(tm2_wafers), wafers=tm2_wafers),
             "TM3": RobotState(name="TM3", busy=bool(tm3_wafers), wafers=tm3_wafers),

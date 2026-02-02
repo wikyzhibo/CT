@@ -263,6 +263,15 @@ class Petri:
 
         builder = SuperPetriBuilder(d_ptime=5, default_ttime=5)
         info = builder.build(modules=modules, robots=robots, routes=routes)
+        
+        # ============ 路线配置：定义每条路线的目标腔室序列 ============
+        # 用于 step-based 索引过滤：Token 的 (route_type, step) 决定下一个目标
+        # step 表示已完成的步骤数，从 0 开始
+        # step=0 表示在 LP，目标是 routes[route_type-1][1]（第一个非起点腔室）
+        self.ROUTE_CONFIG = {
+            1: ["s1", "s2", "s3", "s4", "s5", "LP_done"],  # 路线1: 6步
+            2: ["s1", "s5", "LP_done"],                     # 路线2: 3步
+        }
 
         # -----------------------
         # 2) 保存网络结构
@@ -305,7 +314,6 @@ class Petri:
         self.fire_log = []
 
         # 构建上下游关系映射（用于堵塞检测，当前已关闭）
-        # 新路线拓扑：LP -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
         self.downstream_map = {}  # 堵塞检测已关闭，保留空映射
 
         # 错峰启动：记录 t_PM1 上次发射时间
@@ -466,6 +474,36 @@ class Petri:
             return self._marks_by_type.get(place_type, [])
         # 如果优化未启用，回退到遍历方式
         return [p for p in self.marks if p.type == place_type]
+    
+    def _get_next_target(self, route_type: int, step: int) -> Optional[str]:
+        """
+        根据 (route_type, step) 获取下一个目标腔室名称。
+        
+        Args:
+            route_type: 路线类型 (1 或 2)
+            step: 当前工序步骤索引（0-based，表示已完成的步骤数）
+            
+        Returns:
+            目标腔室名称，如果步骤超出范围则返回 None
+        """
+        route = self.ROUTE_CONFIG.get(route_type, [])
+        if step < len(route):
+            return route[step]
+        return None
+    
+    def _can_enter_target(self, tok: BasedToken, target: str) -> bool:
+        """
+        检查 Token 是否可以进入指定目标腔室。
+        
+        Args:
+            tok: Token 对象
+            target: 目标腔室名称
+            
+        Returns:
+            True 如果 Token 的 (route_type, step) 允许进入该目标
+        """
+        expected_target = self._get_next_target(tok.route_type, tok.step)
+        return expected_target == target
     
     def _build_release_chain(self) -> None:
         """
@@ -1488,29 +1526,85 @@ class Petri:
                 t_idx = self._get_transition_index("u_LP2_s1")
                 mask[t_idx] = False
         
-        # ========== 颜色感知的分流约束 ==========
-        # 在 s1 处根据晶圆颜色决定走哪条路线
-        # u_s1_s2 只对 color=1 的晶圆使能（路线1）
-        # u_s1_s5 只对 color=2 的晶圆使能（路线2）
-        if "s1" in self.id2p_name:
-            s1_idx = self._get_place_index("s1")
-            s1_place = self.marks[s1_idx]
+        # ========== 步骤索引感知的路由约束 (u_变迁) ==========
+        # 使用 (route_type, step) 决定晶圆下一个目标
+        # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
+        
+        # 定义 u 变迁到其目标腔室的映射
+        u_trans_targets = {
+            "u_LP1_s1": "s1",
+            "u_LP2_s1": "s1",
+            "u_s1_s2": "s2",
+            "u_s1_s5": "s5",
+            "u_s2_s3": "s3",
+            "u_s3_s4": "s4",
+            "u_s4_s5": "s5",
+            "u_s5_LP_done": "LP_done",
+        }
+        
+        # 定义 u 变迁的源库所
+        u_trans_sources = {
+            "u_LP1_s1": "LP1",
+            "u_LP2_s1": "LP2",
+            "u_s1_s2": "s1",
+            "u_s1_s5": "s1",
+            "u_s2_s3": "s2",
+            "u_s3_s4": "s3",
+            "u_s4_s5": "s4",
+            "u_s5_LP_done": "s5",
+        }
+        
+        for u_name, target in u_trans_targets.items():
+            if u_name not in self.id2t_name:
+                continue
+            t_idx = self._get_transition_index(u_name)
+            if not mask[t_idx]:  # 已被禁用
+                continue
             
-            if len(s1_place.tokens) > 0:
-                head_color = s1_place.head().color
-                
-                # u_s1_s2: 只有颜色1的晶圆可以走 s2（路线1）
-                if "u_s1_s2" in self.id2t_name:
-                    t_s1_s2_idx = self._get_transition_index("u_s1_s2")
-                    if head_color != 1:
-                        mask[t_s1_s2_idx] = False
-                
-                # u_s1_s5: 只有颜色2的晶圆可以走 s5（路线2）
-                if "u_s1_s5" in self.id2t_name:
-                    t_s1_s5_idx = self._get_transition_index("u_s1_s5")
-                    if head_color != 2:
-                        mask[t_s1_s5_idx] = False
+            # 获取源库所
+            source_name = u_trans_sources.get(u_name)
+            if source_name not in self.id2p_name:
+                continue
+            
+            source_idx = self._get_place_index(source_name)
+            source_place = self.marks[source_idx]
+            
+            if len(source_place.tokens) == 0:
+                continue
+            
+            # 检查队头晶圆的下一目标是否匹配
+            head_tok = source_place.head()
+            if not self._can_enter_target(head_tok, target):
+                mask[t_idx] = False
 
+        # ========== 运输库所 FIFO 约束 (t_变迁) ==========
+        # 对所有 d_ 开头的运输库所 (d_TM2, d_TM3等) 应用 FIFO 策略
+        # 确保从 d_xxx 取出的晶圆确实是去往该 t_变迁对应的目标腔室
+        for p_name in self.id2p_name:
+            if not p_name.startswith("d_"):
+                continue
+                
+            d_idx = self._get_place_index(p_name)
+            d_place = self.marks[d_idx]
+            
+            if len(d_place.tokens) > 0:
+                head_tok = d_place.head()
+                # 确保是 wafer token (有 route_type)
+                if head_tok.route_type == 0:
+                    continue
+                    
+                expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
+                
+                # 找到所有消费此 d_place 的变迁
+                consumers = np.where(self.pre[d_idx, :] > 0)[0]
+                for t_idx in consumers:
+                    t_name = self.id2t_name[t_idx]
+                    if t_name.startswith("t_") and mask[t_idx]:
+                        # t_name 格式为 t_{target}
+                        target = t_name[2:]
+                        if target != expected_target:
+                            mask[t_idx] = False
+        
         out_te = np.flatnonzero(mask)
         return out_te
 
@@ -1531,34 +1625,44 @@ class Petri:
         pre_places = np.flatnonzero(self.pre[:, t] > 0)
         pst_places = np.nonzero(self.pst[:, t] > 0)[0]
 
-        # 1) 消费前置库所 token（队头），保存 token_id 和 color
+        # 1) 消费前置库所 token（队头），保存 token_id, route_type, step
         consumed_token_ids = []
-        consumed_colors = []
+        consumed_route_types = []
+        consumed_steps = []
         for p in pre_places:
             place = self.marks[p]
-            # 只有非资源库所的 token 才有 wafer id 和 color
+            # 只有非资源库所的 token 才有 wafer id 和路线信息
             if place.type != 4:  # 非资源库所
                 tok = place.head()
                 consumed_token_ids.append(tok.token_id)
-                consumed_colors.append(tok.color)
+                consumed_route_types.append(tok.route_type)
+                consumed_steps.append(tok.step)
             place.pop_head()
             self.m[p] -= 1
 
-        # 2) 生成后置库所 token：enter_time = finish time，继承 token_id 和 color
+        # 2) 生成后置库所 token：enter_time = finish time，继承 token_id, route_type
+        #    t_ 变迁（进入腔室）时递增 step
         # 保存后置库所信息用于 fire_log
         post_place_info = []  # [(chamber_name, machine_id, token_id), ...]
         
         token_id_idx = 0
         for p in pst_places:
             place = self.marks[p]
-            # 只有非资源库所才传递 wafer id 和 color
+            # 只有非资源库所才传递 wafer id 和路线信息
             if place.type != 4 and token_id_idx < len(consumed_token_ids):
                 tid = consumed_token_ids[token_id_idx]
-                tcolor = consumed_colors[token_id_idx]
+                t_route_type = consumed_route_types[token_id_idx]
+                t_step = consumed_steps[token_id_idx]
                 token_id_idx += 1
+                
+                # t_ 变迁（进入非运输库所）时递增 step
+                # 运输库所 (type=2, d_xxx) 不递增 step
+                if t_name.startswith("t_") and place.type != 2:
+                    t_step += 1
             else:
                 tid = -1  # 资源库所的 token 无 wafer id
-                tcolor = 0
+                t_route_type = 0
+                t_step = 0
             
             # 为 type=1 的加工腔室分配机器（轮换策略）
             if place.type == 1:
@@ -1571,7 +1675,7 @@ class Petri:
             if place.type != 4:  # 非资源库所
                 post_place_info.append((place.name, machine_id, tid))
             
-            self.marks[p].append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, color=tcolor))
+            self.marks[p].append(BasedToken(enter_time=enter_new, stay_time=1, token_id=tid, machine=machine_id, route_type=t_route_type, step=t_step))
             self.m[p] += 1
 
         # 3) 时间推进到完成之后
@@ -1583,9 +1687,9 @@ class Petri:
             self._last_t_pm1_fire_time = start_time
         
         # ========== 4) 释放时间追踪逻辑 ==========
-        # 获取晶圆 token_id 和 color（第一个非资源库所消费的 token）
+        # 获取晶圆 token_id 和 route_type（第一个非资源库所消费的 token）
         wafer_id = consumed_token_ids[0] if consumed_token_ids else -1
-        wafer_color = consumed_colors[0] if consumed_colors else 0
+        wafer_route_type = consumed_route_types[0] if consumed_route_types else 0
         
         # 根据变迁类型处理释放时间（只追踪有驻留约束的腔室：s1, s3, s5）
         # 双路线：u_LP1_s1 和 u_LP2_s1 都进入 d_s1
@@ -1595,14 +1699,14 @@ class Petri:
             # 晶圆离开 LP 进入 d_s1：只对 s1 记录并检查，不链式传播（离开才检查）
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_color, chain_downstream=False)
+                penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_route_type, chain_downstream=False)
                 self._release_violation_penalty += penalty
             
         elif t_name == "t_s1":
             # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
             if "s1" in self.id2p_name:
                 s1_idx = self._get_place_index("s1")
-                self._update_release(wafer_id, enter_new, s1_idx, wafer_color, chain_downstream=False)
+                self._update_release(wafer_id, enter_new, s1_idx, wafer_route_type, chain_downstream=False)
             
         elif t_name == "u_s1_s2":
             # 路线1：晶圆离开 s1 去 s2，从 s1 队列移除
@@ -1669,13 +1773,13 @@ class Petri:
             # 晶圆进入 s3：更新精确释放时间 + 链式更新 s4（s4 已在 u_s2_s3 时加入）
             if "s3" in self.id2p_name:
                 s3_idx = self._get_place_index("s3")
-                self._update_release(wafer_id, enter_new, s3_idx, wafer_color)
+                self._update_release(wafer_id, enter_new, s3_idx, wafer_route_type)
         
         elif t_name == "t_s4":
             # 晶圆进入 s4：只更新 s4，不链式更新（s5 在 u_s4_s5 时才加入）
             if "s4" in self.id2p_name:
                 s4_idx = self._get_place_index("s4")
-                self._update_release(wafer_id, enter_new, s4_idx, wafer_color, chain_downstream=False)
+                self._update_release(wafer_id, enter_new, s4_idx, wafer_route_type, chain_downstream=False)
             
         elif t_name == "u_s3_s4":
             # 晶圆离开 s3：从 s3 队列移除
@@ -1733,7 +1837,7 @@ class Petri:
             # 晶圆进入 s5：更新精确释放时间
             if "s5" in self.id2p_name:
                 s5_idx = self._get_place_index("s5")
-                self._update_release(wafer_id, enter_new, s5_idx, wafer_color)
+                self._update_release(wafer_id, enter_new, s5_idx, wafer_route_type)
             
         elif t_name == "u_s5_LP_done":
             # 晶圆离开 s5：从 s5 队列移除
