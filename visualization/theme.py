@@ -35,7 +35,7 @@ class ColorTheme:
 
     # 边框（更干净的层级）
     border: Tuple[int, int, int] = (60, 75, 95)        # 普通边框
-    border_muted: Tuple[int, int, int] = (40, 52, 68)  # 淡边框
+    border_muted: Tuple[int, int, int] = (85, 105, 130)  # 淡边框
     border_active: Tuple[int, int, int] = (0, 200, 255) # 激活边框
 
     # 文字

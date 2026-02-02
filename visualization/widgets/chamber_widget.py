@@ -71,18 +71,11 @@ class ChamberWidget(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
         
-        # 3. 绘制边框（更粗、更明显）
-        border_pen = QPen(self.theme.qcolor(self.theme.border))
-        border_pen.setWidth(2)  # 加粗边框
-        painter.setPen(border_pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
-        
         # 4. 绘制网格（更明显的网格线）
         grid_color = QColor(*self.theme.border_muted)
-        grid_color.setAlpha(100)  # 增加透明度使网格更明显
+        grid_color.setAlpha(45)  # 增加透明度使网格更明显
         grid_pen = QPen(grid_color)
-        grid_pen.setWidth(1)
+        grid_pen.setWidth(6)
         painter.setPen(grid_pen)
         
         # 绘制垂直网格线
@@ -91,6 +84,16 @@ class ChamberWidget(QWidget):
         # 绘制水平网格线
         for y in range(int(rect.top()) + p.grid_step, int(rect.bottom()), p.grid_step):
             painter.drawLine(int(rect.left()), y, int(rect.right()), y)
+
+        # 3. 绘制边框（更粗、更明显）
+        border_color = self.theme.qcolor(self.theme.border_active)
+        border_pen = QPen(border_color)
+        border_pen.setWidth(2)  # 加粗边框
+        painter.setPen(border_pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
+        
+        
 
     def _draw_status_led(self, painter: QPainter, rect: QRectF) -> None:
         """右上角状态灯：danger→红 / warning→黄 / active→绿 / idle→灰，带发光效果。"""

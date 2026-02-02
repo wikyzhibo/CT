@@ -55,16 +55,20 @@ class ChamberItem(QGraphicsItem):
         )
 
         now = QDateTime.currentMSecsSinceEpoch()
-        flash = now < self._flash_until
 
         is_idle = self.chamber.status == "idle"
-        if is_idle and not flash:
+        is_active = self.chamber.status == "active"
+        
+        if is_idle:
             bg = self.theme.bg_deep
             border = self.theme.border_muted
-            grid_alpha = 40  # 网格更淡
+            grid_alpha = 40
         else:
             bg = self.theme.bg_elevated
-            border = self.theme.accent_cyan if (not is_idle or flash) else self.theme.border_muted
+            if is_active:
+                border = self.theme.border_active
+            else:
+                border = self.theme.border_muted
             grid_alpha = 60
 
         # 1. 绘制阴影（更轻微）
@@ -80,7 +84,7 @@ class ChamberItem(QGraphicsItem):
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
 
         # 3. 绘制边框
-        pen_width = 2.5 if flash else 1.5
+        pen_width = 2.0
         painter.setPen(QPen(self.theme.qcolor(border), pen_width))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, p.corner_radius, p.corner_radius)
@@ -153,11 +157,5 @@ class ChamberItem(QGraphicsItem):
 
 
     def update_state(self, chamber: ChamberState) -> None:
-        prev = self._last_status
         self.chamber = chamber
-        if prev is not None and prev != chamber.status:
-            ms = self._p.flash_ms
-            self._flash_until = QDateTime.currentMSecsSinceEpoch() + ms
-            QTimer.singleShot(ms + 50, self.update)
-        self._last_status = chamber.status
         self.update()

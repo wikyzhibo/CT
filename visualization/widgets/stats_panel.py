@@ -311,14 +311,18 @@ class StatsPanel(QWidget):
         header = SectionHeader("RELEASE")
         self.main_layout.addWidget(header)
         
-        self.release_text = QTextEdit()
-        self.release_text.setObjectName("ReleaseText")
-        self.release_text.setReadOnly(True)
-        self.release_text.setFixedHeight(p.release_fixed_height)
-        self.release_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.release_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 使用 QFrame + VBoxLayout 替代 QTextEdit (与 REWARDS 保持一致)
+        self.release_container = QFrame()
+        self.release_container.setObjectName("ReleaseContainer")
+        self.release_container.setFixedHeight(p.release_fixed_height)
         
-        self.main_layout.addWidget(self.release_text)
+        self.release_layout = QVBoxLayout(self.release_container)
+        self.release_layout.setContentsMargins(p.summary_frame_padding, 6, 
+                                               p.summary_frame_padding, 6)
+        self.release_layout.setSpacing(p.release_item_spacing)
+        self.release_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.main_layout.addWidget(self.release_container)
 
     def _create_history_section(self) -> None:
         p = ui_params.stats_panel
@@ -326,17 +330,18 @@ class StatsPanel(QWidget):
         header = SectionHeader("HISTORY")
         self.main_layout.addWidget(header)
         
-        self.history_list = QListWidget()
-        self.history_list.setObjectName("HistoryList")
-        self.history_list.setFixedHeight(p.history_fixed_height)
-        self.history_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.history_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.history_list.setWordWrap(False)
-        self.history_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        # 使用 QFrame + VBoxLayout 替代 QListWidget (与 REWARDS 保持一致)
+        self.history_container = QFrame()
+        self.history_container.setObjectName("HistoryContainer")
+        self.history_container.setFixedHeight(p.history_fixed_height)
         
-        self.main_layout.addWidget(self.history_list)
+        self.history_layout = QVBoxLayout(self.history_container)
+        self.history_layout.setContentsMargins(p.summary_frame_padding, 6, 
+                                               p.summary_frame_padding, 6)
+        self.history_layout.setSpacing(p.history_item_spacing)
+        self.history_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.main_layout.addWidget(self.history_container)
 
     def _apply_styles(self) -> None:
         t = self.theme
@@ -390,7 +395,7 @@ class StatsPanel(QWidget):
             border-radius: 3px;
         }}
         
-        #MetricRow, #RewardsContainer {{
+        #MetricRow, #RewardsContainer, #ReleaseContainer, #HistoryContainer {{
             background-color: rgb{t.bg_deep};
             border: 1px solid rgb{t.border_muted};
             border-radius: 4px;
@@ -413,29 +418,11 @@ class StatsPanel(QWidget):
             background-color: transparent;
         }}
         
-        #ReleaseText {{
-            background-color: rgb{t.bg_deep};
-            border: 1px solid rgb{t.border_muted};
-            border-radius: 4px;
-            color: rgb{t.text_secondary};
+        /* 统一列表项样式类 (Release / History / Rewards) */
+        .PanelItem {{
             font-family: "{p.font_family}";
-            font-size: {p.release_font_pt}pt;
-            padding: 6px;
-        }}
-        
-        #HistoryList {{
-            background-color: rgb{t.bg_deep};
-            border: 1px solid rgb{t.border_muted};
-            border-radius: 4px;
-            outline: none;
-        }}
-        #HistoryList::item {{
-            color: rgb{t.text_secondary};
-            font-family: "{p.font_family}";
-            font-size: {p.history_font_pt}pt;
-            padding: 2px 6px;
-            border: none;
-            background-color: transparent;
+            background: transparent;
+            padding: 0px;
         }}
         
         .RewardItem {{
@@ -457,14 +444,14 @@ class StatsPanel(QWidget):
     def update_reward(self, total_reward: float, detail: Dict[str, float]) -> None:
         """更新奖励：总奖励 + 明细（只显示非零项，按绝对值排序）"""
         # 更新总奖励
-        if total_reward > 0:
-            color = self.theme.success
-        elif total_reward < 0:
-            color = self.theme.danger
-        else:
-            color = self.theme.text_kpi
-        self.reward_card.set_value(f"{total_reward:.2f}")
-        self.reward_card.set_value_color(color)
+        #if total_reward > 0:
+        #    color = self.theme.success
+        #elif total_reward < 0:
+        #    color = self.theme.danger
+        #else:
+        #    color = self.theme.text_kpi
+        #self.reward_card.set_value(f"{total_reward:.2f}")
+        #self.reward_card.set_value_color(color)
         
         # 清理旧的明细
         while self.rewards_layout.count():
@@ -494,6 +481,7 @@ class StatsPanel(QWidget):
             name_label.setStyleSheet(f"""
                 font-size: {p.rewards_item_font_pt}pt;
                 color: rgb{self.theme.text_secondary};
+                font-weight: 600;
                 background: transparent;
             """)
             row_layout.addWidget(name_label)
@@ -610,32 +598,76 @@ class StatsPanel(QWidget):
         self.robot_max_row.set_data("Max", str(robot_max))
 
     def _update_release_schedule(self, state: StateInfo) -> None:
+        p = ui_params.stats_panel
+        
+        # 清理旧内容
+        while self.release_layout.count():
+            item = self.release_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         schedule = state.stats.get("release_schedule", {})
-        lines = []
+        if not schedule:
+            empty = QLabel("—")
+            empty.setStyleSheet(f"font-size: {p.release_font_pt}pt; color: rgb{self.theme.text_muted};")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.release_layout.addWidget(empty)
+            return
+
         for place_name, items in schedule.items():
             if not items:
                 continue
+            
+            # 格式: "PlaceName: 101→10, 102→20..."
             pairs = ", ".join([f"{tid}→{rt}" for tid, rt in items])
-            lines.append(f"{place_name}: {pairs}")
-        self.release_text.setText("\n".join(lines) if lines else "—")
+            line_text = f"{place_name}: {pairs}"
+            
+            label = QLabel(line_text)
+            label.setProperty("class", "PanelItem")
+            # 使用 QSS class + 内联样式补充特定字号/颜色
+            label.setStyleSheet(f"""
+                font-size: {p.release_font_pt}pt;
+                color: rgb{self.theme.text_secondary};
+                font-weight: 600;
+            """)
+            # 单行截断
+            # label.setWordWrap(False) # 默认 False
+            
+            # 手动实现简单的 Elide 效果需配合固定宽度或 Paint，
+            # 或直接设置 ToolTip 显示全文
+            label.setToolTip(line_text)
+            
+            self.release_layout.addWidget(label)
 
     def _update_history(self, action_history: List[Dict[str, Any]]) -> None:
-        n = ui_params.stats_panel.history_line_count
+        p = ui_params.stats_panel
+        n = p.history_line_count
         
-        self.history_list.clear()
+        # 清理旧内容
+        while self.history_layout.count():
+            item = self.history_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         
-        for item in action_history[-n:]:
+        # 获取最近 N 条
+        recent_items = action_history[-n:]
+        
+        for item in recent_items:
             reward = item['reward']
-            if reward > 0:
-                color = self.theme.success
-            elif reward < 0:
-                color = self.theme.danger
-            else:
-                color = self.theme.text_muted
+            color = self.theme.text_muted  # 普通操作用 muted 或 secondary
             
-            list_item = QListWidgetItem(f"#{item['step']} {item['action']} ({reward:+.2f})")
-            list_item.setForeground(QColor(*color))
-            self.history_list.addItem(list_item)
+            text = f"#{item['step']} {item['action']}"
+            
+            label = QLabel(text)
+            label.setProperty("class", "PanelItem")
+            label.setStyleSheet(f"""
+                font-size: {p.history_font_pt}pt;
+                font-weight: 600;
+                color: rgb{self.theme.text_secondary};
+            """)
+            label.setToolTip(text)
+            
+            self.history_layout.addWidget(label)
 
     def apply_params(self) -> None:
         self._apply_styles()

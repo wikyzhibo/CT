@@ -19,7 +19,7 @@ class MainWindowParams:
     right_panel_width: int = 300     # 右栏固定宽度 (px)
     initial_x: int = 100             # 窗口初始左上角 x
     initial_y: int = 100             # 窗口初始左上角 y
-    initial_width: int = 1350        # 窗口初始宽度
+    initial_width: int = 1300        # 窗口初始宽度
     initial_height: int = 1000       # 窗口初始高度
     central_spacing: int = 12        # 左/中/右三栏之间的间距 (px)
     
@@ -53,7 +53,7 @@ class StatsPanelParams:
     kpi_label_font_pt: int = 10      # KPI 标签（如 TIME, STEP）
     kpi_value_font_pt: int = 18      # KPI 数值（大号）
     label_font_pt: int = 11          # 普通标签文字
-    summary_key_font_pt: int = 10    # 摘要 Key 字号
+    summary_key_font_pt: int = 10    # 摘要 Key 字号（System下卡片 avg max字号）
     summary_value_font_pt: int = 11  # 摘要 Value 字号
     toolbox_tab_font_pt: int = 12    # GroupBox 标题
     release_font_pt: int = 12        # RELEASE TIME
@@ -72,13 +72,19 @@ class StatsPanelParams:
     # ───────── 固定高度区域 ─────────
     release_fixed_height: int = 80   # RELEASE TIME 固定高度
     history_fixed_height: int = 100  # HISTORY 固定高度
-    history_line_count: int = 8      # HISTORY 显示最近 N 条
+    history_line_count: int = 4      # HISTORY 显示最近 N 条
     
     # ───────── Rewards 区块参数 ─────────
     rewards_fixed_height: int = 100  # REWARDS 区块固定高度 (px)
     rewards_max_items: int = 6       # REWARDS 最多显示条目数
     rewards_item_font_pt: int = 12   # REWARDS 条目字号
     rewards_item_spacing: int = 2    # REWARDS 条目行间距
+    
+    # ───────── Release 区块参数 ─────────
+    release_item_spacing: int = 2    # Release 条目行间距
+    
+    # ───────── History 区块参数 ─────────
+    history_item_spacing: int = 2    # History 条目行间距
     
     # ───────── 视觉效果 ─────────
     font_family: str = "Consolas"    # 左栏统一字体
@@ -126,10 +132,10 @@ class CenterCanvasParams:
 class ChamberItemParams:
     """腔室卡片 (QGraphicsItem)：尺寸、状态闪烁、网格、晶圆与进度环。"""
 
-    w: int = 140              # 卡片宽度 (px)
-    h: int = 140              # 卡片高度 (px)
+    w: int = 135              # 卡片宽度 (px)
+    h: int = 135              # 卡片高度 (px)
     flash_ms: int = 450       # 状态变化时边框高亮持续时间 (ms)
-    corner_radius: int = 10    # 圆角半径 (px)
+    corner_radius: int = 12    # 圆角半径 (px)
     grid_step: int = 15       # 背景网格线间距 (px)
     led_size: int = 10        # 状态灯圆点直径 (px)
     font_family: str = "Consolas"
