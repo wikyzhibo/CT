@@ -63,6 +63,7 @@ class StateInfo:
     enabled_actions: List[ActionInfo] = field(default_factory=list)
     done_count: int = 0
     total_wafers: int = 0
+    tpt_wph: float = 0.0
     
     # 统计信息
     stats: Dict[str, Any] = field(default_factory=dict)

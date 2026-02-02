@@ -170,7 +170,10 @@ class StatsPanel(QWidget):
         kpi_layout.addWidget(self.step_card, 0, 1)
         
         self.reward_card = KPICard("REWARD", self.theme)
-        kpi_layout.addWidget(self.reward_card, 1, 0, 1, 2)
+        kpi_layout.addWidget(self.reward_card, 1, 0)
+        
+        self.tpt_card = KPICard("TPT", self.theme)
+        kpi_layout.addWidget(self.tpt_card, 1, 1)
         
         self.main_layout.addWidget(kpi_container)
 
@@ -543,6 +546,7 @@ class StatsPanel(QWidget):
 
     def _update_metrics(self, state: StateInfo) -> None:
         self.time_card.set_value(str(int(state.time)))
+        self.tpt_card.set_value(f"{state.tpt_wph:.1f}")
         
         progress = 0
         if state.total_wafers > 0:

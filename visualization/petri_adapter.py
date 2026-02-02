@@ -373,6 +373,7 @@ class PetriAdapter(AlgorithmAdapter):
             enabled_actions=self.get_enabled_actions(),
             done_count=int(getattr(self.net, "done_count", 0)),
             total_wafers=int(getattr(self.net, "n_wafer", 0)),
+            tpt_wph=(float(getattr(self.net, "done_count", 0)) / float(getattr(self.net, "time", 1e-9))) * 3600 if float(getattr(self.net, "time", 0)) > 0 else 0.0,
             stats={
                 "release_schedule": release_schedule,
                 # 晶圆统计数据（与 viz.py 中 calc_wafer_statistics 一致）
