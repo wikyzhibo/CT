@@ -74,6 +74,7 @@ class PetriMainWindow(QMainWindow):
         self.viewmodel = viewmodel
         self.theme = ColorTheme()
         self._model_handler = None
+        self._concurrent_model_handler = None  # 双动作模型处理器
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
 
@@ -136,14 +137,34 @@ class PetriMainWindow(QMainWindow):
         self._update_model_buttons_state()
 
     def set_model_handler(self, handler) -> None:
-        """设置模型动作获取器"""
+        """设置模型动作获取器（单动作模型）"""
         self._model_handler = handler
+        self._concurrent_model_handler = None  # 清除并发处理器
         self.viewmodel.set_agent_callback(handler)
+        self._update_model_buttons_state()
+
+    def set_concurrent_model_handler(self, handler) -> None:
+        """设置并发模型动作获取器（双动作模型）
+        
+        handler: 调用时返回 (a1, a2) 的函数
+        """
+        self._concurrent_model_handler = handler
+        self._model_handler = None  # 清除单动作处理器
+        
+        # 创建 auto 模式的回调包装器
+        def concurrent_callback():
+            if self._concurrent_model_handler is None:
+                return None
+            a1, a2 = self._concurrent_model_handler()
+            self.viewmodel.execute_concurrent_action(a1, a2)
+            return None  # 已经执行，不需要返回动作
+        
+        self.viewmodel.set_agent_callback(concurrent_callback)
         self._update_model_buttons_state()
 
     def _update_model_buttons_state(self) -> None:
         """根据模型加载状态更新按钮启用状态"""
-        has_model = self._model_handler is not None
+        has_model = self._model_handler is not None or self._concurrent_model_handler is not None
         self.right_panel.set_model_enabled(has_model)
 
     def _connect_signals(self) -> None:
@@ -184,14 +205,20 @@ class PetriMainWindow(QMainWindow):
         self.viewmodel.execute_action(action)
 
     def _on_model_step_clicked(self) -> None:
-        if self._model_handler is None:
+        # 优先使用并发模型
+        if self._concurrent_model_handler is not None:
+            a1, a2 = self._concurrent_model_handler()
+            self.viewmodel.execute_concurrent_action(a1, a2)
             return
-        action = self._model_handler()
-        if action is not None:
-            self.viewmodel.execute_action(action)
+        # 降级到单动作模型
+        if self._model_handler is not None:
+            action = self._model_handler()
+            if action is not None:
+                self.viewmodel.execute_action(action)
 
     def _on_model_auto_toggled(self, enabled: bool) -> None:
-        if enabled and self._model_handler is None:
+        has_model = self._model_handler is not None or self._concurrent_model_handler is not None
+        if enabled and not has_model:
             return
         self.viewmodel.set_auto_mode(enabled)
 

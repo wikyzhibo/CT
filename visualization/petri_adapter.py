@@ -119,6 +119,108 @@ class PetriAdapter(AlgorithmAdapter):
         ))
         return actions
 
+    def get_enabled_actions_by_robot(self) -> Tuple[List[ActionInfo], List[ActionInfo]]:
+        """
+        返回 TM2 和 TM3 各自的可用动作列表。
+        
+        Returns:
+            (tm2_actions, tm3_actions): 两个 ActionInfo 列表
+        """
+        from solutions.Continuous_model.pn import TM2_TRANSITIONS, TM3_TRANSITIONS
+        
+        tm2_enabled, tm3_enabled = self.net.get_enable_t_by_robot()
+        tm2_enabled_set = set(tm2_enabled)
+        tm3_enabled_set = set(tm3_enabled)
+        
+        tm2_actions: List[ActionInfo] = []
+        tm3_actions: List[ActionInfo] = []
+        
+        for t in range(self.net.T):
+            t_name = self.net.id2t_name[t]
+            if t_name in TM2_TRANSITIONS:
+                enabled = t in tm2_enabled_set
+                tm2_actions.append(ActionInfo(
+                    action_id=t,
+                    action_name=self._format_transition_name(t_name),
+                    enabled=enabled,
+                    description="" if enabled else "当前条件不满足",
+                ))
+            elif t_name in TM3_TRANSITIONS:
+                enabled = t in tm3_enabled_set
+                tm3_actions.append(ActionInfo(
+                    action_id=t,
+                    action_name=self._format_transition_name(t_name),
+                    enabled=enabled,
+                    description="" if enabled else "当前条件不满足",
+                ))
+        
+        # 添加 WAIT 动作
+        tm2_actions.append(ActionInfo(
+            action_id=-1,  # 特殊 ID 表示 WAIT
+            action_name="WAIT",
+            enabled=True,
+            description="",
+        ))
+        tm3_actions.append(ActionInfo(
+            action_id=-1,
+            action_name="WAIT",
+            enabled=True,
+            description="",
+        ))
+        
+        return tm2_actions, tm3_actions
+
+    def step_concurrent(self, a1: int, a2: int) -> Tuple[StateInfo, float, bool, Dict]:
+        """
+        执行并发动作。
+        
+        Args:
+            a1: TM2 的变迁索引，-1 表示 WAIT
+            a2: TM3 的变迁索引，-1 表示 WAIT
+            
+        Returns:
+            (state_info, reward, done, info)
+        """
+        # 转换为 pn.py 的参数格式
+        tm2_action = None if a1 == -1 else a1
+        tm3_action = None if a2 == -1 else a2
+        
+        result = self.net.step_concurrent(
+            a1=tm2_action,
+            a2=tm3_action,
+            with_reward=True,
+            detailed_reward=True,
+        )
+        
+        done = bool(result[0])
+        reward_result = result[1]
+        scrap = bool(result[2]) if len(result) > 2 else False
+        
+        if isinstance(reward_result, dict):
+            self._last_reward_detail = {k: float(v) for k, v in reward_result.items() if isinstance(v, (int, float))}
+            reward = float(reward_result.get("total", 0.0))
+        else:
+            self._last_reward_detail = {}
+            reward = float(reward_result)
+        
+        if not done:
+            done = getattr(self.net, "done_count", 0) >= getattr(self.net, "n_wafer", 0)
+        
+        state_info = self._collect_state_info()
+        info = {"done": done, "reward": reward, "scrap": scrap, "detail": self._last_reward_detail}
+        
+        # 记录动作历史
+        a1_name = "WAIT" if a1 == -1 else self._format_transition_name(self.net.id2t_name[a1])
+        a2_name = "WAIT" if a2 == -1 else self._format_transition_name(self.net.id2t_name[a2])
+        self._last_action_history.append({
+            "step": len(self._last_action_history) + 1,
+            "action": f"TM2:{a1_name}, TM3:{a2_name}",
+            "reward": reward,
+            "detail": self._last_reward_detail,
+        })
+        
+        return state_info, reward, done, info
+
     def get_reward_breakdown(self) -> Dict[str, float]:
         return dict(self._last_reward_detail or {})
 

@@ -153,11 +153,112 @@ def load_model(model_path: str, adapter: PetriAdapter):
         return None
 
 
+def load_concurrent_model(model_path: str, adapter: PetriAdapter):
+    """
+    加载双机械手并发动作模型。
+    
+    返回一个函数，调用时返回 (a1, a2) 双动作。
+    """
+    import torch
+    from torchrl.modules import MaskedCategorical
+    from torchrl.envs.utils import ExplorationType, set_exploration_type
+    from solutions.PPO.network.models import DualHeadPolicyNet
+    from solutions.PPO.train_concurrent import DualActionPolicyModule
+    from solutions.Continuous_model.pn import TM2_TRANSITIONS, TM3_TRANSITIONS
+    
+    try:
+        n_obs = adapter.env.observation_spec["observation"].shape[0]
+        
+        # 构建变迁名称到索引的映射
+        t_name_to_idx = {name: i for i, name in enumerate(adapter.net.id2t_name)}
+        
+        # TM2/TM3 动作空间
+        TM2_TRANSITION_NAMES = [
+            "u_LP1_s1", "u_LP2_s1", "u_s1_s2", "u_s1_s5", "u_s4_s5", "u_s5_LP_done",
+            "t_s1", "t_s2", "t_s5", "t_LP_done"
+        ]
+        TM3_TRANSITION_NAMES = [
+            "u_s2_s3", "u_s3_s4", "t_s3", "t_s4"
+        ]
+        
+        tm2_indices = [t_name_to_idx[n] for n in TM2_TRANSITION_NAMES if n in t_name_to_idx]
+        tm3_indices = [t_name_to_idx[n] for n in TM3_TRANSITION_NAMES if n in t_name_to_idx]
+        n_actions_tm2 = len(tm2_indices) + 1  # +1 for WAIT
+        n_actions_tm3 = len(tm3_indices) + 1
+        
+        print(f"[Concurrent Model] n_obs={n_obs}, TM2={n_actions_tm2}, TM3={n_actions_tm3}")
+        
+        # 构建模型
+        backbone = DualHeadPolicyNet(
+            n_obs=n_obs,
+            n_hidden=256,
+            n_actions_tm2=n_actions_tm2,
+            n_actions_tm3=n_actions_tm3,
+            n_layers=4,
+        )
+        policy_module = DualActionPolicyModule(backbone)
+        
+        # 加载权重
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        policy_module.load_state_dict(state_dict)
+        policy_module.eval()
+        
+        print(f"✓ 并发模型加载成功: {model_path}")
+        
+        def get_model_actions():
+            """返回 (a1, a2) 双动作（Petri 网变迁索引，-1 表示 WAIT）"""
+            try:
+                obs = adapter.env._build_obs()
+                tm2_enabled, tm3_enabled = adapter.net.get_enable_t_by_robot()
+                tm2_enabled_set = set(tm2_enabled)
+                tm3_enabled_set = set(tm3_enabled)
+                
+                # 构建掩码
+                mask_tm2 = torch.zeros(n_actions_tm2, dtype=torch.bool)
+                for i, t_idx in enumerate(tm2_indices):
+                    mask_tm2[i] = (t_idx in tm2_enabled_set)
+                mask_tm2[-1] = True  # WAIT
+                
+                mask_tm3 = torch.zeros(n_actions_tm3, dtype=torch.bool)
+                for i, t_idx in enumerate(tm3_indices):
+                    mask_tm3[i] = (t_idx in tm3_enabled_set)
+                mask_tm3[-1] = True
+                
+                obs_f = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                
+                with torch.no_grad():
+                    with set_exploration_type(ExplorationType.MODE):
+                        out = policy_module.backbone(obs_f)
+                        dist_tm2 = MaskedCategorical(logits=out["logits_tm2"], mask=mask_tm2.unsqueeze(0))
+                        dist_tm3 = MaskedCategorical(logits=out["logits_tm3"], mask=mask_tm3.unsqueeze(0))
+                        a1_idx = dist_tm2.mode.item()
+                        a2_idx = dist_tm3.mode.item()
+                
+                # 转换为 Petri 网变迁索引
+                a1 = -1 if a1_idx == len(tm2_indices) else tm2_indices[a1_idx]
+                a2 = -1 if a2_idx == len(tm3_indices) else tm3_indices[a2_idx]
+                
+                return (a1, a2)
+            except Exception as e:
+                print(f"[ERROR] Concurrent Inference Failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return (-1, -1)  # 都等待
+        
+        return get_model_actions
+        
+    except Exception as e:
+        print(f"✗ 加载并发模型失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PySide6 Petri 可视化")
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
+    parser.add_argument("--concurrent", "-c", action="store_true", help="使用并发模型（双动作）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     args = parser.parse_args()
 
@@ -184,7 +285,10 @@ def main() -> int:
             model_path = args.model
         else:
             # 默认模型路径
-            default_model = Path("result/best_policy.pt")
+            if args.concurrent:
+                default_model = Path("solutions/PPO/saved_models/CT_concurrent_phase2_best.pt")
+            else:
+                default_model = Path("result/best_policy.pt")
             if default_model.exists():
                 model_path = str(default_model)
                 print(f"使用默认模型: {model_path}")
@@ -193,9 +297,16 @@ def main() -> int:
                 print("未找到默认模型，将以手动模式运行")
         
         if model_path:
-            model_handler = load_model(model_path, adapter)
-            if model_handler:
-                window.set_model_handler(model_handler)
+            if args.concurrent:
+                # 加载并发模型
+                model_handler = load_concurrent_model(model_path, adapter)
+                if model_handler:
+                    window.set_concurrent_model_handler(model_handler)
+            else:
+                # 加载单动作模型
+                model_handler = load_model(model_path, adapter)
+                if model_handler:
+                    window.set_model_handler(model_handler)
     else:
         print("已禁用模型加载")
     

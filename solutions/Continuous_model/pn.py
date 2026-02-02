@@ -24,6 +24,16 @@ from data.petri_configs.env_config import PetriEnvConfig
 INF = 10**6
 MAX_TIME = 10000  # 例如 300s
 
+# 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
+TM2_TRANSITIONS = frozenset({
+    "u_LP1_s1", "u_LP2_s1", "u_s1_s2", "u_s1_s5", "u_s4_s5", "u_s5_LP_done",
+    "t_s1", "t_s2", "t_s5", "t_LP_done"
+})
+TM3_TRANSITIONS = frozenset({
+    "u_s2_s3", "u_s3_s4", "t_s3", "t_s4"
+})
+
+
 @dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 和 release_schedule 是可变字段（deque）
 class Place:
     """
@@ -1100,10 +1110,10 @@ class Petri:
         """原始奖励计算实现（用于功能一致性验证）"""
         moving_set = set(moving_pre_places.tolist()) if moving_pre_places is not None else set()
         
-        # 惩罚/奖励系数
-        Q1_p = 3      # type=2 运输库所超时惩罚系数
-        Q2_p = 0.2      # type=1 加工腔室超时惩罚系数
-        r = 2         # 加工奖励系数
+        # 从配置读取惩罚/奖励系数
+        transport_overtime_coef = self.config.transport_overtime_coef  # type=2 运输库所超时惩罚系数
+        chamber_overtime_coef = self.config.chamber_overtime_coef      # type=1 加工腔室超时惩罚系数
+        processing_reward_coef = self.config.processing_reward_coef    # 加工奖励系数
         
         delta_t = t2 - t1
         proc_reward = 0.0      # 加工奖励
@@ -1129,7 +1139,7 @@ class Petri:
                         deadline = tok.enter_time + self.D_Residual_time
                         over_start = max(t1, deadline)
                         if t2 > over_start:
-                            transport_penalty += (t2 - over_start) * Q1_p
+                            transport_penalty += (t2 - over_start) * transport_overtime_coef
 
                 # type=5: 无驻留约束腔室（如 s2/LLC、s4/LLD）- 只计加工奖励，无惩罚
                 elif place.type == 5:
@@ -1137,7 +1147,7 @@ class Petri:
                         proc_end = tok.enter_time + place.processing_time
                         proc_overlap = min(t2, proc_end) - max(t1, tok.enter_time)
                         if proc_overlap > 0:
-                            proc_reward += proc_overlap * r
+                            proc_reward += proc_overlap * processing_reward_coef
 
                 # 查询加工腔室相关奖励/惩罚（type=1 有驻留约束）
                 elif place.type == 1:
@@ -1149,14 +1159,14 @@ class Petri:
                     if self.reward_config.get('proc_reward', 1):
                         proc_overlap = min(t2, proc_end) - max(t1, proc_start)
                         if proc_overlap > 0:
-                            proc_reward += proc_overlap * r
+                            proc_reward += proc_overlap * processing_reward_coef
                     
                     # 2) 超时惩罚：超过 proc_time+ P_Residual_time 后惩罚
                     if self.reward_config.get('penalty', 1):
                         start_pen = tok.enter_time + place.processing_time + self.P_Residual_time
                         start = max(t1, start_pen)
                         if t2 > start:
-                            overtime_penalty += (t2 - start) * Q2_p
+                            overtime_penalty += (t2 - start) * chamber_overtime_coef
                     
                     # 3) 预警惩罚：slack < T_warn 时施加稠密惩罚
                     if self.reward_config.get('warn_penalty', 1):
@@ -2104,6 +2114,27 @@ class Petri:
                 use_t.append(int(t))
         return use_t
 
+    def get_enable_t_by_robot(self) -> Tuple[List[int], List[int]]:
+        """
+        返回两个机械手各自可用的变迁列表。
+        
+        Returns:
+            (tm2_enabled, tm3_enabled): 两个列表，分别是 TM2 和 TM3 当前可使能的变迁索引
+        """
+        all_enabled = self.get_enable_t()
+        tm2_enabled = []
+        tm3_enabled = []
+        
+        for t in all_enabled:
+            t_name = self.id2t_name[t]
+            if t_name in TM2_TRANSITIONS:
+                tm2_enabled.append(t)
+            elif t_name in TM3_TRANSITIONS:
+                tm3_enabled.append(t)
+        
+        return tm2_enabled, tm3_enabled
+
+
     def _check_scrap(self, return_info: bool = False) -> bool | Tuple[bool, Optional[Dict]]:
         """
         检查是否有报废的 wafer。报废：晶圆在腔室停留的时间超过 processing_time + Residual_time 秒。
@@ -2276,6 +2307,115 @@ class Petri:
         if with_reward:
             return finish, reward_result, False
         return finish, False
+
+    def _check_robot_conflict(self, a1: Optional[int], a2: Optional[int]) -> bool:
+        """
+        检查两个动作是否产生资源冲突（访问同一非资源库所）。
+        
+        Args:
+            a1: TM2 的变迁索引，None 表示等待
+            a2: TM3 的变迁索引，None 表示等待
+            
+        Returns:
+            True 表示无冲突，False 表示有冲突
+        """
+        if a1 is None or a2 is None:
+            return True  # 有一个等待，不冲突
+        
+        # 获取两个变迁的前置和后置库所
+        pre1 = set(np.flatnonzero(self.pre[:, a1] > 0))
+        pst1 = set(np.flatnonzero(self.pst[:, a1] > 0))
+        pre2 = set(np.flatnonzero(self.pre[:, a2] > 0))
+        pst2 = set(np.flatnonzero(self.pst[:, a2] > 0))
+        
+        # 获取资源库所索引（r_TM2, r_TM3）
+        resource_indices = set()
+        for i, name in enumerate(self.id2p_name):
+            if name.startswith("r_"):
+                resource_indices.add(i)
+        
+        # 检查是否有重叠（排除资源库所）
+        affected1 = (pre1 | pst1) - resource_indices
+        affected2 = (pre2 | pst2) - resource_indices
+        
+        return len(affected1 & affected2) == 0
+
+    def step_concurrent(self, a1: Optional[int] = None, a2: Optional[int] = None,
+                        wait1: bool = False, wait2: bool = False,
+                        with_reward: bool = False, detailed_reward: bool = False):
+        """
+        并发执行两个机械手的动作。
+        
+        采用同步执行策略：两个动作同时开始，时间推进到两者都完成。
+        
+        Args:
+            a1: TM2 的动作（变迁索引），或 None 表示等待
+            a2: TM3 的动作（变迁索引），或 None 表示等待
+            wait1: TM2 是否执行 WAIT（当 a1 为 None 时）
+            wait2: TM3 是否执行 WAIT（当 a2 为 None 时）
+            with_reward: 是否返回奖励
+            detailed_reward: 是否返回详细奖励分解
+            
+        Returns:
+            如果 with_reward=True: (done, reward, scrap)
+            否则: (done, scrap)
+        """
+        # 检查资源冲突
+        if not self._check_robot_conflict(a1, a2):
+            # 冲突时，优先执行 TM2 的动作，TM3 等待
+            a2 = None
+            wait2 = True
+        
+        # 处理等待参数
+        if a1 is None:
+            wait1 = True
+        if a2 is None:
+            wait2 = True
+        
+        # 如果两个都是等待
+        if wait1 and wait2:
+            return self.step(wait=True, with_reward=with_reward, detailed_reward=detailed_reward)
+        
+        # 如果只有一个动作
+        if wait1 and not wait2:
+            return self.step(t=a2, wait=False, with_reward=with_reward, detailed_reward=detailed_reward)
+        if wait2 and not wait1:
+            return self.step(t=a1, wait=False, with_reward=with_reward, detailed_reward=detailed_reward)
+        
+        # 两个都有动作：同步执行
+        # 策略：先执行 a1，再执行 a2（简化实现，后续可优化为真正并发）
+        t1 = self.time
+        
+        # 执行第一个动作
+        done1, result1, scrap1 = self.step(t=a1, wait=False, with_reward=True, detailed_reward=detailed_reward)
+        if done1 or scrap1:
+            if with_reward:
+                return done1, result1, scrap1
+            return done1, scrap1
+        
+        # 执行第二个动作
+        done2, result2, scrap2 = self.step(t=a2, wait=False, with_reward=True, detailed_reward=detailed_reward)
+        
+        # 合并奖励
+        if detailed_reward and isinstance(result1, dict) and isinstance(result2, dict):
+            combined_reward = {}
+            for key in set(result1.keys()) | set(result2.keys()):
+                v1 = result1.get(key, 0) if isinstance(result1.get(key, 0), (int, float)) else 0
+                v2 = result2.get(key, 0) if isinstance(result2.get(key, 0), (int, float)) else 0
+                combined_reward[key] = v1 + v2
+            reward = combined_reward
+        else:
+            r1 = result1.get("total", result1) if isinstance(result1, dict) else result1
+            r2 = result2.get("total", result2) if isinstance(result2, dict) else result2
+            reward = r1 + r2
+        
+        done = done1 or done2
+        scrap = scrap1 or scrap2
+        
+        if with_reward:
+            return done, reward, scrap
+        return done, scrap
+
 
     def calc_wafer_statistics(self) -> Dict[str, Any]:
         """
