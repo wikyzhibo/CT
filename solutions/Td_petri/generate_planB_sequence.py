@@ -98,7 +98,7 @@ def main():
     policy.eval()
     max_steps = 1000
     with torch.no_grad():
-        with set_exploration_type(ExplorationType.RANDOM):
+        with set_exploration_type(ExplorationType.MODE):
             _ = env.rollout(max_steps, policy)
 
     events = res_occ_to_event(env.net.res_occ)

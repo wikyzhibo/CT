@@ -1163,6 +1163,12 @@ class TimedPetri:
             from_chamber = self._close_resources(t)
             if len(from_chamber) > 0 :
                 tok_key = getattr(moved_tok, "job_id", -1) if moved_tok is not None else -1
+                
+                # Check if it is a PICK operation
+                t_name = self.id2t_name[t]
+                if "PICK" in t_name:
+                    leave_time += 5
+                    
                 self.open_mod_occ[(from_chamber, tok_key)].end = leave_time
 
 

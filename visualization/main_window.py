@@ -456,7 +456,9 @@ class PetriMainWindow(QMainWindow):
         else:
             # Step Verification
             if self._verification_index < len(self._verification_sequence):
-                tm2_name, tm3_name = self._verification_sequence[self._verification_index]
+                item = self._verification_sequence[self._verification_index]
+                actions = item.get("actions", [None, None])
+                tm2_name, tm3_name = actions
                 
                 # Map names to IDs
                 try:
