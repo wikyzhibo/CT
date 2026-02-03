@@ -169,7 +169,7 @@ class TimedPetri:
 
         modules = {
             "LP1": ModuleSpec(tokens=0, capacity=100),
-            "LP2": ModuleSpec(tokens=24, capacity=100),
+            "LP2": ModuleSpec(tokens=8, capacity=100),
             "AL": ModuleSpec(tokens=0, capacity=1),
             "LLA_S2": ModuleSpec(tokens=0, capacity=1),
             "PM7": ModuleSpec(tokens=0, capacity=1),
@@ -1123,9 +1123,9 @@ class TimedPetri:
                         case 'PICK':
                             xx = 0
                         case 'LOAD':
-                            xx = 0
-                        case 'MOVE':
                             xx = 1
+                        case 'MOVE':
+                            xx = 2
                     # 解析取放位置：ARM2_PICK__LLA_S2__TO__PM7 -> from_loc="LLA_S2", to_loc="PM7"
                     parts = t_name.split("__")
                     if len(parts) >= 4:
@@ -1287,7 +1287,7 @@ class TimedPetri:
 
     def get_enable_t(self, m, mark):
         se = self._resource_enable(m)
-        #se = self.filter_by_round_robin(se)
+        se = self.filter_by_round_robin(se)
         se_chain = self._color_enable(se, mark)
         names = [self.id2t_name[t] for t in se]
         transition_queue = []

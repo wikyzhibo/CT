@@ -28,6 +28,7 @@ class ControlPanel(QWidget):
     random_clicked = Signal()
     model_step_clicked = Signal()
     model_auto_toggled = Signal(bool)
+    verify_planb_clicked = Signal()
     reset_clicked = Signal()
     speed_changed = Signal(float)
 
@@ -81,6 +82,12 @@ class ControlPanel(QWidget):
         self.model_auto_button.setEnabled(False)  # 默认禁用
         self.model_auto_button.clicked.connect(self._toggle_auto)
         layout.addWidget(self.model_auto_button)
+        
+        # Verify PlanB Button
+        self.verify_button = QPushButton("Verify PlanB (V)")
+        self.verify_button.setObjectName("VerifyButton")
+        self.verify_button.clicked.connect(self.verify_planb_clicked.emit)
+        layout.addWidget(self.verify_button)
 
         layout.addSpacing(p.spacing_before_speed)
 
@@ -205,6 +212,13 @@ class ControlPanel(QWidget):
         }}
         #ResetButton:hover {{
             background-color: rgba{(*t.btn_reset, 0.2)};
+        }}
+        
+        #VerifyButton {{
+            border-color: rgb{t.btn_random};
+        }}
+        #VerifyButton:hover {{
+            background-color: rgba{(*t.btn_random, 0.2)};
         }}
         """
         self.setStyleSheet(qss)

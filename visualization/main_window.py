@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import (
@@ -20,7 +21,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QApplication,
     QGraphicsDropShadowEffect, QPushButton, QLineEdit, QTextEdit,
-    QScrollBar, QListWidget, QComboBox, QSpinBox, QSlider
+    QScrollBar, QListWidget, QComboBox, QSpinBox, QSlider, QMessageBox
 )
 
 from .theme import ColorTheme
@@ -75,6 +76,12 @@ class PetriMainWindow(QMainWindow):
         self.theme = ColorTheme()
         self._model_handler = None
         self._concurrent_model_handler = None  # 双动作模型处理器
+        
+        # 验证模式状态
+        self._verification_active = False
+        self._verification_sequence = []
+        self._verification_index = 0
+        
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
 
@@ -180,6 +187,7 @@ class PetriMainWindow(QMainWindow):
         self.right_panel.model_auto_toggled.connect(self._on_model_auto_toggled)
         self.right_panel.reset_clicked.connect(self._on_reset_clicked)
         self.right_panel.speed_changed.connect(self._on_speed_changed)
+        self.right_panel.verify_planb_clicked.connect(self._on_verify_planb_clicked)
 
     def _on_state_updated(self, state) -> None:
         self.center_canvas.update_state(state)
@@ -191,11 +199,19 @@ class PetriMainWindow(QMainWindow):
             self.right_panel.set_auto_active(False)
 
     def _on_action_clicked(self, action_id: int) -> None:
+        if self._verification_active:
+            self._stop_verification_mode()
+            self.right_panel.verify_button.setEnabled(False)
+
         if action_id == -100:
             action_id = self.viewmodel.adapter.action_space_size
         self.viewmodel.execute_action(action_id)
 
     def _on_random_clicked(self) -> None:
+        if self._verification_active:
+            self._stop_verification_mode()
+            self.right_panel.verify_button.setEnabled(False)
+
         actions = self.viewmodel.adapter.get_enabled_actions()
         enabled = [a.action_id for a in actions if a.enabled]
         if not enabled:
@@ -205,6 +221,10 @@ class PetriMainWindow(QMainWindow):
         self.viewmodel.execute_action(action)
 
     def _on_model_step_clicked(self) -> None:
+        if self._verification_active:
+            self._stop_verification_mode()
+            self.right_panel.verify_button.setEnabled(False)
+
         # 优先使用并发模型
         if self._concurrent_model_handler is not None:
             a1, a2 = self._concurrent_model_handler()
@@ -217,6 +237,10 @@ class PetriMainWindow(QMainWindow):
                 self.viewmodel.execute_action(action)
 
     def _on_model_auto_toggled(self, enabled: bool) -> None:
+        if enabled and self._verification_active:
+            self._stop_verification_mode()
+            self.right_panel.verify_button.setEnabled(False)
+
         has_model = self._model_handler is not None or self._concurrent_model_handler is not None
         if enabled and not has_model:
             return
@@ -224,6 +248,10 @@ class PetriMainWindow(QMainWindow):
 
     def _on_reset_clicked(self) -> None:
         """先停止 Auto 模式，再重置环境"""
+        # 重置验证模式
+        self._stop_verification_mode()
+        self.right_panel.verify_button.setEnabled(True)
+
         if self.viewmodel.auto_mode:
             self.viewmodel.set_auto_mode(False)
         self.viewmodel.reset()
@@ -379,7 +407,96 @@ class PetriMainWindow(QMainWindow):
                 self.viewmodel.set_auto_mode(not self.viewmodel.auto_mode)
         elif key == Qt.Key.Key_Space:
             self._on_reset_clicked()
+        elif key == Qt.Key.Key_V:
+            self._on_verify_planb_clicked()
         elif key == Qt.Key.Key_Escape:
             self.close()
         else:
             super().keyPressEvent(event)
+
+    def _on_verify_planb_clicked(self) -> None:
+        """Handle Verify PlanB button click"""
+        if not self._verification_active:
+            # Initialize Verification Mode
+            try:
+                # Load sequence
+                seq_path = Path("solutions/Td_petri/planB_sequence.json")
+                if not seq_path.exists():
+                     QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
+                     return
+                
+                with open(seq_path, "r") as f:
+                    self._verification_sequence = json.load(f)
+                
+                if not self._verification_sequence:
+                    QMessageBox.warning(self, "Error", "Sequence is empty!")
+                    return
+                
+                # Reset environment
+                self._on_reset_clicked()
+                
+                # Enter mode
+                self._verification_active = True
+                self._verification_index = 0
+                
+                # Update UI
+                self.right_panel.verify_button.setText("Next Step")
+                self.right_panel.verify_button.setStyleSheet(f"border-color: rgb{self.theme.accent_cyan}; background-color: rgba{(*self.theme.accent_cyan, 0.2)};")
+                
+                # Disable other controls implicitly by state check in their handlers?
+                # Or explicitly disable them?
+                # User requirement: "if other button is pushed, 'Verify PlanB' is disabled"
+                # This implies other buttons remain enabled.
+                
+                print(f"Verification started. Sequence length: {len(self._verification_sequence)}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to start verification: {e}")
+                self._stop_verification_mode()
+        else:
+            # Step Verification
+            if self._verification_index < len(self._verification_sequence):
+                tm2_name, tm3_name = self._verification_sequence[self._verification_index]
+                
+                # Map names to IDs
+                try:
+                    all_transitions = self.viewmodel.adapter.net.id2t_name
+                    
+                    if tm2_name and tm2_name != "WAIT":
+                        a1 = all_transitions.index(tm2_name)
+                    else:
+                        a1 = -1
+                        
+                    if tm3_name and tm3_name != "WAIT":
+                        a2 = all_transitions.index(tm3_name)
+                    else:
+                        a2 = -1
+                        
+                    self.viewmodel.execute_concurrent_action(a1, a2)
+                    self._verification_index += 1
+                    
+                except ValueError as e:
+                    print(f"Error mapping transition: {e}")
+                    QMessageBox.warning(self, "Mapping Error", f"Unknown transition in sequence: {e}")
+                    self._stop_verification_mode()
+            
+            else:
+                QMessageBox.information(self, "Done", "Verification Sequence Completed!")
+                # Optional: Stop mode?
+                # self._stop_verification_mode() 
+
+    def _stop_verification_mode(self) -> None:
+        """Exit verification mode and reset button state"""
+        if self._verification_active:
+            self._verification_active = False
+            self.right_panel.verify_button.setText("Verify PlanB (V)")
+            self.right_panel.verify_button.setStyleSheet(f"""
+                border-color: rgb{self.theme.btn_random};
+            """)
+            # Note: Hover style is lost unless re-applied, but stylesheet handles it via ID selector if not overridden inline.
+            # Re-applying ID-based style might be cleaner.
+            # But here we just reset inline style.
+            # Actually better to clear inline style to let ID style take over.
+            self.right_panel.verify_button.setStyleSheet("") 
+            # But control_panel applies stylesheet to self (the panel), so button inherits ID styles.
+            # So clearing style should revert to ID style.
