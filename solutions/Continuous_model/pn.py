@@ -23,7 +23,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 import traceback
 
 INF = 10**6
-MAX_TIME = 10000  # 例如 300s
+MAX_TIME = 20000  # 例如 300s
 
 # 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
 TM2_TRANSITIONS = frozenset({
@@ -1248,6 +1248,41 @@ class Petri:
                 t_idx = self._get_transition_index("u_LP2_s1")
                 mask[t_idx] = False
         
+            
+        # ========== 类型 2 晶圆进入限制 (基于 s5 可用性) ==========
+        # 如果类型 2 晶圆预计进入 s5 的时间早于 s5 的可用时间，则禁止进入
+        if "u_LP2_s1" in self.id2t_name and "s5" in self.id2p_name:
+            t_idx = self._get_transition_index("u_LP2_s1")
+            
+            # 只有当该动作尚未被禁用时才检查
+            if mask[t_idx]:
+                s5_idx = self._get_place_index("s5")
+                place_s5 = self.marks[s5_idx]
+                place_s1 = self.marks[self._get_place_index("s1")] # 获取 s1 以读取加工时间
+                
+                # s5 满载检查改进：检查预期时间段内是否有可用 Capacity (支持插队)
+                enter_new = self.time + self.ttime
+                expected_enter_s1 = enter_new + self.T_transport + self.T_load
+                release_s1 = expected_enter_s1 + place_s1.processing_time
+                transport_s1_to_s5 = self.ttime * 2
+                expected_enter_s5 = release_s1 + transport_s1_to_s5 + self.T_load
+                expected_leave_s5 = expected_enter_s5 + place_s5.processing_time
+                
+                # 统计在 [expected_enter_s5, expected_leave_s5] 期间的重叠预约数
+                overlap_count = 0
+                for _, release_time in place_s5.release_schedule:
+                    # 现有预约的占用区间: [release_time - processing_time, release_time]
+                    existing_start = release_time - place_s5.processing_time
+                    existing_end = release_time
+                    
+                    # 检查区间重叠: max(start1, start2) < min(end1, end2)
+                    if max(expected_enter_s5, existing_start) < min(expected_leave_s5, existing_end):
+                        overlap_count += 1
+                
+                # 如果重叠数达到容量上限，则禁止进入
+                if overlap_count >= place_s5.capacity:
+                     mask[t_idx] = False
+
         # ========== 步骤索引感知的路由约束 (u_变迁) ==========
         # 使用 (route_type, step) 决定晶圆下一个目标
         # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
@@ -1419,11 +1454,35 @@ class Petri:
             if t_name in ("u_LP1_s1", "u_LP2_s1"):
                 # 递增已进入系统的晶圆计数
                 self.entered_wafer_count += 1
-                # 晶圆离开 LP 进入 d_s1：只对 s1 记录并检查，不链式传播（离开才检查）
+                # 晶圆离开 LP 进入 d_s1：对 s1 记录并检查
                 if "s1" in self.id2p_name:
                     s1_idx = self._get_place_index("s1")
                     penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_route_type, chain_downstream=False)
                     self._release_violation_penalty += penalty
+                
+                # 类型 2 晶圆（LP2 路线）：同时预约 s5（拉式预约）
+                if wafer_route_type == 2 and "s5" in self.id2p_name:
+                    s1_idx = self._get_place_index("s1")
+                    s5_idx = self._get_place_index("s5")
+                    place_s1 = self.marks[s1_idx]
+                    place_s5 = self.marks[s5_idx]
+                    
+                    # 预估 s1 释放时间（基于 s1 预约）
+                    expected_enter_s1 = enter_new + self.T_transport + self.T_load
+                    release_s1 = expected_enter_s1 + place_s1.processing_time
+                    
+                    # 预估 s5 进入时间
+                    transport_s1_to_s5 = self.T_load * 2 + self.T_transport
+                    expected_enter_s5 = release_s1 + transport_s1_to_s5
+
+                    penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
+
+                    if self.reward_config.get('release_violation_penalty', 1):
+                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
+                        self._release_violation_penalty += penalty_s5
+                    
+                    release_s5 = corrected_enter_s5 + place_s5.processing_time
+                    place_s5.add_release(wafer_id, release_s5)
                 
             elif t_name == "t_s1":
                 # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
@@ -1438,7 +1497,7 @@ class Petri:
                     self._pop_release(wafer_id, s1_idx)
             
             elif t_name == "u_s1_s5":
-                # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除；对 s5 做 add_release + 违规检查（离开才检查）
+                # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除；检查实际进入时间是否与其他晶圆冲突
                 if "s1" in self.id2p_name:
                     s1_idx = self._get_place_index("s1")
                     self._pop_release(wafer_id, s1_idx)
@@ -1448,15 +1507,21 @@ class Petri:
                     # 晶圆进入 d_s5 时间 = enter_new，预计进入 s5 = enter_new + T_load
                     expected_enter_s5 = enter_new + self.T_load
                     
-                    penalty_s5 = 0.0
-                    corrected_enter_s5 = expected_enter_s5
-                    if self.reward_config.get('release_violation_penalty', 1):
-                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
-                        self._release_violation_penalty += penalty_s5
+                    # 检查实际进入是否与其他晶圆冲突（排除自己的预约）
+                    other_releases = [(tid, rt) for tid, rt in place_s5.release_schedule if tid != wafer_id]
+                    other_releases_sorted = sorted(other_releases, key=lambda x: x[1])
                     
-                    # 使用修正后的进入时间重新计算释放时间
-                    release_s5 = corrected_enter_s5 + place_s5.processing_time
-                    place_s5.add_release(wafer_id, release_s5)
+                    if len(other_releases_sorted) >= place_s5.capacity:
+                        # 其他晶圆占满了 s5，检查是否可以进入
+                        constraint_time = other_releases_sorted[-place_s5.capacity][1]
+                        if expected_enter_s5 < constraint_time:
+                            # 实际进入与其他晶圆冲突，施加惩罚
+                            penalty = self.c_release_violation * 100
+                            self._release_violation_penalty += penalty
+                    
+                    # 更新 s5 的释放时间（用实际进入时间）
+                    release_s5 = expected_enter_s5 + place_s5.processing_time
+                    place_s5.update_release(wafer_id, release_s5)
                 
             elif t_name == "u_s2_s3":
                 # 路线1：离开 s2(LLC)，对 s3、s4、s5 做 add_release + 违规检查（离开才检查）
