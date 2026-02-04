@@ -131,11 +131,11 @@ class StatsPanel(QWidget):
         # 3. System 单行显示
         self._create_system_section()
         
-        # 4. Chambers 摘要
+        # 4. RESIDUAL TIME (was Chambers) + TM2/TM3
         self._create_chambers_section()
         
-        # 5. Robots 摘要
-        self._create_robots_section()
+        # 5. Robots 摘要 (已移除，合并入 RESIDUAL TIME)
+        # self._create_robots_section()
         
         # 6. REWARDS 区块（固定高度，只显示非零项）
         self._create_rewards_section()
@@ -174,6 +174,12 @@ class StatsPanel(QWidget):
         
         self.tpt_card = KPICard("TPT", self.theme)
         kpi_layout.addWidget(self.tpt_card, 1, 1)
+        
+        self.res_vio_card = KPICard("RES.VIO", self.theme)
+        kpi_layout.addWidget(self.res_vio_card, 2, 0)
+        
+        self.qtime_vio_card = KPICard("Q-TIME", self.theme)
+        kpi_layout.addWidget(self.qtime_vio_card, 2, 1)
         
         self.main_layout.addWidget(kpi_container)
 
@@ -264,7 +270,7 @@ class StatsPanel(QWidget):
         self.main_layout.addWidget(self.system_row)
 
     def _create_chambers_section(self) -> None:
-        header = SectionHeader("CHAMBERS")
+        header = SectionHeader("RESIDUAL TIME")
         self.main_layout.addWidget(header)
         
         self.pm78_row = MetricRow(self.theme)
@@ -274,16 +280,15 @@ class StatsPanel(QWidget):
         self.main_layout.addWidget(self.pm78_row)
         self.main_layout.addWidget(self.pm1234_row)
         self.main_layout.addWidget(self.pm910_row)
-
-    def _create_robots_section(self) -> None:
-        header = SectionHeader("ROBOTS")
-        self.main_layout.addWidget(header)
         
-        self.robot_avg_row = MetricRow(self.theme)
-        self.robot_max_row = MetricRow(self.theme)
+        # 新增 TM2 / TM3 统计
+        self.tm2_row = MetricRow(self.theme)
+        self.tm3_row = MetricRow(self.theme)
+        self.main_layout.addWidget(self.tm2_row)
+        self.main_layout.addWidget(self.tm3_row)
         
-        self.main_layout.addWidget(self.robot_avg_row)
-        self.main_layout.addWidget(self.robot_max_row)
+    # def _create_robots_section(self) -> None:
+        # 已删除
 
     def _create_rewards_section(self) -> None:
         """REWARDS 区块：固定高度，只显示非零项，按绝对值排序"""
@@ -560,6 +565,22 @@ class StatsPanel(QWidget):
                 border-radius: 3px;
             }}
         """)
+        
+        # 更新违规计数
+        res_vio = state.stats.get("resident_violation_count", 0)
+        q_vio = state.stats.get("qtime_violation_count", 0)
+        
+        self.res_vio_card.set_value(str(res_vio))
+        if res_vio > 0:
+            self.res_vio_card.set_value_color(self.theme.danger)
+        else:
+             self.res_vio_card.set_value_color(self.theme.text_kpi)
+            
+        self.qtime_vio_card.set_value(str(q_vio))
+        if q_vio > 0:
+            self.qtime_vio_card.set_value_color(self.theme.danger)
+        else:
+             self.qtime_vio_card.set_value_color(self.theme.text_kpi)
 
     def _update_summary(self, state: StateInfo) -> None:
         system_avg = state.stats.get("system_avg", 0.0)
@@ -585,17 +606,13 @@ class StatsPanel(QWidget):
         self.pm1234_row.set_data("PM1-4", format_chamber(pm1234))
         self.pm910_row.set_data("PM9/10", format_chamber(pm910))
         
-        transports = state.stats.get("transports", {})
-        robot_avg = transports.get("avg", 0.0)
-        robot_max = transports.get("max", 0)
+        # Robot stats now split into TM2 / TM3
+        transports_result = state.stats.get("transports", {})
+        tm2_stats = transports_result.get("TM2", {})
+        tm3_stats = transports_result.get("TM3", {})
         
-        color = None
-        if robot_avg > 0:
-            color = self.theme.success if robot_avg < 10 else (
-                self.theme.warning if robot_avg < 20 else self.theme.danger)
-        
-        self.robot_avg_row.set_data("Avg", f"{robot_avg:.1f}", color)
-        self.robot_max_row.set_data("Max", str(robot_max))
+        self.tm2_row.set_data("TM2", format_chamber(tm2_stats))
+        self.tm3_row.set_data("TM3", format_chamber(tm3_stats))
 
     def _update_release_schedule(self, state: StateInfo) -> None:
         p = ui_params.stats_panel

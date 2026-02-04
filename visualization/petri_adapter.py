@@ -385,6 +385,8 @@ class PetriAdapter(AlgorithmAdapter):
                 "chambers": self._remap_chamber_stats(wafer_stats.get("chambers", {})),
                 "transports": wafer_stats.get("transports", {}),
                 "transports_detail": wafer_stats.get("transports_detail", {}),
+                "resident_violation_count": wafer_stats.get("resident_violation_count", 0),
+                "qtime_violation_count": wafer_stats.get("qtime_violation_count", 0),
             },
         )
 

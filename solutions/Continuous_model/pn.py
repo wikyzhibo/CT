@@ -214,6 +214,9 @@ class Petri:
         
         # 内部状态
         self.scrap_count = 0  # 报废计数器
+        self.resident_violation_count = 0 # 驻留时间违规计数 (Type 1)
+        self.qtime_violation_count = 0    # Q-time 违规计数 (Type 2)
+        self.violated_tokens: Dict[int, Set[str]] = {} # 记录已违规的 token (token_id -> {type, ...})
         self._idle_penalty_applied = False  # 标记是否已施加过停滞惩罚
         self._consecutive_wait_time = 0  # 连续执行 WAIT 动作的累计时间
         self._per_wafer_reward = 0.0  # 累积的单片完工奖励
@@ -2246,7 +2249,9 @@ class Petri:
 
     def _check_scrap(self, return_info: bool = False) -> bool | Tuple[bool, Optional[Dict]]:
         """
-        检查是否有报废的 wafer。报废：晶圆在腔室停留的时间超过 processing_time + Residual_time 秒。
+        检查是否有报废的 wafer。
+        - 驻留时间违规 (Type 1): 停留时间 > processing_time + P_Residual_time
+        - Q-time 违规 (Type 2): 停留时间 > 15s (用户定义)
         
         Args:
             return_info: 是否返回报废详情
@@ -2254,22 +2259,67 @@ class Petri:
         Returns:
             如果 return_info=False: 返回 bool
             如果 return_info=True: 返回 (bool, scrap_info)
-                scrap_info = {"place": 库所名, "enter_time": 进入时间, "overtime": 超时秒数}
+                scrap_info = {"place": 库所名, "enter_time": 进入时间, "overtime": 超时秒数, "type": 违规类型}
         """
         for place in self.marks:
+            # Type 1: 加工腔室 (驻留时间约束)
             if place.type == 1:
+                # 注意：s1/s3/s5 是 type=1，s2/s4 是 type=5 (无约束)
                 for tok in place.tokens:
                     overtime = (self.time - tok.enter_time) - place.processing_time - self.P_Residual_time
                     if overtime > 0:
+                        self.resident_violation_count += 0.5 # 每步检测可能多次，但在step里是一次性的scrap判断
+                        # 注意：scrap_count 是由 external caller (step) 增加的，这里只增加分类计数
+                        # 但由于 _check_scrap 可能被多次调用（wait和fire后），计数需要小心。
+                        # 不过 pn.py 的设计是发现 scrap 就 done，所以计数只加一次没问题。
+                        # 修正：caller (step) 会增加 total scrap_count。这里我们可以增加分类计数。
+                        # 为了避免重复计数，这里暂不加？
+                        # 不，step 代码里是 if is_scrap: self.scrap_count += 1
+                        # 所以这里不需要加 self.scrap_count，但需要加 self.resident_violation_count
+                        # 等等，如果 _check_scrap 只是检测，那 counters 应该在 confirm scrap 时加。
+                        # 但这里我们必须在检测时就知道是哪种 breach。
+                        # step 函数只有 "is_scrap" bool。
+                        # 为防止副作用，我们只返回 info，由 step 或专门的方法增加计数？
+                        # 或者为了简单，并在 step 中只调用一次 stop_on_scrap，就在这里加？
+                        # 细看 step 代码：
+                        # is_scrap, scrap_info = self._check_scrap(return_info=True)
+                        # if is_scrap: ...
+                        # 所以这里是实时检测。
+                        # 既然 step 会终止 episode (或者记录)，那我们在 step 里增加计数比较好。
+                        # 但 step 里没分类型。
+                        # 所以在 return_info 里返回 type，step 里根据 info['type'] 增加计数？
+                        # 这样改动最小且安全。
+                        
                         if return_info:
                             return True, {
+                                "token_id": getattr(tok, "token_id", -1),
                                 "place": place.name,
                                 "enter_time": tok.enter_time,
                                 "stay_time": self.time - tok.enter_time,
                                 "proc_time": place.processing_time,
                                 "overtime": overtime,
+                                "type": "resident"
                             }
                         return True
+            
+            # Type 2: 运输库所/机械手 (Q-time 约束 > 15s)
+            elif place.type == 2:
+                for tok in place.tokens:
+                    # Q-time limit = 15s
+                    overtime = (self.time - tok.enter_time) - 15
+                    if overtime > 0:
+                        if return_info:
+                            return True, {
+                                "token_id": getattr(tok, "token_id", -1),
+                                "place": place.name,
+                                "enter_time": tok.enter_time,
+                                "stay_time": self.time - tok.enter_time,
+                                "proc_time": 0,
+                                "overtime": overtime,
+                                "type": "qtime"
+                            }
+                        return True
+                        
         if return_info:
             return False, None
         return False
@@ -2330,16 +2380,51 @@ class Petri:
             # 检查报废
             is_scrap, scrap_info = self._check_scrap(return_info=True)
             if is_scrap:
-                self.scrap_count += 1
-                done = self.stop_on_scrap  # 根据设置决定是否结束
-                if with_reward:
-                    if detailed_reward:
-                        reward_result["scrap_penalty"] = -self.R_scrap
-                        reward_result["total"] -= self.R_scrap
-                        reward_result["scrap_info"] = scrap_info
-                        return done, reward_result, True
-                    return done, reward_result - self.R_scrap, True
-                return done, True
+                sType = scrap_info.get("type", "") if scrap_info else ""
+                tid = scrap_info.get("token_id", -1)
+                
+                # 检查是否已记录过该 token 的该类型违规
+                already_counted = False
+                if tid != -1:
+                    if tid not in self.violated_tokens:
+                        self.violated_tokens[tid] = set()
+                    if sType in self.violated_tokens[tid]:
+                        already_counted = True
+                    else:
+                        self.violated_tokens[tid].add(sType)
+                
+                # 1. 驻留时间违规 (Resident Time) - 严重，视为 scrap，可能停止
+                if sType == "resident":
+                    if not already_counted:
+                        self.scrap_count += 1
+                        self.resident_violation_count += 1
+                    
+                    done = self.stop_on_scrap
+                    if with_reward:
+                        if detailed_reward:
+                            reward_result["scrap_penalty"] = -self.R_scrap
+                            reward_result["total"] -= self.R_scrap
+                            reward_result["scrap_info"] = scrap_info
+                            return done, reward_result, True
+                        return done, reward_result - self.R_scrap, True
+                    return done, True
+
+                # 2. Q-time 违规 - 警告，不停止，不计入 scrap_count (以免触发外部停止)
+                elif sType == "qtime":
+                    if not already_counted:
+                        self.qtime_violation_count += 1
+                    
+                    # 施加惩罚但不停止
+                    if with_reward:
+                        if detailed_reward:
+                            # 使用较小的惩罚或特定 Q-time 惩罚
+                            reward_result["qtime_penalty"] = -self.R_scrap # 或其他系数
+                            reward_result["total"] -= self.R_scrap
+                            reward_result["scrap_info"] = scrap_info # 记录详情
+                        else:
+                             reward_result -= self.R_scrap
+                    # 不返回，继续执行
+                    pass
             
             # 检查停滞（连续执行 WAIT 超过阈值时间）
             if self._check_idle_timeout() and not self._idle_penalty_applied:
@@ -2409,16 +2494,50 @@ class Petri:
         # fire 后也检查报废
         is_scrap, scrap_info = self._check_scrap(return_info=True)
         if is_scrap:
-            self.scrap_count += 1
-            done = self.stop_on_scrap  # 根据设置决定是否结束
-            if with_reward:
-                if detailed_reward:
-                    reward_result["scrap_penalty"] = -self.R_scrap
-                    reward_result["total"] -= self.R_scrap
-                    reward_result["scrap_info"] = scrap_info
-                    return done, reward_result, True
-                return done, reward_result - self.R_scrap, True
-            return done, True
+            sType = scrap_info.get("type", "") if scrap_info else ""
+            tid = scrap_info.get("token_id", -1)
+            
+            # 检查是否已记录过该 token 的该类型违规
+            already_counted = False
+            if tid != -1:
+                if tid not in self.violated_tokens:
+                    self.violated_tokens[tid] = set()
+                if sType in self.violated_tokens[tid]:
+                    already_counted = True
+                else:
+                    self.violated_tokens[tid].add(sType)
+
+            # 1. 驻留时间违规 (Resident Time) - 严重，视为 scrap，可能停止
+            if sType == "resident":
+                if not already_counted:
+                    self.scrap_count += 1
+                    self.resident_violation_count += 1
+                
+                done = self.stop_on_scrap
+                if with_reward:
+                    if detailed_reward:
+                        reward_result["scrap_penalty"] = -self.R_scrap
+                        reward_result["total"] -= self.R_scrap
+                        reward_result["scrap_info"] = scrap_info
+                        return done, reward_result, True
+                    return done, reward_result - self.R_scrap, True
+                return done, True
+
+            # 2. Q-time 违规 - 警告，不停止
+            elif sType == "qtime":
+                if not already_counted:
+                    self.qtime_violation_count += 1
+                
+                # 施加惩罚但不停止
+                if with_reward:
+                    if detailed_reward:
+                        reward_result["qtime_penalty"] = -self.R_scrap
+                        reward_result["total"] -= self.R_scrap
+                        reward_result["scrap_info"] = scrap_info
+                    else:
+                         reward_result -= self.R_scrap
+                # 不返回，继续执行
+                pass
 
         if with_reward:
             return finish, reward_result, False
@@ -2635,6 +2754,8 @@ class Petri:
             "chambers": chambers_result,
             "transports": transports_result,
             "transports_detail": transports_detail,
+            "resident_violation_count": self.resident_violation_count,
+            "qtime_violation_count": self.qtime_violation_count,
         }
 
 
