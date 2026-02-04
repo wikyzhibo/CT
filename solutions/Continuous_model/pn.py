@@ -180,6 +180,7 @@ class Petri:
         
         # 保存配置
         self.config = config
+        print(config.format(detailed=True))
         
         # 将配置参数设置为实例属性（保持向后兼容）
         self.n_wafer = config.n_wafer
@@ -206,12 +207,6 @@ class Petri:
         self.reward_config = config.reward_config
         
         # ============ 性能优化配置 ============
-        self.optimize_reward_calc = getattr(config, 'optimize_reward_calc', False)
-        self.optimize_enable_check = getattr(config, 'optimize_enable_check', False)
-        self.optimize_state_update = getattr(config, 'optimize_state_update', False)
-        self.cache_indices = getattr(config, 'cache_indices', False)
-        self.optimize_data_structures = getattr(config, 'optimize_data_structures', False)
-        
         # 内部状态
         self.scrap_count = 0  # 报废计数器
         self.resident_violation_count = 0 # 驻留时间违规计数 (Type 1)
@@ -322,25 +317,10 @@ class Petri:
         # 错峰启动：记录 t_PM1 上次发射时间
         self._last_t_pm1_fire_time = -INF
         
-        # ============ 性能优化：构建缓存的索引映射（必须在 _build_release_chain 之前）============
-        if self.cache_indices:
-            self._build_cached_indices()
-        else:
-            self._place_indices = None
-            self._transition_indices = None
-        
-        # 缓存加工腔室列表（type=1）
-        # 注意：如果启用了数据结构优化，这个缓存将被 _marks_by_type[1] 替代
-        self._process_places_cache = [p for p in self.marks if p.type == 1]
-        
         # 释放时间追踪：构建加工腔室链路映射
         # release_chain[place_idx] = (downstream_place_idx, transport_time)
         # 例如：PM1 -> PM2，运输时间为 T_pm1_to_pm2
         self._build_release_chain()
-        
-        # ============ 数据结构优化：构建按类型分组的 marks 列表缓存 ============
-        if self.optimize_data_structures:
-            self._build_marks_by_type_cache()
         
         # 累计的释放时间违规惩罚（每个 step 计算后清零）
         self._release_violation_penalty = 0.0
@@ -421,49 +401,17 @@ class Petri:
         
         return downstream_map
 
-    def _build_cached_indices(self) -> None:
-        """
-        构建缓存的库所和变迁索引映射，用于快速查找。
-        
-        优化：避免每次调用 id2p_name.index() 和 id2t_name.index() 的线性查找开销。
-        """
-        self._place_indices = {name: idx for idx, name in enumerate(self.id2p_name)}
-        self._transition_indices = {name: idx for idx, name in enumerate(self.id2t_name)}
-    
     def _get_place_index(self, name: str) -> int:
-        """获取库所索引（使用缓存如果可用）"""
-        if self.cache_indices and self._place_indices is not None:
-            return self._place_indices[name]
+        """获取库所索引"""
         return self.id2p_name.index(name)
     
     def _get_transition_index(self, name: str) -> int:
-        """获取变迁索引（使用缓存如果可用）"""
-        if self.cache_indices and self._transition_indices is not None:
-            return self._transition_indices[name]
+        """获取变迁索引"""
         return self.id2t_name.index(name)
-    
-    def _build_marks_by_type_cache(self) -> None:
-        """
-        构建按类型分组的 marks 列表缓存。
-        
-        优化：避免频繁遍历所有库所查找特定类型的库所。
-        
-        注意：如果优化失败，会回退到空缓存，不影响功能。
-        """
-        try:
-            self._marks_by_type: Dict[int, List[Place]] = {}
-            for place in self.marks:
-                place_type = place.type
-                if place_type not in self._marks_by_type:
-                    self._marks_by_type[place_type] = []
-                self._marks_by_type[place_type].append(place)
-        except Exception:
-            # 如果构建缓存失败，使用空缓存，回退到遍历方式
-            self._marks_by_type = {}
     
     def _get_marks_by_type(self, place_type: int) -> List[Place]:
         """
-        获取指定类型的库所列表（使用缓存）。
+        获取指定类型的库所列表。
         
         Args:
             place_type: 库所类型（1=加工腔室, 2=运输库所, 3=空闲库所, 4=资源库所, 5=无驻留约束腔室）
@@ -471,11 +419,6 @@ class Petri:
         Returns:
             指定类型的库所列表
         """
-        # 优化：直接访问缓存，避免 hasattr 检查开销
-        # 如果启用了数据结构优化，直接使用缓存（缓存在 __init__ 中保证存在）
-        if self.optimize_data_structures:
-            return self._marks_by_type.get(place_type, [])
-        # 如果优化未启用，回退到遍历方式
         return [p for p in self.marks if p.type == place_type]
     
     def _get_next_target(self, route_type: int, step: int) -> Optional[str]:
@@ -531,7 +474,7 @@ class Petri:
         # 获取腔室索引（如果存在）
         def get_idx(name: str) -> int:
             if name in self.id2p_name:
-                return self._get_place_index(name) if self.cache_indices else self.id2p_name.index(name)
+                return self.id2p_name.index(name)
             return -1
         
         s1_idx = get_idx("s1")
@@ -591,24 +534,14 @@ class Petri:
             - corrected_enter_time: 修正后的进入时间（如果违规则为 earliest_release，否则为 expected_enter_time）
         """
         place = self.marks[place_idx]
-        
-        # 计算实际占用：已在腔室中的 + 预估中即将进入的
-        # 注意：tokens 和 release_schedule 不重叠
-        # - 晶圆进入运输位时加入 release_schedule
-        # - 晶圆进入腔室时从 release_schedule 移除，同时加入 tokens
-        # - 但存在时间窗口：晶圆在运输中时同时存在于两者？
-        # 设计澄清：release_schedule 记录的是「预计进入」，晶圆实际进入腔室（t_s* 变迁）时
-        # 会调用 _update_release 而非 _pop_release，所以不会重复计算
-        # 实际上 release_schedule 的记录会在晶圆离开腔室时才 pop
-        # 因此：当晶圆在腔室中时，它同时存在于 tokens 和 release_schedule 中！
-        # 所以检查应该只用 release_schedule，因为它覆盖了所有承诺（包括已进入的）
         actual_occupancy = len(place.release_schedule)
         
         # 如果占用未满，不违规
         if actual_occupancy < place.capacity:
             return (0.0, expected_enter_time)
-        
-        earliest = place.earliest_release()
+
+        release = sorted(place.release_schedule, key=lambda x: x[1])  # 按释放时间排序
+        _,earliest = release[-place.capacity]
         if earliest is None or expected_enter_time >= earliest:
             return (0.0, expected_enter_time)  # 不违规
         
@@ -1069,47 +1002,18 @@ class Petri:
             place.release_schedule.clear()
             if place.type == 1:
                 place.last_machine = -1  # 重置机器轮换计数器
-        # 数据结构优化：更新 _marks_by_type 缓存（因为 marks 列表已重新克隆）
-        if self.optimize_data_structures:
-            try:
-                self._build_marks_by_type_cache()
-            except Exception:
-                # 如果更新缓存失败，使用空缓存，回退到遍历方式
-                self._marks_by_type = {}
-        
-        # 更新 _process_places_cache（即使未启用数据结构优化也需要更新）
+
+        # 更新 _process_places_cache
         self._process_places_cache = [p for p in self.marks if p.type == 1]
 
     def _update_stay_times(self) -> None:
-        """更新所有 token 的滞留时间（批量更新优化）"""
+        """更新所有 token 的滞留时间"""
         current_time = self.time
-        if self.optimize_state_update:
-            # 批量更新：减少函数调用开销
-            # 使用按类型分组的缓存，跳过 type=3 (LP)
-            if self.optimize_data_structures:
-                # 遍历所有非 type=3 的库所类型，直接使用缓存避免函数调用
-                marks_by_type = self._marks_by_type
-                for place_type in [1, 2, 4, 5]:  # 跳过 type=3 (LP)
-                    for place in marks_by_type.get(place_type, []):
-                        if len(place.tokens) > 0:
-                            for tok in place.tokens:
-                                tok.stay_time = int(current_time - tok.enter_time)
-            else:
-                # 原始优化方式
-                for place in self.marks:
-                    if place.type == 3:  # 跳过 LP 中的 wafer
-                        continue
-                    if len(place.tokens) > 0:
-                        # 批量计算并更新
-                        for tok in place.tokens:
-                            tok.stay_time = int(current_time - tok.enter_time)
-        else:
-            # 原始实现
-            for place in self.marks:
-                if place.type == 3:  # 跳过 LP 中的 wafer
-                    continue
-                for tok in place.tokens:
-                    tok.stay_time = int(current_time - tok.enter_time)
+        for place in self.marks:
+            if place.type == 3:  # 跳过 LP 中的 wafer
+                continue
+            for tok in place.tokens:
+                tok.stay_time = int(current_time - tok.enter_time)
 
     def calc_reward(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
                           detailed: bool = False) -> float | Dict[str, float]:
@@ -1145,11 +1049,7 @@ class Petri:
                         "congestion_penalty": 0.0, "time_cost": 0.0}
             return 0.0
 
-        # 根据配置选择优化或原始实现
-        if self.optimize_reward_calc:
-            return self._calc_reward_vectorized(t1, t2, moving_pre_places, detailed)
-        else:
-            return self._calc_reward_original(t1, t2, moving_pre_places, detailed)
+        return self._calc_reward_original(t1, t2, moving_pre_places, detailed)
     def _calc_reward_original(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
                               detailed: bool = False) -> float | Dict[str, float]:
         """原始奖励计算实现（用于功能一致性验证）"""
@@ -1294,192 +1194,7 @@ class Petri:
         
         return total
     
-    def _calc_reward_vectorized(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
-                                 detailed: bool = False) -> float | Dict[str, float]:
-        """
-        向量化版本的奖励计算（性能优化）。
-        
-        使用 NumPy 向量化操作替代 Python 循环，大幅提升性能。
-        """
-        # 惩罚/奖励系数
-        Q1_p = 3      # type=2 运输库所超时惩罚系数
-        Q2_p = 0.2    # type=1 加工腔室超时惩罚系数
-        r = 2         # 加工奖励系数
-        
-        delta_t = t2 - t1
-        proc_reward = 0.0
-        overtime_penalty = 0.0
-        warn_penalty = 0.0
-        transport_penalty = 0.0
-        safe_reward = 0.0
-        congestion_penalty = 0.0
-        
-        # ========== 向量化计算基本奖励 ==========
-        # 收集所有需要计算的 token 数据
-        enter_times = []
-        proc_times = []
-        place_types = []
-        place_names = []
-        
-        for p_idx, place in enumerate(self.marks):
-            if place.name == "LP" or place.type not in (1, 2, 5):
-                continue
-            
-            for tok in place.tokens:
-                enter_times.append(tok.enter_time)
-                proc_times.append(place.processing_time)
-                place_types.append(place.type)
-                place_names.append(place.name)
-        
-        if not enter_times:
-            # 没有 token 需要计算
-            time_cost = self.c_time * delta_t if self.reward_config.get('time_cost', 1) else 0.0
-            if detailed:
-                return {"total": -time_cost, "proc_reward": 0.0, "safe_reward": 0.0,
-                        "penalty": 0.0, "warn_penalty": 0.0, "transport_penalty": 0.0,
-                        "congestion_penalty": 0.0, "time_cost": time_cost}
-            return -time_cost
-        
-        # 转换为 NumPy 数组
-        enter_times = np.array(enter_times, dtype=np.int32)
-        proc_times = np.array(proc_times, dtype=np.int32)
-        place_types = np.array(place_types, dtype=np.int32)
-        
-        # 条件短路：提前退出不需要的计算分支
-        need_proc_reward = self.reward_config.get('proc_reward', 1)
-        need_penalty = self.reward_config.get('penalty', 1)
-        need_warn_penalty = self.reward_config.get('warn_penalty', 1)
-        need_safe_reward = self.reward_config.get('safe_reward', 1)
-        need_transport_penalty = self.reward_config.get('transport_penalty', 1)
-        
-        # type=2: 运输库所超时惩罚
-        if need_transport_penalty:
-            type2_mask = (place_types == 2)
-            if np.any(type2_mask):
-                deadlines = enter_times[type2_mask] + self.D_Residual_time
-                over_starts = np.maximum(t1, deadlines)
-                over_mask = t2 > over_starts
-                if np.any(over_mask):
-                    transport_penalty = np.sum((t2 - over_starts[over_mask]) * Q1_p)
-        
-        # type=5: 无驻留约束腔室（只计加工奖励）
-        if need_proc_reward:
-            type5_mask = (place_types == 5) & (proc_times > 0)
-            if np.any(type5_mask):
-                proc_ends = enter_times[type5_mask] + proc_times[type5_mask]
-                proc_overlaps = np.minimum(t2, proc_ends) - np.maximum(t1, enter_times[type5_mask])
-                positive_overlaps = proc_overlaps[proc_overlaps > 0]
-                if len(positive_overlaps) > 0:
-                    proc_reward += np.sum(positive_overlaps * r)
-        
-        # type=1: 加工腔室（有驻留约束）
-        type1_mask = (place_types == 1)
-        if np.any(type1_mask):
-            type1_enter = enter_times[type1_mask]
-            type1_proc = proc_times[type1_mask]
-            proc_starts = type1_enter
-            proc_ends = type1_enter + type1_proc
-            
-            # 1) 加工奖励
-            if need_proc_reward:
-                proc_overlaps = np.minimum(t2, proc_ends) - np.maximum(t1, proc_starts)
-                positive_overlaps = proc_overlaps[proc_overlaps > 0]
-                if len(positive_overlaps) > 0:
-                    proc_reward += np.sum(positive_overlaps * r)
-            
-            # 2) 超时惩罚
-            if need_penalty:
-                start_pens = type1_enter + type1_proc + self.P_Residual_time
-                starts = np.maximum(t1, start_pens)
-                over_mask = t2 > starts
-                if np.any(over_mask):
-                    overtime_penalty = np.sum((t2 - starts[over_mask]) * Q2_p)
-            
-            # 3) 预警惩罚
-            if need_warn_penalty:
-                scrap_deadlines = type1_enter + type1_proc + 10
-                warn_starts = scrap_deadlines - self.T_warn
-                warn_overlap_starts = np.maximum(t1, warn_starts)
-                warn_overlap_ends = np.minimum(t2, scrap_deadlines)
-                valid_mask = warn_overlap_ends > warn_overlap_starts
-                if np.any(valid_mask):
-                    dts = warn_overlap_ends[valid_mask] - warn_overlap_starts[valid_mask]
-                    avg_gaps = ((warn_overlap_starts[valid_mask] - warn_starts[valid_mask]) + 
-                               (warn_overlap_ends[valid_mask] - warn_starts[valid_mask])) / 2
-                    warn_penalty = np.sum(self.a_warn * avg_gaps * dts)
-            
-            # 4) 安全裕量奖励
-            if need_safe_reward:
-                safe_deadlines = type1_enter + type1_proc + 10 - self.T_safe
-                safe_starts = np.maximum(t1, proc_ends)
-                safe_ends = np.minimum(t2, safe_deadlines)
-                valid_mask = safe_ends > safe_starts
-                if np.any(valid_mask):
-                    safe_reward = np.sum(self.b_safe * (safe_ends[valid_mask] - safe_starts[valid_mask]))
-        
-        # ========== 堵塞预防奖励塑形（保持原始实现，因为逻辑复杂）==========
-        for up_idx, downstream_list in self.downstream_map.items():
-            up_place = self.marks[up_idx]
-            if len(up_place.tokens) == 0:
-                continue
-            
-            finish_times = []
-            for tok in up_place.tokens:
-                if up_place.type == 1:
-                    finish_time = tok.enter_time + up_place.processing_time + 15
-                elif up_place.type == 2:
-                    finish_time = tok.enter_time + 55
-                finish_times.append(finish_time)
-            
-            for down_idx, d_idx in downstream_list:
-                down_place = self.marks[down_idx]
-                d_place = self.marks[d_idx]
-                
-                if len(down_place.tokens) == 0 and len(d_place.tokens) == 0:
-                    continue
-                
-                down_available = max(0, down_place.capacity - len(down_place.tokens) - len(d_place.tokens))
-                down_finish = []
-                for tok in down_place.tokens:
-                    down_finish.append(tok.enter_time + down_place.processing_time)
-                for tok in d_place.tokens:
-                    down_finish.append(tok.enter_time + 10 + 80)
-                
-                overflow = 0
-                for i, ft in enumerate(finish_times):
-                    if i < down_available:
-                        continue
-                    if ft < down_finish[0]:
-                        overflow += 1
-                        break
-                
-                if overflow > 0:
-                    congestion_penalty += self.c_congest * overflow
-        
-        # 应用奖励开关
-        if not self.reward_config.get('congestion_penalty', 1):
-            congestion_penalty = 0.0
-        
-        # 时间成本
-        time_cost = self.c_time * delta_t if self.reward_config.get('time_cost', 1) else 0.0
-        
-        # 合并惩罚
-        total_penalty = overtime_penalty + warn_penalty + transport_penalty
-        total = proc_reward + safe_reward - total_penalty - congestion_penalty - time_cost
-        
-        if detailed:
-            return {
-                "total": total,
-                "proc_reward": proc_reward,
-                "safe_reward": safe_reward,
-                "penalty": overtime_penalty,
-                "warn_penalty": warn_penalty,
-                "transport_penalty": transport_penalty,
-                "congestion_penalty": congestion_penalty,
-                "time_cost": time_cost,
-            }
-        
-        return total
+
 
 
 
@@ -2307,7 +2022,8 @@ class Petri:
                         return True
             
             # Type 2: 运输库所/机械手 (Q-time 约束 > 15s)
-            elif place.type == 2:
+            """
+                        elif place.type == 2:
                 for tok in place.tokens:
                     # Q-time limit = 15s
                     overtime = (self.time - tok.enter_time) - 15
@@ -2323,6 +2039,8 @@ class Petri:
                                 "type": "qtime"
                             }
                         return True
+            """
+
                         
         if return_info:
             return False, None
