@@ -20,6 +20,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple, Union
 from visualization.plot import plot_gantt_hatched_residence, Op
 from solutions.Continuous_model.construct import SuperPetriBuilder, ModuleSpec, RobotSpec, BasedToken
 from data.petri_configs.env_config import PetriEnvConfig
+import traceback
 
 INF = 10**6
 MAX_TIME = 10000  # 例如 300s
@@ -308,7 +309,7 @@ class Petri:
                 place.type = 5
 
         # petri网系统时钟
-        self.time = 1
+        self.time = 0
         self.fire_log = []
 
         # 构建上下游关系映射（用于堵塞检测，当前已关闭）
@@ -546,7 +547,6 @@ class Petri:
             return (0.0, expected_enter_time)  # 不违规
         
         # 违规：计算惩罚，并修正进入时间为 earliest_release
-        violation_gap = earliest - expected_enter_time
         penalty = self.c_release_violation * 100
         corrected_enter_time = earliest
         return (penalty, corrected_enter_time)
@@ -980,7 +980,7 @@ class Petri:
         return float(min(finishes))
 
     def reset(self):
-        self.time = 1
+        self.time = 0
         self.m = self.m0.copy()
         self.marks = self._clone_marks(self.ori_marks)
         self._update_stay_times()
@@ -1459,12 +1459,14 @@ class Petri:
                     place_s5.add_release(wafer_id, release_s5)
                 
             elif t_name == "u_s2_s3":
-                # 路线1：离开 s2(LLC)，对 s3、s4 做 add_release + 违规检查（离开才检查）
-                if "s3" in self.id2p_name and "s4" in self.id2p_name:
+                # 路线1：离开 s2(LLC)，对 s3、s4、s5 做 add_release + 违规检查（离开才检查）
+                if "s3" in self.id2p_name and "s4" in self.id2p_name and "s5" in self.id2p_name:
                     s3_idx = self._get_place_index("s3")
                     s4_idx = self._get_place_index("s4")
+                    s5_idx = self._get_place_index("s5")
                     place_s3 = self.marks[s3_idx]
                     place_s4 = self.marks[s4_idx]
+                    place_s5 = self.marks[s5_idx]
                     expected_enter_s3 = enter_new + self.T_load
                     
                     # 检查 s3 违规并获取修正后的进入时间
@@ -1485,11 +1487,33 @@ class Petri:
                         penalty_s4, corrected_enter_s4 = self._check_release_violation(s4_idx, expected_enter_s4)
                         penalty += penalty_s4
                     
-                    # 使用修正后的 s4 进入时间重新计算 s4 释放时间
+                    # 使用修正后的 s4 进入时间计算初步 s4 释放时间
                     release_s4 = corrected_enter_s4 + place_s4.processing_time
+                    transport_s4_to_s5 = self.ttime * 3
+                    
+                    # ========== 拉式预约：根据 s5 可用时间反推 s4 释放时间 ==========
+                    s5_schedule = sorted(place_s5.release_schedule, key=lambda x: x[1])
+                    if len(s5_schedule) >= place_s5.capacity:
+                        # s5 满了，找第 (len - capacity) 个释放时间（即下一个可用 slot）
+                        s5_available = s5_schedule[-place_s5.capacity][1]
+                        expected_enter_s5 = release_s4 + transport_s4_to_s5
+                        
+                        if expected_enter_s5 < s5_available:
+                            # 反推 s4 应该何时释放（晶圆在 s4 多停留）
+                            s4_should_release = s5_available - transport_s4_to_s5
+                            if s4_should_release > release_s4:
+                                release_s4 = s4_should_release
+                            expected_enter_s5 = s5_available
+                    else:
+                        # s5 有空位，正常计算
+                        expected_enter_s5 = release_s4 + transport_s4_to_s5
+                    
+                    # 计算 s5 释放时间
+                    release_s5 = expected_enter_s5 + place_s5.processing_time
                     
                     place_s3.add_release(wafer_id, release_s3)
                     place_s4.add_release(wafer_id, release_s4)
+                    place_s5.add_release(wafer_id, release_s5)
                     self._release_violation_penalty += penalty
                 
             elif t_name == "t_s3":
@@ -1511,7 +1535,7 @@ class Petri:
                     self._pop_release(wafer_id, s3_idx)
             
             elif t_name == "u_s4_s5":
-                # 路线1：离开 s4(LLD)，对 s5 做 add_release + 违规检查（离开才检查）；再从 s4 队列移除
+                # 路线1：离开 s4(LLD)，更新 s5 的释放时间（已在 u_s2_s3 时添加）；再从 s4 队列移除
                 if "s4" in self.id2p_name and "s5" in self.id2p_name:
                     s4_idx = self._get_place_index("s4")
                     s5_idx = self._get_place_index("s5")
@@ -1519,23 +1543,15 @@ class Petri:
                     place_s5 = self.marks[s5_idx]
                     release_s4 = place_s4.get_release(wafer_id)
                     if release_s4 is not None:
-                        # 修复：运输时间不需要再加 70s，因为 release_s4 已经包含了 s4 的加工时间
                         # 运输时间 = s4卸载 + d_s5运输 + s5装载
                         transport_s4_to_s5 = self.ttime * 3  # 约 15s
                         expected_enter_s5 = release_s4 + transport_s4_to_s5
                         
-                        penalty_s5 = 0.0
-                        corrected_enter_s5 = expected_enter_s5
-                        if self.reward_config.get('release_violation_penalty', 1):
-                            penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
-                            self._release_violation_penalty += penalty_s5
-                        
-                        # 使用修正后的进入时间重新计算释放时间
-                        release_s5 = corrected_enter_s5 + place_s5.processing_time
-                        place_s5.add_release(wafer_id, release_s5)
+                        # 更新 s5 的释放时间（不再检查违规，因为已在 u_s2_s3 时检查）
+                        release_s5 = expected_enter_s5 + place_s5.processing_time
+                        place_s5.update_release(wafer_id, release_s5)
                     else:
                         # 防御性处理：release_s4 为 None 时使用当前时间估算
-                        # 这种情况不应该发生，如果发生说明 u_s2_s3 时未正确写入 s4 的 release_schedule
                         import warnings
                         warnings.warn(
                             f"[释放时间异常] wafer_id={wafer_id} 在 u_s4_s5 时 release_s4 为 None，"
@@ -1545,15 +1561,8 @@ class Petri:
                         # 使用当前时间 + 运输时间作为 fallback
                         transport_s4_to_s5 = self.ttime * 3
                         expected_enter_s5 = enter_new + transport_s4_to_s5
-                        
-                        penalty_s5 = 0.0
-                        corrected_enter_s5 = expected_enter_s5
-                        if self.reward_config.get('release_violation_penalty', 1):
-                            penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
-                            self._release_violation_penalty += penalty_s5
-                        
-                        release_s5 = corrected_enter_s5 + place_s5.processing_time
-                        place_s5.add_release(wafer_id, release_s5)
+                        release_s5 = expected_enter_s5 + place_s5.processing_time
+                        place_s5.update_release(wafer_id, release_s5)
                     self._pop_release(wafer_id, s4_idx)
                 
             elif t_name == "t_s5":
@@ -2021,25 +2030,23 @@ class Petri:
                             }
                         return True
             
-            # Type 2: 运输库所/机械手 (Q-time 约束 > 15s)
-            """
-                        elif place.type == 2:
-                for tok in place.tokens:
-                    # Q-time limit = 15s
-                    overtime = (self.time - tok.enter_time) - 15
-                    if overtime > 0:
-                        if return_info:
-                            return True, {
-                                "token_id": getattr(tok, "token_id", -1),
-                                "place": place.name,
-                                "enter_time": tok.enter_time,
-                                "stay_time": self.time - tok.enter_time,
-                                "proc_time": 0,
-                                "overtime": overtime,
-                                "type": "qtime"
-                            }
-                        return True
-            """
+            # Type 2: 运输库所/机械手 (Q-time 约束 > 15s) - 已禁用
+            # elif place.type == 2:
+            #     for tok in place.tokens:
+            #         # Q-time limit = 15s
+            #         overtime = (self.time - tok.enter_time) - 15
+            #         if overtime > 0:
+            #             if return_info:
+            #                 return True, {
+            #                     "token_id": getattr(tok, "token_id", -1),
+            #                     "place": place.name,
+            #                     "enter_time": tok.enter_time,
+            #                     "stay_time": self.time - tok.enter_time,
+            #                     "proc_time": 0,
+            #                     "overtime": overtime,
+            #                     "type": "qtime"
+            #                 }
+            #             return True
 
                         
         if return_info:

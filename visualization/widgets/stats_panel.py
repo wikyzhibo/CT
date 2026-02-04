@@ -449,14 +449,14 @@ class StatsPanel(QWidget):
     def update_reward(self, total_reward: float, detail: Dict[str, float]) -> None:
         """更新奖励：总奖励 + 明细（只显示非零项，按绝对值排序）"""
         # 更新总奖励
-        #if total_reward > 0:
-        #    color = self.theme.success
-        #elif total_reward < 0:
-        #    color = self.theme.danger
-        #else:
-        #    color = self.theme.text_kpi
-        #self.reward_card.set_value(f"{total_reward:.2f}")
-        #self.reward_card.set_value_color(color)
+        if total_reward > 0:
+            color = self.theme.success
+        elif total_reward < 0:
+            color = self.theme.danger
+        else:
+            color = self.theme.text_kpi
+        self.reward_card.set_value(f"{total_reward:.2f}")
+        self.reward_card.set_value_color(color)
         
         # 清理旧的明细
         while self.rewards_layout.count():
