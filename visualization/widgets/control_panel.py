@@ -25,9 +25,10 @@ class ControlPanel(QWidget):
     """控制按钮面板"""
 
     action_clicked = Signal(int)
-    random_clicked = Signal()
+    # random_clicked removed
     model_step_clicked = Signal()
     model_auto_toggled = Signal(bool)
+    model_b_auto_toggled = Signal(bool)
     verify_planb_clicked = Signal()
     reset_clicked = Signal()
     speed_changed = Signal(float)
@@ -66,12 +67,9 @@ class ControlPanel(QWidget):
         self.wait_button.clicked.connect(lambda: self.action_clicked.emit(-100))
         layout.addWidget(self.wait_button)
 
-        self.random_button = QPushButton("Random (R)")
-        self.random_button.setObjectName("RandomButton")
-        self.random_button.clicked.connect(self.random_clicked.emit)
-        layout.addWidget(self.random_button)
+        # Random button removed
 
-        self.model_button = QPushButton("Model Step (M)")
+        self.model_button = QPushButton("Model A Step (M)")
         self.model_button.setObjectName("ModelButton")
         self.model_button.setEnabled(False)  # 默认禁用
         self.model_button.clicked.connect(self.model_step_clicked.emit)
@@ -83,11 +81,17 @@ class ControlPanel(QWidget):
         self.model_auto_button.clicked.connect(self._toggle_auto)
         layout.addWidget(self.model_auto_button)
         
-        # Verify PlanB Button
-        self.verify_button = QPushButton("Verify PlanB (V)")
+        # Verify PlanB Button (Renamed to Model B Step)
+        self.verify_button = QPushButton("Model B Step (V)")
         self.verify_button.setObjectName("VerifyButton")
         self.verify_button.clicked.connect(self.verify_planb_clicked.emit)
         layout.addWidget(self.verify_button)
+
+        # New Auto Model B Button
+        self.model_b_auto_button = QPushButton("Auto Model B (B)")
+        self.model_b_auto_button.setObjectName("ModelBAutoButton")
+        self.model_b_auto_button.clicked.connect(self._toggle_model_b_auto)
+        layout.addWidget(self.model_b_auto_button)
 
         layout.addSpacing(p.spacing_before_speed)
 
@@ -180,12 +184,7 @@ class ControlPanel(QWidget):
             background-color: rgba{(*t.btn_wait, 0.2)};
         }}
         
-        #RandomButton {{
-            border-color: rgb{t.btn_random};
-        }}
-        #RandomButton:hover {{
-            background-color: rgba{(*t.btn_random, 0.2)};
-        }}
+        /* RandomButton removed */
         
         #ModelButton {{
             border-color: rgb{t.btn_model};
@@ -199,6 +198,13 @@ class ControlPanel(QWidget):
         }}
         #AutoButton:hover {{
             background-color: rgba{(*t.btn_auto, 0.2)};
+        }}
+        
+        #ModelBAutoButton {{
+            border-color: rgb{t.btn_transition};
+        }}
+        #ModelBAutoButton:hover {{
+            background-color: rgba{(*t.btn_transition, 0.2)};
         }}
         
         #SpeedButton {{
@@ -265,9 +271,23 @@ class ControlPanel(QWidget):
                 color: rgb{self.theme.text_primary};
                 font-weight: 700;
             """)
-        else:
             self.model_auto_button.setText("Auto Mode (A)")
             self.model_auto_button.setStyleSheet("")
+
+    def set_model_b_active(self, active: bool) -> None:
+        # Programmatic setter for Model B Auto button
+        self.model_b_auto_button.setProperty("active", active)
+        if active:
+            self.model_b_auto_button.setText("◉ AUTO B ON")
+            self.model_b_auto_button.setStyleSheet(f"""
+                background-color: rgba{(*self.theme.btn_transition, 0.3)};
+                border: 2px solid rgb{self.theme.btn_transition};
+                color: rgb{self.theme.text_primary};
+                font-weight: 700;
+            """)
+        else:
+            self.model_b_auto_button.setText("Auto Model B (B)")
+            self.model_b_auto_button.setStyleSheet("")
 
     def _toggle_auto(self) -> None:
         if not self._model_enabled:
@@ -275,6 +295,16 @@ class ControlPanel(QWidget):
         self.auto_active = not self.auto_active
         self.set_auto_active(self.auto_active)
         self.model_auto_toggled.emit(self.auto_active)
+
+    def _toggle_model_b_auto(self) -> None:
+        # User interaction toggle
+        is_checked = self.model_b_auto_button.property("active") or False
+        new_state = not is_checked
+        # Signal handler will perform logic and likely call set_model_b_active(True/False)
+        # But we set visually here for immediate feedback? 
+        # Better: let main window drive state via signal to avoid desync
+        # However, for responsiveness we emit toggle.
+        self.model_b_auto_toggled.emit(new_state)
 
     def _set_speed(self, speed: float) -> None:
         self._current_speed = speed

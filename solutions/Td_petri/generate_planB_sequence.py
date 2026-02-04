@@ -96,7 +96,7 @@ def main():
 
 
     policy.eval()
-    max_steps = 1000
+    max_steps = 2000
     with torch.no_grad():
         with set_exploration_type(ExplorationType.MODE):
             _ = env.rollout(max_steps, policy)

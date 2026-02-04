@@ -1060,6 +1060,10 @@ class Petri:
         self._per_wafer_reward = 0.0  # 重置单片完工奖励
         self.wafer_stats = {}  # 重置晶圆滞留时间统计
         self.entered_wafer_count = 0  # 重置已进入系统的晶圆数
+        self.done_count = 0           # 重置已完成的晶圆数
+        self.resident_violation_count = 0 # 重置驻留违规计数
+        self.qtime_violation_count = 0    # 重置Q-time违规计数
+        self.violated_tokens = {}         # 重置违规记录
         # 清空所有库所的释放时间队列，并重置机器分配计数器
         for place in self.marks:
             place.release_schedule.clear()

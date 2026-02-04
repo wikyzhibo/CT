@@ -82,6 +82,9 @@ class PetriMainWindow(QMainWindow):
         self._verification_sequence = []
         self._verification_index = 0
         
+        # Auto Mode State Tracking ('A' or 'B' or None)
+        self._current_auto_mode = None
+        
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
 
@@ -179,12 +182,15 @@ class PetriMainWindow(QMainWindow):
         self.viewmodel.reward_updated.connect(self.left_panel.update_reward)
         self.viewmodel.step_updated.connect(self.left_panel.update_step)
         self.viewmodel.done_changed.connect(self._on_done_changed)
-        self.viewmodel.auto_mode_changed.connect(self.right_panel.set_auto_active)
+        self.viewmodel.done_changed.connect(self._on_done_changed)
+        # self.viewmodel.auto_mode_changed.connect(self.right_panel.set_auto_active)
+        self.viewmodel.auto_mode_changed.connect(self._on_auto_mode_changed_ui)
 
         self.right_panel.action_clicked.connect(self._on_action_clicked)
-        self.right_panel.random_clicked.connect(self._on_random_clicked)
+        # self.right_panel.random_clicked.connect(self._on_random_clicked)  # Removed
         self.right_panel.model_step_clicked.connect(self._on_model_step_clicked)
         self.right_panel.model_auto_toggled.connect(self._on_model_auto_toggled)
+        self.right_panel.model_b_auto_toggled.connect(self._on_model_b_auto_toggled)
         self.right_panel.reset_clicked.connect(self._on_reset_clicked)
         self.right_panel.speed_changed.connect(self._on_speed_changed)
         self.right_panel.verify_planb_clicked.connect(self._on_verify_planb_clicked)
@@ -207,18 +213,7 @@ class PetriMainWindow(QMainWindow):
             action_id = self.viewmodel.adapter.action_space_size
         self.viewmodel.execute_action(action_id)
 
-    def _on_random_clicked(self) -> None:
-        if self._verification_active:
-            self._stop_verification_mode()
-            self.right_panel.verify_button.setEnabled(False)
-
-        actions = self.viewmodel.adapter.get_enabled_actions()
-        enabled = [a.action_id for a in actions if a.enabled]
-        if not enabled:
-            return
-        import random
-        action = random.choice(enabled)
-        self.viewmodel.execute_action(action)
+    # _on_random_clicked removed
 
     def _on_model_step_clicked(self) -> None:
         if self._verification_active:
@@ -398,13 +393,14 @@ class PetriMainWindow(QMainWindow):
         key = event.key()
         if key == Qt.Key.Key_W:
             self._on_action_clicked(self.viewmodel.adapter.action_space_size)
-        elif key == Qt.Key.Key_R:
-            self._on_random_clicked()
+        # elif key == Qt.Key.Key_R: self._on_random_clicked() # Removed
         elif key == Qt.Key.Key_M:
             self._on_model_step_clicked()
         elif key == Qt.Key.Key_A:
             if self._model_handler is not None:
                 self.viewmodel.set_auto_mode(not self.viewmodel.auto_mode)
+        elif key == Qt.Key.Key_B:
+            self.right_panel.model_b_auto_button.click()
         elif key == Qt.Key.Key_Space:
             self._on_reset_clicked()
         elif key == Qt.Key.Key_V:
@@ -414,91 +410,147 @@ class PetriMainWindow(QMainWindow):
         else:
             super().keyPressEvent(event)
 
-    def _on_verify_planb_clicked(self) -> None:
-        """Handle Verify PlanB button click"""
-        if not self._verification_active:
-            # Initialize Verification Mode
-            try:
-                # Load sequence
-                seq_path = Path("solutions/Td_petri/planB_sequence.json")
-                if not seq_path.exists():
-                     QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
-                     return
-                
-                with open(seq_path, "r") as f:
-                    self._verification_sequence = json.load(f)
-                
-                if not self._verification_sequence:
-                    QMessageBox.warning(self, "Error", "Sequence is empty!")
-                    return
-                
-                # Reset environment
-                self._on_reset_clicked()
-                
-                # Enter mode
-                self._verification_active = True
-                self._verification_index = 0
-                
-                # Update UI
-                self.right_panel.verify_button.setText("Next Step")
-                self.right_panel.verify_button.setStyleSheet(f"border-color: rgb{self.theme.accent_cyan}; background-color: rgba{(*self.theme.accent_cyan, 0.2)};")
-                
-                # Disable other controls implicitly by state check in their handlers?
-                # Or explicitly disable them?
-                # User requirement: "if other button is pushed, 'Verify PlanB' is disabled"
-                # This implies other buttons remain enabled.
-                
-                print(f"Verification started. Sequence length: {len(self._verification_sequence)}")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to start verification: {e}")
-                self._stop_verification_mode()
-        else:
-            # Step Verification
-            if self._verification_index < len(self._verification_sequence):
-                item = self._verification_sequence[self._verification_index]
-                actions = item.get("actions", [None, None])
-                tm2_name, tm3_name = actions
-                
-                # Map names to IDs
-                try:
-                    all_transitions = self.viewmodel.adapter.net.id2t_name
-                    
-                    if tm2_name and tm2_name != "WAIT":
-                        a1 = all_transitions.index(tm2_name)
-                    else:
-                        a1 = -1
-                        
-                    if tm3_name and tm3_name != "WAIT":
-                        a2 = all_transitions.index(tm3_name)
-                    else:
-                        a2 = -1
-                        
-                    self.viewmodel.execute_concurrent_action(a1, a2)
-                    self._verification_index += 1
-                    
-                except ValueError as e:
-                    print(f"Error mapping transition: {e}")
-                    QMessageBox.warning(self, "Mapping Error", f"Unknown transition in sequence: {e}")
-                    self._stop_verification_mode()
+    def _ensure_verification_initialized(self) -> bool:
+        """Ensure verification sequence is loaded and ready"""
+        if self._verification_active:
+            return True
+        
+        try:
+            seq_path = Path("solutions/Td_petri/planB_sequence.json")
+            if not seq_path.exists():
+                    QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
+                    return False
             
+            with open(seq_path, "r") as f:
+                self._verification_sequence = json.load(f)
+            
+            if not self._verification_sequence:
+                QMessageBox.warning(self, "Error", "Sequence is empty!")
+                return False
+            
+            # Reset environment implicitly? User might want to run from current state.
+            # But usually verification assumes initial state.
+            # Previous logic called _on_reset_clicked().
+            self._on_reset_clicked()
+            
+            self._verification_active = True
+            self._verification_index = 0
+            
+            self.right_panel.verify_button.setText("Next Step")
+            self.right_panel.verify_button.setStyleSheet(f"border-color: rgb{self.theme.accent_cyan}; background-color: rgba{(*self.theme.accent_cyan, 0.2)};")
+            print(f"Verification started. Sequence length: {len(self._verification_sequence)}")
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start verification: {e}")
+            self._stop_verification_mode()
+            return False
+
+    def _get_verification_step_action(self):
+        """Get next action from verification sequence"""
+        if not self._ensure_verification_initialized():
+             return None
+             
+        if self._verification_index >= len(self._verification_sequence):
+             QMessageBox.information(self, "Done", "Verification Sequence Completed!")
+             self.viewmodel.set_auto_mode(False) # Stop auto if running
+             return None
+             
+        item = self._verification_sequence[self._verification_index]
+        actions = item.get("actions", [None, None])
+        tm2_name, tm3_name = actions
+        
+        try:
+            all_transitions = self.viewmodel.adapter.net.id2t_name
+            
+            if tm2_name and tm2_name != "WAIT":
+                a1 = all_transitions.index(tm2_name)
             else:
-                QMessageBox.information(self, "Done", "Verification Sequence Completed!")
-                # Optional: Stop mode?
-                # self._stop_verification_mode() 
+                a1 = -1
+                
+            if tm3_name and tm3_name != "WAIT":
+                a2 = all_transitions.index(tm3_name)
+            else:
+                a2 = -1
+            
+            self._verification_index += 1
+            return (a1, a2)
+            
+        except ValueError as e:
+            print(f"Error mapping transition: {e}")
+            self.viewmodel.set_auto_mode(False)
+            return None
+
+    def _on_verify_planb_clicked(self) -> None:
+        """Handle Verify PlanB button click (Manual Step)"""
+        if self._current_auto_mode == 'B' and self.viewmodel.auto_mode:
+             # If auto is running, maybe pause?
+             self.viewmodel.set_auto_mode(False)
+             return
+
+        action_pair = self._get_verification_step_action()
+        if action_pair:
+             self.viewmodel.execute_concurrent_action(*action_pair)
+
+    def _on_model_b_auto_toggled(self, enabled: bool) -> None:
+        """Handle Auto Model B toggle"""
+        if enabled:
+            # Switch to B-mode
+            self._current_auto_mode = 'B'
+            
+            # Use a lambda wrapper to call our verification provider
+            # The provider returns (a1, a2) or None
+            def b_auto_cb():
+                res = self._get_verification_step_action()
+                if res:
+                    self.viewmodel.execute_concurrent_action(*res)
+                return None # Wrapper executed action, return None to main loop
+            
+            self.viewmodel.set_agent_callback(b_auto_cb)
+            self.viewmodel.set_auto_mode(True)
+        else:
+            if self._current_auto_mode == 'B':
+                self.viewmodel.set_auto_mode(False)
+                self._current_auto_mode = None
+
+    def _on_model_auto_toggled(self, enabled: bool) -> None:
+        """Handle Auto Mode A toggle"""
+        if enabled:
+            # Switch to A-mode
+            self._current_auto_mode = 'A'
+            
+            # Restoration logic for A:
+            if self._concurrent_model_handler:
+                 self.set_concurrent_model_handler(self._concurrent_model_handler) # Re-register callback
+            elif self._model_handler:
+                 self.set_model_handler(self._model_handler)
+            
+            self.viewmodel.set_auto_mode(True)
+        else:
+             if self._current_auto_mode == 'A':
+                self.viewmodel.set_auto_mode(False)
+                self._current_auto_mode = None
+
+    def _on_auto_mode_changed_ui(self, active: bool) -> None:
+        """Update UI buttons based on auto mode state"""
+        # If viewmodel stops auto (active=False), turn off buttons
+        if not active:
+            self.right_panel.set_auto_active(False)
+            self.right_panel.set_model_b_active(False)
+            self._current_auto_mode = None
+        else:
+            # If active, ensure correct button is lit
+            if self._current_auto_mode == 'B':
+                self.right_panel.set_model_b_active(True)
+                self.right_panel.set_auto_active(False)
+            elif self._current_auto_mode == 'A':
+                self.right_panel.set_auto_active(True)
+                self.right_panel.set_model_b_active(False)
 
     def _stop_verification_mode(self) -> None:
         """Exit verification mode and reset button state"""
         if self._verification_active:
             self._verification_active = False
-            self.right_panel.verify_button.setText("Verify PlanB (V)")
-            self.right_panel.verify_button.setStyleSheet(f"""
-                border-color: rgb{self.theme.btn_random};
-            """)
-            # Note: Hover style is lost unless re-applied, but stylesheet handles it via ID selector if not overridden inline.
-            # Re-applying ID-based style might be cleaner.
-            # But here we just reset inline style.
-            # Actually better to clear inline style to let ID style take over.
+            self.right_panel.verify_button.setText("Model B Step (V)")
             self.right_panel.verify_button.setStyleSheet("") 
-            # But control_panel applies stylesheet to self (the panel), so button inherits ID styles.
-            # So clearing style should revert to ID style.
+
