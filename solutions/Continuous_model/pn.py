@@ -312,9 +312,6 @@ class Petri:
         self.time = 0
         self.fire_log = []
 
-        # 构建上下游关系映射（用于堵塞检测，当前已关闭）
-        self.downstream_map = {}  # 堵塞检测已关闭，保留空映射
-
         # 错峰启动：记录 t_PM1 上次发射时间
         self._last_t_pm1_fire_time = -INF
         
@@ -350,57 +347,7 @@ class Petri:
             cloned_list.append(cloned)
         return cloned_list
 
-    def _build_downstream_map(self) -> Dict[int, List[Tuple[int, int]]]:
-        """
-        构建上下游关系映射。
-        
-        通过分析 Petri 网结构，找出每个加工腔室(type=1)的下游腔室。
-        路径：上游腔室 -> u_变迁 -> d_库所 -> t_变迁 -> 下游腔室
-        
-        Returns:
-            Dict[upstream_idx, List[(downstream_idx, d_place_idx)]]
-            例如: {PM1_idx: [(PM2_idx, d_PM2_idx)]}
-        """
-        downstream_map: Dict[int, List[Tuple[int, int]]] = {}
-        
-        # 找出所有加工腔室（type=1）
-        process_places = [i for i, p in enumerate(self.marks) if p.type == 1]
-        
-        for up_idx in process_places:
-            downstream_map[up_idx] = []
-            
-            # 找从 up_idx 出发的变迁（u_变迁）
-            # pre[up_idx, t] > 0 表示 up_idx 是变迁 t 的前置库所
-            out_trans = np.flatnonzero(self.pre[up_idx, :] > 0)
-            
-            for t in out_trans:
-                t_name = self.id2t_name[t]
-                # 只关注 u_ 开头的变迁（搬运变迁）
-                if not t_name.startswith("u_"):
-                    continue
-                
-                # 找 u_变迁 的后置库所（d_库所）
-                d_places = np.flatnonzero(self.pst[:, t] > 0)
-                
-                for d_idx in d_places:
-                    d_name = self.id2p_name[d_idx]
-                    # 只关注 d_ 开头的运输库所
-                    if not d_name.startswith("d_"):
-                        continue
-                    
-                    # 找从 d_库所 出发的变迁（t_变迁）
-                    t_trans = np.flatnonzero(self.pre[d_idx, :] > 0)
-                    
-                    for t2 in t_trans:
-                        # 找 t_变迁 的后置库所（下游腔室）
-                        down_places = np.flatnonzero(self.pst[:, t2] > 0)
-                        
-                        for down_idx in down_places:
-                            # 检查是否是加工腔室或终点
-                            if self.marks[down_idx].type == 1 or self.id2p_name[down_idx].endswith("_done"):
-                                downstream_map[up_idx].append((int(down_idx), int(d_idx)))
-        
-        return downstream_map
+
 
     def _get_place_index(self, name: str) -> int:
         """获取库所索引"""
@@ -1028,9 +975,8 @@ class Petri:
            - type=1: 超过 proc_time + P_Residual_time后每秒惩罚
            - type=2: 超过 5 + D_Residual_time后每秒惩罚
         5. 预警惩罚：slack < T_warn 时施加稠密惩罚
-        6. 堵塞预测惩罚：上游多个 token 即将同时完成而下游容量不足
-        7. 错峰启动奖励：同一腔室内 token 进入时间差足够大
-        8. 下游空闲惩罚：下游空闲但上游有等待 token
+        6. 错峰启动奖励：同一腔室内 token 进入时间差足够大
+        7. 下游空闲惩罚：下游空闲但上游有等待 token
         
         Args:
             t1: 起始时间
@@ -1046,7 +992,7 @@ class Petri:
             if detailed:
                 return {"total": 0.0, "proc_reward": 0.0, "safe_reward": 0.0, 
                         "penalty": 0.0, "warn_penalty": 0.0, "transport_penalty": 0.0,
-                        "congestion_penalty": 0.0, "time_cost": 0.0}
+                        "time_cost": 0.0}
             return 0.0
 
         return self._calc_reward_original(t1, t2, moving_pre_places, detailed)
@@ -1066,7 +1012,6 @@ class Petri:
         warn_penalty = 0.0     # 预警惩罚
         transport_penalty = 0.0 # 运输超时惩罚
         safe_reward = 0.0      # 安全裕量奖励
-        congestion_penalty = 0.0 # 堵塞预测惩罚
 
         # ========== 基本奖励 ==========
         for p_idx, place in enumerate(self.marks):
@@ -1134,51 +1079,10 @@ class Petri:
                         if safe_end > safe_start:
                             safe_reward += self.b_safe * (safe_end - safe_start)
         
-        # ========== 堵塞预防奖励塑形 ==========
-        for up_idx, downstream_list in self.downstream_map.items():
-            up_place = self.marks[up_idx]
-            if len(up_place.tokens) == 0:
-                continue
-            
-            finish_times = []
-            for tok in up_place.tokens:
-                if up_place.type == 1:
-                    finish_time = tok.enter_time + up_place.processing_time + 15
-                elif up_place.type == 2:
-                    finish_time = tok.enter_time + 55
-                finish_times.append(finish_time)
-            
-            for down_idx, d_idx in downstream_list:
-                down_place = self.marks[down_idx]
-                d_place = self.marks[d_idx]
-                
-                if len(down_place.tokens) == 0 and len(d_place.tokens) == 0:
-                    continue
-                
-                down_available = max(0, down_place.capacity - len(down_place.tokens) - len(d_place.tokens))
-                down_finish = []
-                for tok in down_place.tokens:
-                    down_finish.append(tok.enter_time + down_place.processing_time)
-                for tok in d_place.tokens:
-                    down_finish.append(tok.enter_time + 10 + 80)
-                
-                overflow = 0
-                for i, ft in enumerate(finish_times):
-                    if i < down_available:
-                        continue
-                    if ft < down_finish[0]:
-                        overflow += 1
-                        break
-                
-                if overflow > 0:
-                    congestion_penalty += self.c_congest * overflow
-        
-        if not self.reward_config.get('congestion_penalty', 1):
-            congestion_penalty = 0.0
         
         time_cost = self.c_time * delta_t if self.reward_config.get('time_cost', 1) else 0.0
         total_penalty = overtime_penalty + warn_penalty + transport_penalty
-        total = proc_reward + safe_reward - total_penalty - congestion_penalty - time_cost
+        total = proc_reward + safe_reward - total_penalty - time_cost
         
         if detailed:
             return {
@@ -1188,7 +1092,6 @@ class Petri:
                 "penalty": overtime_penalty,
                 "warn_penalty": warn_penalty,
                 "transport_penalty": transport_penalty,
-                "congestion_penalty": congestion_penalty,
                 "time_cost": time_cost,
             }
         
