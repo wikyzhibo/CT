@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import (
@@ -193,7 +195,9 @@ class PetriMainWindow(QMainWindow):
         self.right_panel.model_b_auto_toggled.connect(self._on_model_b_auto_toggled)
         self.right_panel.reset_clicked.connect(self._on_reset_clicked)
         self.right_panel.speed_changed.connect(self._on_speed_changed)
+        self.right_panel.speed_changed.connect(self._on_speed_changed)
         self.right_panel.verify_planb_clicked.connect(self._on_verify_planb_clicked)
+        self.right_panel.gantt_clicked.connect(self._on_gantt_clicked)
 
     def _on_state_updated(self, state) -> None:
         self.center_canvas.update_state(state)
@@ -553,4 +557,30 @@ class PetriMainWindow(QMainWindow):
             self._verification_active = False
             self.right_panel.verify_button.setText("Model B Step (V)")
             self.right_panel.verify_button.setStyleSheet("") 
+
+    def _on_gantt_clicked(self) -> None:
+        """Handle Draw Gantt button click"""
+        try:
+            # Create results directory if it doesn't exist
+            results_dir = Path("results")
+            results_dir.mkdir(exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"continuous_gantt_{timestamp}.png"
+            output_path = results_dir / filename
+            
+            success = self.viewmodel.render_gantt(str(output_path))
+            
+            if success:
+                print(f"✓ Gantt chart saved to: {output_path}")
+                # Optional: Show success message in status bar or small popup if desired
+                # QMessageBox.information(self, "Success", f"Gantt chart saved to:\n{output_path}")
+            else:
+                print("✗ Failed to generate Gantt chart")
+                QMessageBox.warning(self, "Error", "Failed to generate Gantt chart. Check console for details.")
+                
+        except Exception as e:
+            print(f"✗ Error generating Gantt chart: {e}")
+            QMessageBox.critical(self, "Error", f"Error generating Gantt chart:\n{e}") 
 

@@ -31,6 +31,7 @@ class ControlPanel(QWidget):
     model_b_auto_toggled = Signal(bool)
     verify_planb_clicked = Signal()
     reset_clicked = Signal()
+    gantt_clicked = Signal()
     speed_changed = Signal(float)
 
     def __init__(self, theme: ColorTheme, parent=None) -> None:
@@ -119,6 +120,18 @@ class ControlPanel(QWidget):
         self.reset_button.setObjectName("ResetButton")
         self.reset_button.clicked.connect(self.reset_clicked.emit)
         layout.addWidget(self.reset_button)
+
+        layout.addSpacing(p.spacing_before_reset)
+
+        # UTILS Section
+        utils_title = QLabel("UTILS")
+        utils_title.setObjectName("PanelTitle")
+        layout.addWidget(utils_title)
+        
+        self.gantt_button = QPushButton("Draw Gantt")
+        self.gantt_button.setObjectName("GanttButton")
+        self.gantt_button.clicked.connect(self.gantt_clicked.emit)
+        layout.addWidget(self.gantt_button)
         
         # 应用样式
         self._apply_styles()
@@ -225,6 +238,13 @@ class ControlPanel(QWidget):
         }}
         #VerifyButton:hover {{
             background-color: rgba{(*t.btn_random, 0.2)};
+        }}
+
+        #GanttButton {{
+            border-color: rgb{t.btn_gantt};
+        }}
+        #GanttButton:hover {{
+            background-color: rgba{(*t.btn_gantt, 0.2)};
         }}
         """
         self.setStyleSheet(qss)

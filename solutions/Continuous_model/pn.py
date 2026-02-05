@@ -23,7 +23,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 import traceback
 
 INF = 10**6
-MAX_TIME = 20000  # 例如 300s
+MAX_TIME = 15000  # 例如 300s
 
 # 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
 TM2_TRANSITIONS = frozenset({
@@ -2096,22 +2096,22 @@ class Petri:
                         return True
             
             # Type 2: 运输库所/机械手 (Q-time 约束 > 15s) - 已禁用
-            # elif place.type == 2:
-            #     for tok in place.tokens:
-            #         # Q-time limit = 15s
-            #         overtime = (self.time - tok.enter_time) - 15
-            #         if overtime > 0:
-            #             if return_info:
-            #                 return True, {
-            #                     "token_id": getattr(tok, "token_id", -1),
-            #                     "place": place.name,
-            #                     "enter_time": tok.enter_time,
-            #                     "stay_time": self.time - tok.enter_time,
-            #                     "proc_time": 0,
-            #                     "overtime": overtime,
-            #                     "type": "qtime"
-            #                 }
-            #             return True
+            elif place.type == 2:
+                 for tok in place.tokens:
+                     # Q-time limit = 15s
+                     overtime = (self.time - tok.enter_time) - 15
+                     if overtime > 0:
+                         if return_info:
+                             return True, {
+                                 "token_id": getattr(tok, "token_id", -1),
+                                 "place": place.name,
+                                 "enter_time": tok.enter_time,
+                                 "stay_time": self.time - tok.enter_time,
+                                 "proc_time": 0,
+                                 "overtime": overtime,
+                                 "type": "qtime"
+                             }
+                         return True
 
                         
         if return_info:
@@ -2280,7 +2280,7 @@ class Petri:
         if finish:
             if with_reward:
                 if detailed_reward:
-                    reward_result["finish_bonus"] = self.R_finish+7000
+                    reward_result["finish_bonus"] = self.R_finish+15000
                     reward_result["total"] += self.R_finish
                 else:
                     reward_result += self.R_finish

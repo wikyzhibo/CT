@@ -187,3 +187,8 @@ class PetriViewModel(QObject):
         max_points = 30
         if len(self.trend_data[key]) > max_points:
             self.trend_data[key] = self.trend_data[key][-max_points:]
+
+    @Slot(str)
+    def render_gantt(self, output_path: str) -> bool:
+        """生成甘特图"""
+        return self.adapter.render_gantt(output_path)
