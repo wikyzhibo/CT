@@ -53,9 +53,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
-*.json
 *.png
 solutions/Td_petri/RL2_job8.png
-solutions/Td_petri/planB_sequence.json
 .idea/CT.iml
 .idea/misc.xml

@@ -68,13 +68,7 @@ class PetriEnvConfig:
     
     reward_config: Optional[Dict[str, int]] = None
 
-    # 性能优化
-    optimize_reward_calc: bool = False
-    optimize_enable_check: bool = False
-    optimize_state_update: bool = False
-    cache_indices: bool = False
-    optimize_data_structures: bool = False
-    turbo_mode: bool = False
+
 
     # 路线与晶圆分配（可选；无则用默认双路线）
     n_wafer_route1: Optional[int] = None
@@ -136,23 +130,7 @@ class PetriEnvConfig:
         if self.no_residence_place_names:
             lines.append(f"  无驻留腔室: {sorted(self.no_residence_place_names)}")
         
-        # 性能优化
-        optimizations = []
-        if self.optimize_reward_calc:
-            optimizations.append("reward_calc")
-        if self.optimize_enable_check:
-            optimizations.append("enable_check")
-        if self.optimize_state_update:
-            optimizations.append("state_update")
-        if self.cache_indices:
-            optimizations.append("cache_indices")
-        if self.optimize_data_structures:
-            optimizations.append("data_structures")
-        if self.turbo_mode:
-            optimizations.append("turbo_mode")
-        
-        if optimizations:
-            lines.append(f"  性能优化: {', '.join(optimizations)}")
+
         
         # 奖励配置（仅显示非默认值）
         reward_non_default = {
@@ -225,14 +203,7 @@ class PetriEnvConfig:
         else:
             lines.append("  place_display_names: None")
         
-        # 性能优化
-        lines.append("\n【性能优化】")
-        lines.append(f"  optimize_reward_calc: {self.optimize_reward_calc}")
-        lines.append(f"  optimize_enable_check: {self.optimize_enable_check}")
-        lines.append(f"  optimize_state_update: {self.optimize_state_update}")
-        lines.append(f"  cache_indices: {self.cache_indices}")
-        lines.append(f"  optimize_data_structures: {self.optimize_data_structures}")
-        lines.append(f"  turbo_mode: {self.turbo_mode}")
+
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")
