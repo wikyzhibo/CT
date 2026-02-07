@@ -168,8 +168,8 @@ class TimedPetri:
     def __init__(self) -> None:
 
         modules = {
-            "LP1": ModuleSpec(tokens=0, capacity=100),
-            "LP2": ModuleSpec(tokens=24, capacity=100),
+            "LP1": ModuleSpec(tokens=50, capacity=100),
+            "LP2": ModuleSpec(tokens=25, capacity=100),
             "AL": ModuleSpec(tokens=0, capacity=1),
             "LLA_S2": ModuleSpec(tokens=0, capacity=1),
             "PM7": ModuleSpec(tokens=0, capacity=1),
@@ -293,16 +293,14 @@ class TimedPetri:
                    'PROC__LLA_S2']],  # AL->LLA
                  [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7',
                    'PROC__PM7', 'ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10',
-                   'PROC__PM10'],
+                   'PROC__PM10', 'ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1',
+                   'ARM2_LOAD__PM10__TO__LLB_S1', 'PROC__LLB_S1'],
                   ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8',
                    'PROC__PM8', 'ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9',
-                   'PROC__PM9']],  # LLA->PM7/PM8->PM9/PM10
-                 [['ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1',
-                   'PROC__LLB_S1'],
-                  ['ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1',
-                   'PROC__LLB_S1']],  # PM9-PM10->LLB
-                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done',
-                   'PROC__LP_done']]]  # LLB->LP_done
+                   'PROC__PM9', 'ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1',
+                   'ARM2_LOAD__PM9__TO__LLB_S1', 'PROC__LLB_S1']],  # LLA->PM7/PM8->PM9/PM10->LLB
+                 [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done',
+                   'ARM1_LOAD__LLB_S1__TO__LP_done', 'PROC__LP_done']]]  # LLB->LP_done
 
         pathC = [[['ARM1_PICK__LP2__TO__AL', 'ARM1_MOVE__LP2__TO__AL', 'ARM1_LOAD__LP2__TO__AL', 'PROC__AL']],
                  # LP2->AL
@@ -418,10 +416,8 @@ class TimedPetri:
         # 并行腔体
         pathD = [[['ARM1_PICK__LP1__TO__AL', 'ARM1_MOVE__LP1__TO__AL','ARM1_LOAD__LP1__TO__AL','PROC__AL']], #LP1->AL
                  [['ARM1_PICK__AL__TO__LLA_S2', 'ARM1_MOVE__AL__TO__LLA_S2', 'ARM1_LOAD__AL__TO__LLA_S2', 'PROC__LLA_S2']],#AL->LLA
-                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7', 'PROC__PM7','ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10','PROC__PM10'],
-                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8','PROC__PM8','ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9','PROC__PM9']],#LLA->PM7/PM8->PM9/PM10
-                 [['ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1','PROC__LLB_S1'],
-                  ['ARM2_PICK__PM10__TO__LLB_S1','ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1','PROC__LLB_S1']], #PM9-PM10->LLB
+                 [['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7', 'PROC__PM7','ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10','PROC__PM10','ARM2_PICK__PM10__TO__LLB_S1','ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1','PROC__LLB_S1'],
+                  ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8','PROC__PM8','ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9','PROC__PM9','ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1','PROC__LLB_S1']],#LLA->PM7/PM8->PM9/PM10
                  [['ARM1_PICK__LLB_S1__TO__LP_done', 'ARM1_MOVE__LLB_S1__TO__LP_done', 'ARM1_LOAD__LLB_S1__TO__LP_done','PROC__LP_done']]] #LLB->LP_done
 
         pathC = [[['ARM1_PICK__LP2__TO__AL', 'ARM1_MOVE__LP2__TO__AL','ARM1_LOAD__LP2__TO__AL','PROC__AL']], #LP2->AL
@@ -733,13 +729,14 @@ class TimedPetri:
             for tok in list(self.marks[p].tokens):
                 tok_key = tok.job_id
                 t_enter = int(tok.enter_time)
+                w_type = getattr(tok, "type", 0)
 
                 r, t0 = self._earliest_place_entry(p, t_enter)
                 if t0 > t_enter:
                     # 初始 token 被迫等待资源（通常不该发生），这里直接把它推到可进入时刻
                     t_enter = t0
 
-                itv = Interval(start=t_enter, end=INF_OCC, tok_key=tok_key)
+                itv = Interval(start=t_enter, end=INF_OCC, tok_key=tok_key, wafer_type=w_type)
                 _insert_interval_sorted(self.place_times[p][r], itv)
                 self.open_occ[(p, tok_key)] = itv
 
@@ -1109,6 +1106,7 @@ class TimedPetri:
             res_names = self._t_resources(t, new_marks)  # 你自己的资源映射函数
             # 尽量把 job_id 带上，后续画图/统计方便；没有就用 -1
             tok_key = getattr(moved_tok, "job_id", -1) if moved_tok is not None else -1
+            w_type = getattr(moved_tok, "type", 0) if moved_tok is not None else 0
 
             for rn in res_names:
                 occ = self.res_occ.setdefault(rn, [])
@@ -1133,7 +1131,7 @@ class TimedPetri:
                         to_loc = parts[3]
 
                 module_list = ['PM7', 'PM8', 'PM1', 'PM2', 'PM3', 'PM4', 'LLC', 'LLD', 'PM9', 'PM10']
-                itv = Interval(start=int(te), end=int(enter_new), tok_key=tok_key, kind=xx, from_loc=from_loc, to_loc=to_loc)
+                itv = Interval(start=int(te), end=int(enter_new), tok_key=tok_key, kind=xx, from_loc=from_loc, to_loc=to_loc, wafer_type=w_type)
                 if rn in module_list:
                     itv.end = INF_OCC
 

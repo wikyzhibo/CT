@@ -15,14 +15,14 @@ class TDPNParser:
         将事件列表解析为 PN 的 (a1, a2) 变迁名称序列。
         
         参数:
-            events: 事件列表，格式为 (time, arm, kind, from_loc, to_loc)
+            events: 事件列表，格式为 (time, arm, kind, from_loc, to_loc, wafer_type)
         返回:
             sequence: 字典列表，包含 {"step": 步数, "time": 时间戳, "actions": [TM2动作, TM3动作]}
         """
         # 1. 映射事件：将外部事件转换为 Petri 网内部的变迁和对应的机器人
         mapped_events = []
-        for t, arm, kind, from_loc, to_loc in events:
-            pn_action, robot = self._map_action_v2(arm, kind, from_loc, to_loc)
+        for t, arm, kind, from_loc, to_loc, wafer_type in events:
+            pn_action, robot = self._map_action_v2(arm, kind, from_loc, to_loc, wafer_type)
             if pn_action:
                 mapped_events.append((t, pn_action, robot))
         
@@ -92,7 +92,7 @@ class TDPNParser:
 
         return sequence
 
-    def _map_action_v2(self, arm, kind, from_loc, to_loc):
+    def _map_action_v2(self, arm, kind, from_loc, to_loc, wafer_type=0):
         """
         核心映射逻辑：根据机械臂编号、动作类型、库所来源和去向映射为 PN 变迁。
         kind: 0=PICK (取), 1=LOAD (放)
@@ -108,7 +108,10 @@ class TDPNParser:
         if arm == 2:
             # 1. 从 LLA_S2 取到 PM7/8 (s1)
             if "LLA_S2" in from_loc and ("PM7" in to_loc or "PM8" in to_loc):
-                if kind == 0: return "u_LP1_s1", "TM2"
+                if kind == 0:
+                    if wafer_type == 2:
+                        return "u_LP1_s1", "TM2"
+                    return "u_LP2_s1", "TM2"
                 if kind == 1: return "t_s1", "TM2"
             
             # 2. 从 PM7/8 (s1) 取到 LLC (s2)
@@ -125,6 +128,11 @@ class TDPNParser:
             if ("PM9" in from_loc or "PM10" in from_loc) and "LLB" in to_loc:
                 if kind == 0: return "u_s5_LP_done", "TM2"
                 if kind == 1: return "t_LP_done", "TM2"
+
+            # 5. 从 PM7/8 (s1) 取到 PM9/10 (s5)
+            if ("PM7" in from_loc or "PM8" in from_loc) and ("PM9" in to_loc or "PM10" in to_loc):
+                if kind == 0: return "u_s1_s5", "TM2"
+                if kind == 1: return "t_s5", "TM2"
 
         # TM3 机械臂相关的动作 (arm == 3)
         if arm == 3:

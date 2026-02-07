@@ -14,6 +14,7 @@ class Interval:
     kind: int = -1
     from_loc: str = ""   # 取的位置，如 "LLA_S2"
     to_loc: str = ""     # 放的位置，如 "PM7"
+    wafer_type: int = 0  # 1 or 2
 
 @dataclass
 class Message:

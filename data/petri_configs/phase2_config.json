@@ -1,5 +1,5 @@
 {
-    "n_wafer": 12,
+    "n_wafer": 75,
     "c_time": 1,
     "R_done": 10,
     "R_finish": 800,
@@ -34,8 +34,8 @@
         "time_cost": 1,
         "release_violation_penalty": 1
     },
-    "n_wafer_route1": null,
-    "n_wafer_route2": null,
+    "n_wafer_route1": 25,
+    "n_wafer_route2": 50,
     "routes": null,
     "start_place_names": null,
     "end_place_name": "LP_done",

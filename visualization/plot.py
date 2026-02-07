@@ -238,10 +238,6 @@ def plot_gantt_hatched_residence(
         # completion line at proc_end
         #ax.plot([op.proc_end, op.proc_end], [y0, y0 + lane_h], color="black", linewidth=1.5)
 
-        # label
-        if n_jobs > 50:
-            with_label = False
-
         if with_label:
             # 根据背景色动态选择文字颜色，确保对比度≥4.5:1
             # 使用加工段的颜色作为背景色参考
