@@ -132,8 +132,8 @@ def load_model(model_path: str, adapter: PetriAdapter):
                 
                 # 使用模型预测
                 with torch.no_grad():
-                    # explicitly set mode to MODE (ArgMax) to match viz.py manual fix
-                    with set_exploration_type(ExplorationType.MODE):
+                    # explicitly set mode to RANDOM (Sampling)
+                    with set_exploration_type(ExplorationType.RANDOM):
                         td = policy(td)
                         action = td["action"].item()
                 
@@ -227,7 +227,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
                 obs_f = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
                 
                 with torch.no_grad():
-                    with set_exploration_type(ExplorationType.MODE):
+                    with set_exploration_type(ExplorationType.RANDOM):
                         out = policy_module.backbone(obs_f)
                         dist_tm2 = MaskedCategorical(logits=out["logits_tm2"], mask=mask_tm2.unsqueeze(0))
                         dist_tm3 = MaskedCategorical(logits=out["logits_tm3"], mask=mask_tm3.unsqueeze(0))

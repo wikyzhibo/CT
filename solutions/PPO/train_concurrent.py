@@ -386,7 +386,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="双机械手并发动作 PPO 训练")
     parser.add_argument("--config", type=str, 
-                       default="data/ppo_configs/concurrent_phase2_config.json",
+                       default="data/ppo_configs/concurrent.json",
                        help="训练配置文件路径")
     parser.add_argument("--phase", type=int, default=2, 
                        help="训练阶段 (1 or 2)")
