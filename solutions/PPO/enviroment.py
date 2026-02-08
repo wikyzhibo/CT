@@ -8,8 +8,7 @@ import copy
 from typing import Dict, Optional
 import os
 
-#from solutions.v2.net_v2 import PetriNet
-#from solutions.v3.net_v3 import PetriV3
+# Legacy imports removed - v2 and v3 have been deprecated
 from solutions.Td_petri.tdpn import TimedPetri
 from solutions.Continuous_model.pn import Petri
 #from data.config.params_N7 import params_N7

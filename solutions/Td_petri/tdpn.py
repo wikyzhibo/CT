@@ -5,9 +5,9 @@ import sys
 import time
 from solutions.model.pn_models import Place, WaferToken, BasedToken
 from construct_net.run_supernet import load_petri_split
-from solutions.v2.utils import (Interval,_insert_interval_sorted,Message,QueueItem)
-# from solutions.v2.utils import _first_free_time_at
-#from solutions.v2.net_v2 import ActionInfo
+from solutions.utils.petri_utils import (Interval,_insert_interval_sorted,Message,QueueItem)
+# _first_free_time_at is implemented locally in this file (line 32-72)
+# ActionInfo is defined locally in this file (line 23-28)
 from visualization.plot import plot_gantt_hatched_residence,Op
 from solutions.Td_petri.construct import SuperPetriBuilderV3,ModuleSpec
 from dataclasses import dataclass
