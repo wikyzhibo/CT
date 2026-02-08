@@ -19,7 +19,6 @@ from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tdpn_parser import TDPNParser
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
 from typing import List, Optional, Tuple
-from solutions.Td_petri.tdpn import res_occ_to_ops
 
 def res_occ_to_event(res_occ: dict):
     events = []
