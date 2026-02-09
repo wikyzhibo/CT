@@ -146,7 +146,7 @@ class TDPNParser:
             if "PM" in from_loc and "LLD" in to_loc:
                 if any(x in from_loc for x in ["PM1", "PM2", "PM3", "PM4"]):
                     if kind == 0: return "u_s3_s4", "TM3"
-                    if kind : return "t_s4", "TM3"
+                    if kind == 1 : return "t_s4", "TM3"
                     
         return None, None
     
