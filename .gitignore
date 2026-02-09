@@ -61,3 +61,5 @@ solutions/Td_petri/RL2_job8.png
 .idea/CT.iml
 .idea/CT.iml
 .idea/misc.xml
+*.json
+*.pt
