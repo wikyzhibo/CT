@@ -110,8 +110,8 @@ class TDPNParser:
             if "LLA_S2" in from_loc and ("PM7" in to_loc or "PM8" in to_loc):
                 if kind == 0:
                     if wafer_type == 2:
-                        return "u_LP1_s1", "TM2"
-                    return "u_LP2_s1", "TM2"
+                        return "u_LP2_s1", "TM2"
+                    return "u_LP1_s1", "TM2"
                 if kind == 1: return "t_s1", "TM2"
             
             # 2. 从 PM7/8 (s1) 取到 LLC (s2)

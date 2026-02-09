@@ -1,7 +1,7 @@
 {
-    "n_wafer": 12,
-    "n_wafer_route1": 8,
-    "n_wafer_route2": 4,
+    "n_wafer": 48,
+    "n_wafer_route1": 24,
+    "n_wafer_route2": 24,
     "c_time": 8,
     "R_done": 100,
     "R_finish": 3000,

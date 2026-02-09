@@ -259,6 +259,7 @@ def main() -> int:
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--concurrent", "-c", action="store_true", help="使用并发模型（双动作）")
+    parser.add_argument("--sequence", "-s", type=str, default="planB_sequence.json", help="用于校验的动作序列文件名（默认：planB_sequence.json）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     args = parser.parse_args()
 
@@ -273,7 +274,7 @@ def main() -> int:
     # 设置应用图标（在创建窗口之前）
     app_icon = set_app_icon(app)
     
-    window = PetriMainWindow(viewmodel)
+    window = PetriMainWindow(viewmodel, sequence_file=args.sequence)
     
     # 窗口也设置图标
     if app_icon:

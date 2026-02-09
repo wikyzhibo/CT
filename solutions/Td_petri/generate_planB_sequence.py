@@ -144,7 +144,7 @@ def main():
         
         # 获取模型路径
         ROOT_DIR = Path(__file__).resolve().parents[1]
-        model_path = os.path.join(ROOT_DIR, "PPO", "syc_model", "taskD", "best_8_8.pt")
+        model_path = os.path.join(ROOT_DIR, "PPO", "syc_model", "taskD", "best_24_24.pt")
         
         if not os.path.exists(model_path):
             print(f"Error: Model not found at {model_path}")
@@ -177,8 +177,8 @@ def main():
     sequence = parser_obj.parse(events)
     
     # 保存结果
-    output_dir = Path(__file__).parent
-    output_file = output_dir / f"{args.output_name}_sequence.json"
+    output_dir = Path(__file__).resolve().parents[2]
+    output_file = os.path.join(output_dir, "data","action_series", f"{args.output_name}_sequence.json")
 
     with open(output_file, "w") as f:
         json.dump(sequence, f, indent=2)

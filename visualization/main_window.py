@@ -72,9 +72,10 @@ class PetriMainWindow(QMainWindow):
         QListWidget, QComboBox, QSpinBox, QSlider
     )
 
-    def __init__(self, viewmodel: PetriViewModel):
+    def __init__(self, viewmodel: PetriViewModel, sequence_file: str = "planB_sequence.json"):
         super().__init__()
         self.viewmodel = viewmodel
+        self.sequence_file = sequence_file
         self.theme = ColorTheme()
         self._model_handler = None
         self._concurrent_model_handler = None  # 双动作模型处理器
@@ -420,21 +421,21 @@ class PetriMainWindow(QMainWindow):
             return True
         
         try:
-            seq_path = Path("solutions/Td_petri/planB_sequence.json")
-            if not seq_path.exists():
-                    QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
-                    return False
+            # 使用 data/action_series 目录
+            print('Loading verification sequence...')
+            seq_dir = Path(__file__).resolve().parents[1]
+                
+            seq_path = os.path.join(seq_dir, "data", "action_series", self.sequence_file)
             
-            with open(seq_path, "r") as f:
+            with open(seq_path, "r", encoding='utf-8') as f:
                 self._verification_sequence = json.load(f)
             
             if not self._verification_sequence:
+                print(f"Verification sequence not loaded!")
                 QMessageBox.warning(self, "Error", "Sequence is empty!")
                 return False
             
-            # Reset environment implicitly? User might want to run from current state.
-            # But usually verification assumes initial state.
-            # Previous logic called _on_reset_clicked().
+            # Reset environment implicitly
             self._on_reset_clicked()
             
             self._verification_active = True
