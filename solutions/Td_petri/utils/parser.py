@@ -146,10 +146,36 @@ class TDPNParser:
             if "PM" in from_loc and "LLD" in to_loc:
                 if any(x in from_loc for x in ["PM1", "PM2", "PM3", "PM4"]):
                     if kind == 0: return "u_s3_s4", "TM3"
-                    if kind == 1: return "t_s4", "TM3"
+                    if kind : return "t_s4", "TM3"
                     
         return None, None
     
     def _map_action(self, t_name):
         # 旧版映射逻辑（已弃用）
         return None, None
+
+
+def res_occ_to_event(res_occ: dict):
+    """
+    将资源占用字典转换为事件列表。
+    """
+    events = []
+    for itv in res_occ.get('ARM2', []):
+        arm = 2
+        time = itv.start
+        kind = itv.kind #0 PICK ,1 LOAD
+        from_loc = getattr(itv, 'from_loc', '')
+        to_loc = getattr(itv, 'to_loc', '')
+        wafer_type = getattr(itv, 'wafer_type', 0)
+        events.append((time, arm, kind, from_loc, to_loc, wafer_type))
+        
+    for itv in res_occ.get('ARM3', []):
+        arm = 3
+        time = itv.start
+        kind = itv.kind
+        from_loc = getattr(itv, 'from_loc', '')
+        to_loc = getattr(itv, 'to_loc', '')
+        wafer_type = getattr(itv, 'wafer_type', 0)
+        events.append((time, arm, kind, from_loc, to_loc, wafer_type))
+
+    return events

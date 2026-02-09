@@ -175,7 +175,7 @@ class TimedPetri(EnvBase):
         self.reward_calc = RewardCalculator(
             self.obs_place_idx,
             list(self.idle_idx['start']),
-            config.reward_weights
+            config.reward_weights_map
         )
         
         # 创建 TorchRL specs（如果 TorchRL 可用）

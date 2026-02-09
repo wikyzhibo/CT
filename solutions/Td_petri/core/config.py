@@ -29,8 +29,8 @@ class PetriConfig:
     
     # Module specifications
     modules: Dict[str, ModuleSpec] = field(default_factory=lambda: {
-        "LP1": ModuleSpec(tokens=50, capacity=100),
-        "LP2": ModuleSpec(tokens=25, capacity=100),
+        "LP1": ModuleSpec(tokens=24, capacity=100), #路线C
+        "LP2": ModuleSpec(tokens=24, capacity=100),#路线D
         "AL": ModuleSpec(tokens=0, capacity=1),
         "LLA_S2": ModuleSpec(tokens=0, capacity=1),
         "PM7": ModuleSpec(tokens=0, capacity=1),
@@ -79,16 +79,11 @@ class PetriConfig:
     # Observation history length
     history_length: int = 50
     
-    # Reward stage weights
-    reward_weights: List[int] = field(default_factory=lambda: [
-        0,     # Stage 0: LP1/LP2
-        10,    # Stage 1: AL
-        30,    # Stage 2: LLA_S2
-        100,   # Stage 3: PM7/PM8
-        770,   # Stage 4: LLC
-        970,   # Stage 5: PM1-4/LLD
-        1000,  # Stage 6: PM9/PM10/LLB
-    ])
+    # Reward stage weights map: {wafer_type: List[weights]}
+    reward_weights_map: Dict[int, List[int]] = field(default_factory=lambda: {
+        1: [0, 10, 30, 100, 770, 970, 1000],  # Path C (Route 1)
+        2: [0, 10, 30, 270, 300],              # Path D (Route 2)
+    })
 
     # @classmthod: 类方法，PetriConfig.default(); 用于实例还没创建
     # 第一个参数写cls，表示调用者的类别

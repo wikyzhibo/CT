@@ -94,11 +94,11 @@ class PathRegistry:
             # Stage 2: LLA_S2 → PM7/PM8 → PM9/PM10 → LLB_S1 (parallel choice, combined stages)
             [
                 ['ARM2_PICK__LLA_S2__TO__PM7', 'ARM2_MOVE__LLA_S2__TO__PM7', 'ARM2_LOAD__LLA_S2__TO__PM7', 'PROC__PM7',
-                 'ARM2_PICK__PM7__TO__PM10', 'ARM2_MOVE__PM7__TO__PM10', 'ARM2_LOAD__PM7__TO__PM10', 'PROC__PM10',
-                 'ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1', 'PROC__LLB_S1'],
+                 'ARM2_PICK__PM7__TO__PM9', 'ARM2_MOVE__PM7__TO__PM9', 'ARM2_LOAD__PM7__TO__PM9', 'PROC__PM9',
+                 'ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1', 'PROC__LLB_S1'],
                 ['ARM2_PICK__LLA_S2__TO__PM8', 'ARM2_MOVE__LLA_S2__TO__PM8', 'ARM2_LOAD__LLA_S2__TO__PM8', 'PROC__PM8',
-                 'ARM2_PICK__PM8__TO__PM9', 'ARM2_MOVE__PM8__TO__PM9', 'ARM2_LOAD__PM8__TO__PM9', 'PROC__PM9',
-                 'ARM2_PICK__PM9__TO__LLB_S1', 'ARM2_MOVE__PM9__TO__LLB_S1', 'ARM2_LOAD__PM9__TO__LLB_S1', 'PROC__LLB_S1']
+                 'ARM2_PICK__PM8__TO__PM10', 'ARM2_MOVE__PM8__TO__PM10', 'ARM2_LOAD__PM8__TO__PM10', 'PROC__PM10',
+                 'ARM2_PICK__PM10__TO__LLB_S1', 'ARM2_MOVE__PM10__TO__LLB_S1', 'ARM2_LOAD__PM10__TO__LLB_S1', 'PROC__LLB_S1']
             ],
             
             # Stage 3: LLB_S1 → LP_done

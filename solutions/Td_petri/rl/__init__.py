@@ -4,6 +4,7 @@ from .path_registry import PathRegistry
 from .action_space import ActionSpaceBuilder
 from .observation import ObservationBuilder
 from .reward import RewardCalculator
+from .utils import load_policy
 
 # Import environment (which now re-exports TimedPetri)
 try:
@@ -22,4 +23,5 @@ __all__ = [
     'TimedPetriEnv',
     'TimedPetriEnvSimple',
     'CT_v2_Refactored',
+    'load_policy',
 ]

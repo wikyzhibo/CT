@@ -1,129 +1,199 @@
 
 import torch
+import numpy as np
 import json
 import os
 import sys
+import argparse
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 # Add project root to path
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.append(str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
-from visualization.plot import plot_gantt_hatched_residence,Op
-from solutions.PPO.enviroment import CT_v2
-from torchrl.envs import TransformedEnv, ActionMask
-from solutions.PPO.network.models import MaskedPolicyHead
-from tensordict.nn import TensorDictModule
-from torchrl.modules import ProbabilisticActor, MaskedCategorical
+from torchrl.envs import Compose, DTypeCastTransform, ActionMask
 from torchrl.envs.utils import set_exploration_type, ExplorationType
-from tdpn_parser import TDPNParser
-from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
-from typing import List, Optional, Tuple
 
-def res_occ_to_event(res_occ: dict):
-    events = []
-    for itv in res_occ['ARM2']:
-        arm = 2
-        time = itv.start
-        kind = itv.kind #0 PICK ,1 LOAD
-        from_loc = getattr(itv, 'from_loc', '')
-        to_loc = getattr(itv, 'to_loc', '')
-        wafer_type = getattr(itv, 'wafer_type', 0)
-        events.append((time, arm, kind, from_loc, to_loc, wafer_type))
+from solutions.Td_petri.tdpn import TimedPetri
+from solutions.Td_petri.rl import load_policy
+from solutions.Td_petri.utils import TDPNParser, res_occ_to_event
+from solutions.Td_petri.vis_utils import render_gantt_from_petri
+
+
+def execute_custom_sequence(sequence: List[int], env):
+    """
+    执行自定义的动作序列
+    
+    Args:
+        sequence: 动作ID序列列表，每个元素是一个动作ID（链条ID）
+        env: TimedPetri 环境实例
+    
+    Returns:
+        执行完序列后的环境实例
+    """
+    print(f"开始执行自定义动作序列，共 {len(sequence)} 步")
+    
+    # 重置环境
+    td = env.reset()
+    
+    for step_idx, action_id in enumerate(sequence):
+        # 检查动作ID是否有效
+        if action_id < 0 or action_id >= env.A:
+            print(f"警告: 步骤 {step_idx + 1} 的动作ID {action_id} 超出范围 [0, {env.A-1}]")
+            continue
         
-    for itv in res_occ['ARM3']:
-        arm = 3
-        time = itv.start
-        kind = itv.kind
-        from_loc = getattr(itv, 'from_loc', '')
-        to_loc = getattr(itv, 'to_loc', '')
-        wafer_type = getattr(itv, 'wafer_type', 0)
-        events.append((time, arm, kind, from_loc, to_loc, wafer_type))
+        # 获取对应的链条信息
+        chain = env.aid2chain[action_id]
+        chain_str = " -> ".join(chain)
+        
+        # 检查动作是否可用
+        action_mask = td["action_mask"].numpy()
+        if not action_mask[action_id]:
+            print(f"警告: 步骤 {step_idx + 1} 的动作 {action_id} ({chain_str}) 当前不可用")
+            print(f"当前可用动作: {np.where(action_mask)[0].tolist()}")
+            
+            # 如果动作不可用，打印当前状态并尝试继续（虽然可能会失败）
+            continue
+        
+        # 构建执行动作所需的 TensorDict
+        # 注意：TorchRL 的 step 需要输入包含 action 的 TensorDict
+        td.set("action", torch.tensor([action_id], dtype=torch.int64))
+        
+        # 执行动作
+        td = env.step(td)
+        
+        print(f"步骤 {step_idx + 1}/{len(sequence)}: 动作 {action_id} ({chain_str}) - 完成")
+        
+        # 检查是否完成
+        # TorchRL 的 done 标志通常在 "done", "terminated", 或 "truncated" 中
+        done = td.get("done", torch.tensor([False])).item()
+        terminated = td.get("terminated", torch.tensor([False])).item()
 
-    return events
+        td = td['next']
 
-
-def load_policy(model_path, env, device="cpu"):
-    state_dict = torch.load(model_path)
-
-    n_actions = env.action_spec.space.n
-    n_m = env.observation_spec["observation"].shape[0]
-
-    policy_backbone = MaskedPolicyHead(hidden=128, n_obs=n_m, n_actions=n_actions,n_layers=4)
-    td_module = TensorDictModule(
-        policy_backbone, in_keys=["observation_f"], out_keys=["logits"]
-    )
-    policy = ProbabilisticActor(
-        module=td_module,
-        in_keys={"logits": "logits", "mask": "action_mask"},
-        out_keys=["action"],
-        distribution_class=MaskedCategorical,
-        return_log_prob=True,
-    ).to(device)
-
-    policy.load_state_dict(state_dict)
-    policy.eval()
-    return policy
-
-
-
-
-def main():
-    device = "cpu"
-    # Path to the best model in the planB_route_c directory
+        if done or terminated:
+            print(f"环境在第 {step_idx + 1} 步完成")
+            break
+            
+    return env
 
 
-    ROOT = Path(__file__).resolve().parents[1]
-
-    model_path = os.path.join(ROOT, "PPO", "syc_model", "taskD", "CT_phase2_best.pt")
+def generate_with_policy(env, policy, max_steps: int = 2000):
+    """
+    使用训练好的策略生成动作序列
     
-    if not os.path.exists(model_path):
-        print(f"Error: Model not found at {model_path}")
-        return
-
-    base_env = CT_v2()
-    transform = Compose([
-        ActionMask(),
-        DTypeCastTransform(
-            dtype_in=torch.int64,
-            dtype_out=torch.float32,
-            in_keys="observation",
-            out_keys="observation_f"
-        ),
-    ])
-    env = TransformedEnv(base_env, transform)
+    Args:
+        env: TransformedEnv 环境
+        policy: 训练好的策略网络
+        max_steps: 最大步数
     
-    policy = load_policy(model_path, env, device)
-
-
+    Returns:
+        执行完成后的 petri_net 实例
+    """
     policy.eval()
-    max_steps = 2000
     with torch.no_grad():
         with set_exploration_type(ExplorationType.MODE):
             _ = env.rollout(max_steps, policy)
-
-    events = res_occ_to_event(env.net.res_occ)
-
-    parser = TDPNParser()
-    sequence = parser.parse(events)
     
-    # Save to the same directory as this script
+    return env.base_env
+
+
+def main():
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description="生成或执行 Plan B 动作序列")
+    parser.add_argument(
+        "--custom-sequence",
+        type=str,
+        default=None,
+        help="自定义动作序列的 JSON 文件路径（如果提供，将执行该序列而不是使用策略生成）"
+    )
+    parser.add_argument(
+        "--output-name",
+        type=str,
+        default="planB",
+        help="输出文件的名称前缀（默认: planB）"
+    )
+    args = parser.parse_args()
+    
+    device = "cpu"
+    
+    # 初始化环境
+    base_env = TimedPetri()
+    
+    # 判断执行模式
+    if args.custom_sequence:
+        # 模式1: 执行自定义序列
+        print(f"模式: 执行自定义动作序列")
+        print(f"序列文件: {args.custom_sequence}")
+        
+        # 加载自定义序列
+        ROOT_DIR = Path(__file__).resolve().parents[2]
+        series_path = os.path.join(ROOT_DIR, "data","action_series", args.custom_sequence)
+
+        with open(series_path, "r") as f:
+            custom_sequence = json.load(f)
+        
+        # 执行自定义序列
+        petri_net = execute_custom_sequence(custom_sequence, base_env)
+        
+    else:
+        # 模式2: 使用策略生成序列
+        print(f"模式: 使用训练好的策略生成序列")
+        
+        # 获取模型路径
+        ROOT_DIR = Path(__file__).resolve().parents[1]
+        model_path = os.path.join(ROOT_DIR, "PPO", "syc_model", "taskD", "best_8_8.pt")
+        
+        if not os.path.exists(model_path):
+            print(f"Error: Model not found at {model_path}")
+            return
+        
+        # 创建 TransformedEnv
+        transform = Compose([
+            ActionMask(),
+            DTypeCastTransform(
+                dtype_in=torch.int64,
+                dtype_out=torch.float32,
+                in_keys="observation",
+                out_keys="observation_f"
+            ),
+        ])
+        from torchrl.envs import TransformedEnv
+        env = TransformedEnv(base_env, transform)
+        
+        # 加载策略
+        policy = load_policy(model_path, env, device)
+        
+        # 运行 Rollout
+        petri_net = generate_with_policy(env, policy)
+
+    # 生成事件流
+    events = res_occ_to_event(petri_net.res_occ)
+
+    # 解析事件流为动作序列
+    parser_obj = TDPNParser()
+    sequence = parser_obj.parse(events)
+    
+    # 保存结果
     output_dir = Path(__file__).parent
-    output_file = output_dir / "planB_sequence.json"
+    output_file = output_dir / f"{args.output_name}_sequence.json"
 
-    
     with open(output_file, "w") as f:
         json.dump(sequence, f, indent=2)
         
     print(f"Generated {output_file} with {len(sequence)} steps.")
 
-    # save gantt chart
+    # 生成甘特图
     project_root = Path(__file__).resolve().parents[2]
     results_dir = project_root / "results"
     results_dir.mkdir(exist_ok=True)
     
-    out_file = str(results_dir / "planB_")
-    env.net.render_gantt(out_path=out_file,policy=3)
+    out_file = str(results_dir / f"{args.output_name}_")
+    # Instead of env.net.render_gantt, use our modular renderer
+    render_gantt_from_petri(petri_net, out_path=out_file, policy=3)
+    print(f"Gantt chart generated at {out_file}")
 
 if __name__ == "__main__":
     main()
