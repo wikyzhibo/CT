@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple, Union
 from visualization.plot import plot_gantt_hatched_residence, Op
+from solutions.Td_petri.resources.interval_utils import Interval, _first_free_time_at, _insert_interval_sorted
 from solutions.Continuous_model.construct import SuperPetriBuilder, ModuleSpec, RobotSpec, BasedToken
 from data.petri_configs.env_config import PetriEnvConfig
 import traceback
@@ -330,7 +331,11 @@ class Petri:
         # s5 首次预估释放时间追踪：{wafer_id: first_estimated_release_time}
         self._s5_first_estimate: Dict[int, int] = {}
         
-        # 可视化统计开关（训练模式下为 False，避免性能开销）
+        # 机械手时间轴：仅存储未来预估的操作，用于准确预估晶圆到达各腔室的时间
+        self._tm2_timeline: List[Interval] = []  # TM2 机械手预估占用时间轴
+        self._tm3_timeline: List[Interval] = []  # TM3 机械手预估占用时间轴
+        
+        # 可视化统计开关（训练模式下为 False，避免性能开销)
         self.enable_statistics = enable_statistics
 
     @staticmethod
@@ -668,6 +673,123 @@ class Petri:
         place = self.marks[place_idx]
         place.pop_release(token_id)
 
+    def _get_transition_robot(self, t_name: str) -> Optional[str]:
+        """
+        判断变迁是否使用机械手，并返回机械手名称。
+        """
+        # TM2 transitions
+        if t_name in ["u_LP1_s1", "u_LP2_s1", "u_s1_s2", "u_s1_s5", "u_s4_s5", "u_s5_LP_done"] or \
+           t_name in ["t_s1", "t_s2", "t_s5", "t_LP_done"]:
+            return "TM2"
+        # TM3 transitions
+        elif t_name in ["u_s2_s3", "u_s3_s4"] or \
+             t_name in ["t_s3", "t_s4"]:
+            return "TM3"
+        return None
+
+    def _get_robot_timeline(self, robot_name: str) -> List[Interval]:
+        """
+        获取指定机械手的时间轴。
+        
+        Args:
+            robot_name: 机械手名称（"TM2" 或 "TM3"）
+            
+        Returns:
+            对应的时间轴列表
+        """
+        if robot_name == "TM2":
+            return self._tm2_timeline
+        elif robot_name == "TM3":
+            return self._tm3_timeline
+        else:
+            raise ValueError(f"Unknown robot: {robot_name}")
+    
+    def _add_robot_estimate(self, robot_name: str, wafer_id: int, start: int, end: int, from_loc: str = "", to_loc: str = "") -> None:
+        """
+        向机械手时间轴添加预估的未来操作。
+        
+        Args:
+            robot_name: 机械手名称（"TM2" 或 "TM3"）
+            wafer_id: 晶圆编号
+            start: 预估开始时间
+            end: 预估结束时间
+            from_loc: 起始位置（用于区分同一晶圆的不同段）
+            to_loc: 目标位置
+        """
+        timeline = self._get_robot_timeline(robot_name)
+        interval = Interval(start=int(start), end=int(end), tok_key=wafer_id, from_loc=from_loc, to_loc=to_loc)
+        _insert_interval_sorted(timeline, interval)
+
+    def _find_chained_robot_slot(self, robot_name: str, 
+                                 start_search: int, 
+                                 duration1: int, 
+                                 gap: int, 
+                                 duration2: int,
+                                 max_search_step: int = 20) -> Tuple[int, int]:
+        """
+        查找满足两个时间段占用的机械手空闲时间。
+        Constraint:
+          Slot1 starts at t1 >= start_search
+          Slot1 duration = duration1
+          Slot2 starts at t2 = t1 + duration1 + gap
+          Slot2 duration = duration2
+          Both Slot1 and Slot2 must be free in robot_timeline.
+        
+        Returns:
+            (t1, t2) start times for both slots.
+        """
+        timeline = self._get_robot_timeline(robot_name)
+        t_start = start_search
+        
+        # 简单迭代查找
+        for _ in range(max_search_step):
+            # 1. 找第一个 slot
+            t1 = _first_free_time_at(timeline, t_start, t_start + duration1)
+            
+            # 2. 计算对应的第二个 slot 时间
+            t2 = t1 + duration1 + gap
+            
+            # 3. 检查第二个 slot 是否可用
+            # _first_free_time_at 返回的是满足 [t, t+dur) 空闲的最早 t >= expected
+            # 我们需要严格检查 t2 是否可用，即 check if [t2, t2+dur2) overlaps with any interval
+            # 这里调用 _first_free_time_at(..., t2, ...) 如果返回 t2，说明 t2 可用
+            t2_actual = _first_free_time_at(timeline, t2, t2 + duration2)
+            
+            if t2_actual == t2:
+                # Slot2 也在预期位置可用 -> 找到解
+                return t1, t2
+            else:
+                # Slot2 不可用 (t2_actual > t2)
+                # 这意味着我们需要推迟 t1。
+                # 简单策略：t_start = t1 + 1 (或者更激进：从 t2_actual 反推?)
+                # 如果以 t2_actual 作为 Slot2 的开始，那么 new_t1 = t2_actual - gap - duration1
+                # 但需要保证 new_t1 >= t1 + 1 (向前推进)
+                new_t1_candidate = t2_actual - gap - duration1
+                if new_t1_candidate > t1:
+                     t_start = new_t1_candidate
+                else:
+                     t_start = t1 + 1
+        return t_start, t_start + duration1 + gap
+    
+    def _remove_robot_estimate(self, robot_name: str, wafer_id: int, from_loc: str = "", to_loc: str = "") -> None:
+        """
+        从机械手时间轴移除指定晶圆的预估操作（当实际执行时）。
+        由 (wafer_id, from_loc, to_loc) 唯一确定一个预估。
+        
+        Args:
+            robot_name: 机械手名称（"TM2" 或 "TM3"）
+            wafer_id: 晶圆编号
+            from_loc: 起始位置
+            to_loc: 目标位置
+        """
+        timeline = self._get_robot_timeline(robot_name)
+        # 移除匹配的区间
+        # 如果 from_loc/to_loc 为空，则移除所有该 wafer_id 的区间（兼容旧行为，但不建议）
+        if not from_loc and not to_loc:
+             timeline[:] = [itv for itv in timeline if itv.tok_key != wafer_id]
+        else:
+             timeline[:] = [itv for itv in timeline if not (itv.tok_key == wafer_id and itv.from_loc == from_loc and itv.to_loc == to_loc)]
+
     def _track_wafer_statistics(self, t_name: str, wafer_id: int, 
                                  start_time: int, enter_new: int) -> None:
         """
@@ -942,6 +1064,8 @@ class Petri:
         self._per_wafer_reward = 0.0  # 重置单片完工奖励
         self.wafer_stats = {}  # 重置晶圆滞留时间统计
         self._s5_first_estimate = {}  # 重置 s5 首次预估
+        self._tm2_timeline = []  # 重置 TM2 时间轴
+        self._tm3_timeline = []  # 重置 TM3 时间轴
         self.entered_wafer_count = 0  # 重置已进入系统的晶圆数
         self.done_count = 0           # 重置已完成的晶圆数
         self.resident_violation_count = 0 # 重置驻留违规计数
@@ -1355,23 +1479,65 @@ class Petri:
                     expected_enter_s1 = enter_new + self.T_transport + self.T_load
                     release_s1 = expected_enter_s1 + place_s1.processing_time
                     
-                    # 预估 s5 进入时间
+                    # 预估 s5 进入时间：考虑 TM2 时间轴（s1→s5 运输使用 TM2）
+                    # 缺陷修复：需同时预约 s5->LP_done 的出料操作
                     transport_s1_to_s5 = self.T_load * 2 + self.T_transport
-                    expected_enter_s5 = release_s1 + transport_s1_to_s5
+                    transport_s5_out = self.T_load * 2 + self.T_transport # s5 -> LP_done
+                    
+                    # Gap = s5 processing time
+                    s5_proc_time = place_s5.processing_time
+                    
+                    # 查询 TM2 链式时间轴
+                    # Slot1: s1 -> s5 (at t1, duration=transport_s1_to_s5)
+                    # Gap: s5_proc_time
+                    # Slot2: s5 -> LP_done (at t2, duration=transport_s5_out)
+                    t1, t2 = self._find_chained_robot_slot(
+                        "TM2",
+                        start_search=release_s1,
+                        duration1=transport_s1_to_s5,
+                        gap=s5_proc_time,
+                        duration2=transport_s5_out
+                    )
+                    
+                    earliest_tm2_free = t1
+                    
+                    # 实际进入 s5 的时间
+                    expected_enter_s5 = earliest_tm2_free + transport_s1_to_s5
+                                        
+                    # [s5对比] Log
+                    wait_time = earliest_tm2_free - release_s1
+                    if wait_time > 0:
+                        print(f"[s5对比] Route2 Wafer {wafer_id}: s1->s5. Robot Wait={wait_time}. Est Enter={expected_enter_s5} (vs ideal {release_s1 + transport_s1_to_s5})")
 
                     penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
 
                     if self.reward_config.get('release_violation_penalty', 1):
-                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
                         self._release_violation_penalty += penalty_s5
                     
                     release_s5 = corrected_enter_s5 + place_s5.processing_time
                     place_s5.add_release(wafer_id, release_s5)
+                    
+                    # 将 TM2 预估占用写入时间轴 (Inbound)
+                    self._add_robot_estimate("TM2", wafer_id, earliest_tm2_free, earliest_tm2_free + transport_s1_to_s5,
+                                             from_loc="s1", to_loc="s5")
+                    
+                    # 将 TM2 预估占用写入时间轴 (Outbound)
+                    # t2 是 Slot2 的开始时间
+                    self._add_robot_estimate("TM2", wafer_id, t2, t2 + transport_s5_out,
+                                             from_loc="s5", to_loc="LP_done")
+                    
                     # 记录 s5 首次预估释放时间（路线2）
                     if wafer_id not in self._s5_first_estimate:
                         self._s5_first_estimate[wafer_id] = release_s5
                 
-            elif t_name == "t_s1":
+            # 记录实际机械手占用（用于更新时间轴，使预估更准确）
+            tr_robot = self._get_transition_robot(t_name)
+            if tr_robot and wafer_id != -1:
+                # 记录实际占用区间 [start_time, enter_new)
+                # 不带 from_loc/to_loc，避免误删除
+                self._add_robot_estimate(tr_robot, wafer_id, start_time, enter_new)
+
+            if t_name == "t_s1":
                 # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
                 if "s1" in self.id2p_name:
                     s1_idx = self._get_place_index("s1")
@@ -1385,6 +1551,9 @@ class Petri:
             
             elif t_name == "u_s1_s5":
                 # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除；检查实际进入时间是否与其他晶圆冲突
+                # 清理 TM2 预估（实际执行时）
+                self._remove_robot_estimate("TM2", wafer_id, from_loc="s1", to_loc="s5")
+                
                 if "s1" in self.id2p_name:
                     s1_idx = self._get_place_index("s1")
                     self._pop_release(wafer_id, s1_idx)
@@ -1419,7 +1588,9 @@ class Petri:
                     place_s3 = self.marks[s3_idx]
                     place_s4 = self.marks[s4_idx]
                     place_s5 = self.marks[s5_idx]
-                    expected_enter_s3 = enter_new + self.T_load
+                    
+                    # ========== s2 → s3 预估（使用 TM3） ==========
+                    expected_enter_s3 = enter_new + self.T_load + self.T_transport
                     
                     # 检查 s3 违规并获取修正后的进入时间
                     penalty = 0.0
@@ -1428,10 +1599,22 @@ class Petri:
                         penalty_s3, corrected_enter_s3 = self._check_release_violation(s3_idx, expected_enter_s3)
                         penalty += penalty_s3
                     
-                    # 使用修正后的 s3 进入时间重新计算 s3 释放时间和 s4 进入时间
+                    # 使用修正后的 s3 进入时间重新计算 s3 释放时间
                     release_s3 = corrected_enter_s3 + place_s3.processing_time
-                    transport_s3_to_s4 = self.ttime * 3
-                    expected_enter_s4 = release_s3 + transport_s3_to_s4
+                    
+                    # ========== s3 → s4 预估（使用 TM3） ==========
+                    transport_s3_to_s4 = self.ttime * 3  # 合并的运输时间块
+                    
+                    # 查询 TM3 时间轴，获取最早可用时间
+                    tm3_timeline = self._get_robot_timeline("TM3")
+                    earliest_tm3_free_s3_s4 = _first_free_time_at(
+                        tm3_timeline,
+                        release_s3,  # 期望开始时间
+                        release_s3 + transport_s3_to_s4  # 期望结束时间
+                    )
+                    
+                    # 实际进入 s4 的时间 = TM3 可用时间 + 运输时间
+                    expected_enter_s4 = earliest_tm3_free_s3_s4 + transport_s3_to_s4
                     
                     # 检查 s4 违规并获取修正后的进入时间
                     corrected_enter_s4 = expected_enter_s4
@@ -1441,24 +1624,55 @@ class Petri:
                     
                     # 使用修正后的 s4 进入时间计算初步 s4 释放时间
                     release_s4 = corrected_enter_s4 + place_s4.processing_time
-                    transport_s4_to_s5 = self.ttime * 3
+                    
+                    # ========== s4 → s5 预估（使用 TM2） ==========
+                    # 缺陷修复：需同时预约 s5->LP_done 的出料操作
+                    transport_s4_to_s5 = self.ttime * 3  # 合并的运输时间块
+                    transport_s5_out = self.ttime * 3 # s5 -> LP_done
+                    
+                    # Gap = s5 processing time
+                    s5_proc_time = place_s5.processing_time
+                    
+                    # 查询 TM2 链式时间轴
+                    # Slot1: s4 -> s5 (at t1, duration=transport_s4_to_s5)
+                    # Gap: s5_proc_time
+                    # Slot2: s5 -> LP_done (at t2, duration=transport_s5_out)
+                    t1, t2 = self._find_chained_robot_slot(
+                        "TM2",
+                        start_search=release_s4,
+                        duration1=transport_s4_to_s5,
+                        gap=s5_proc_time,
+                        duration2=transport_s5_out
+                    )
+                    
+                    earliest_tm2_free_s4_s5 = t1
                     
                     # ========== 拉式预约：根据 s5 可用时间反推 s4 释放时间 ==========
                     s5_schedule = sorted(place_s5.release_schedule, key=lambda x: x[1])
                     if len(s5_schedule) >= place_s5.capacity:
                         # s5 满了，找第 (len - capacity) 个释放时间（即下一个可用 slot）
                         s5_available = s5_schedule[-place_s5.capacity][1]
-                        expected_enter_s5 = release_s4 + transport_s4_to_s5
+                        expected_enter_s5 = earliest_tm2_free_s4_s5 + transport_s4_to_s5
                         
                         if expected_enter_s5 < s5_available:
                             # 反推 s4 应该何时释放（晶圆在 s4 多停留）
                             s4_should_release = s5_available - transport_s4_to_s5
                             if s4_should_release > release_s4:
                                 release_s4 = s4_should_release
+                                # 重新计算 TM2 可用时间 (链式)
+                                t1, t2 = self._find_chained_robot_slot(
+                                    "TM2",
+                                    start_search=release_s4,
+                                    duration1=transport_s4_to_s5,
+                                    gap=s5_proc_time,
+                                    duration2=transport_s5_out
+                                )
+                                earliest_tm2_free_s4_s5 = t1
+
                             expected_enter_s5 = s5_available
                     else:
                         # s5 有空位，正常计算
-                        expected_enter_s5 = release_s4 + transport_s4_to_s5
+                        expected_enter_s5 = earliest_tm2_free_s4_s5 + transport_s4_to_s5
                     
                     # 计算 s5 释放时间
                     release_s5 = expected_enter_s5 + place_s5.processing_time
@@ -1466,9 +1680,27 @@ class Petri:
                     place_s3.add_release(wafer_id, release_s3)
                     place_s4.add_release(wafer_id, release_s4)
                     place_s5.add_release(wafer_id, release_s5)
-                    # 记录 s5 首次预估释放时间（路线1）
+
                     if wafer_id not in self._s5_first_estimate:
                         self._s5_first_estimate[wafer_id] = release_s5
+                    
+                    # 写入各阶段预估占用
+                    self._add_robot_estimate("TM3", wafer_id, earliest_tm3_free_s3_s4, earliest_tm3_free_s3_s4 + transport_s3_to_s4,
+                                             from_loc="s3", to_loc="s4")
+                    self._add_robot_estimate("TM2", wafer_id, earliest_tm2_free_s4_s5, earliest_tm2_free_s4_s5 + transport_s4_to_s5,
+                                             from_loc="s4", to_loc="s5")
+                    
+                    # 写入 s5->LP_done 预估 (Outbound)
+                    # t2 是 Slot2 的开始时间
+                    self._add_robot_estimate("TM2", wafer_id, t2, t2 + transport_s5_out,
+                                             from_loc="s5", to_loc="LP_done")
+                    
+                    # [s5对比] Log
+                    tm3_wait = earliest_tm3_free_s3_s4 - release_s3
+                    tm2_wait = earliest_tm2_free_s4_s5 - release_s4
+                    if tm3_wait > 0 or tm2_wait > 0:
+                        print(f"[s5对比] Route1 Wafer {wafer_id}: s2->s3->s4->s5. TM3 Wait={tm3_wait}, TM2 Wait={tm2_wait}. Est Enter s5={expected_enter_s5}")
+
                     self._release_violation_penalty += penalty
                 
             elif t_name == "t_s3":
@@ -1485,12 +1717,18 @@ class Petri:
                 
             elif t_name == "u_s3_s4":
                 # 晶圆离开 s3：从 s3 队列移除
+                # 清理 TM3 预估（实际执行时，对应 s3->s4）
+                self._remove_robot_estimate("TM3", wafer_id, from_loc="s3", to_loc="s4")
+                
                 if "s3" in self.id2p_name:
                     s3_idx = self._get_place_index("s3")
                     self._pop_release(wafer_id, s3_idx)
             
             elif t_name == "u_s4_s5":
                 # 路线1：离开 s4(LLD)，更新 s5 的释放时间（已在 u_s2_s3 时添加）；再从 s4 队列移除
+                # 清理 TM2 预估（实际执行时，对应 s4->s5）
+                self._remove_robot_estimate("TM2", wafer_id, from_loc="s4", to_loc="s5")
+                
                 if "s4" in self.id2p_name and "s5" in self.id2p_name:
                     s4_idx = self._get_place_index("s4")
                     s5_idx = self._get_place_index("s5")
@@ -1528,6 +1766,9 @@ class Petri:
                 
             elif t_name == "u_s5_LP_done":
                 # 晶圆离开 s5：从 s5 队列移除
+                # 清理 TM2 预估（实际执行时，对应 s5->LP_done）
+                self._remove_robot_estimate("TM2", wafer_id, from_loc="s5", to_loc="LP_done")
+                
                 if "s5" in self.id2p_name:
                     s5_idx = self._get_place_index("s5")
                     self._pop_release(wafer_id, s5_idx)
@@ -2458,26 +2699,28 @@ def main():
     model = Petri()
     model.reset()
 
-    wait_id = 10
+    wait_id = 999
     print("Transitions:", model.id2t_name)
     print("Places:", model.id2p_name)
     print("-" * 70)
 
-    max_steps = 300
+    max_steps = 1000
     for step_i in range(max_steps):
         enabled = model.get_enable_t()
-        enabled.append(wait_id)
+        # print(f"Step {step_i} Enabled: {enabled}") 
 
-        t = int(np.random.choice(enabled))
-        if t==wait_id:
-           print(f"  -> fire t=wait  at time={model.time}")
-        else:
+        
+        # 优先选择非 wait 变迁
+        real_transitions = [t for t in enabled if t != wait_id]
+        
+        if real_transitions:
+            t = int(np.random.choice(real_transitions))
             print(f"  -> fire t={t} ({model.id2t_name[t]})at time={model.time}")
-
-        if t == wait_id:
-            finish = model.step(wait=True)
-        else:
             finish = model.step(t=t, wait=False)
+        else:
+            t = wait_id
+            print(f"  -> fire t=wait  at time={model.time}")
+            finish = model.step(wait=True)
 
         if finish:
             print(f"[DONE] Finished at time={model.time}, step={step_i}")
