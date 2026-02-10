@@ -60,6 +60,7 @@ class PetriEnvConfig:
     stop_on_scrap: bool = True
     training_phase: int = 2
     max_wafers_in_system: int = 7
+    MAX_TIME: int = 7000  # 最大环境步数/时间
     
     # 奖励计算系数
     transport_overtime_coef: float = 3.0    # 运输超时惩罚系数 (原 Q1_p)
@@ -152,7 +153,8 @@ class PetriEnvConfig:
         lines.append(f"  n_wafer: {self.n_wafer}")
         lines.append(f"  training_phase: {self.training_phase}")
         lines.append(f"  stop_on_scrap: {self.stop_on_scrap}")
-        lines.append(f" max_wafers: {self.max_wafers_in_system}")
+        lines.append(f"  max_wafers: {self.max_wafers_in_system}")
+        lines.append(f"  MAX_TIME: {self.MAX_TIME}")
         
         # 奖励参数
         lines.append("\n【奖励参数】")
