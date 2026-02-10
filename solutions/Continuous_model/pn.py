@@ -327,6 +327,9 @@ class Petri:
         # {token_id: {enter_system, exit_system, chambers: {name: {enter, exit}}, transports: {name: {enter, exit}}}}
         self.wafer_stats: Dict[int, Dict[str, Any]] = {}
         
+        # s5 首次预估释放时间追踪：{wafer_id: first_estimated_release_time}
+        self._s5_first_estimate: Dict[int, int] = {}
+        
         # 可视化统计开关（训练模式下为 False，避免性能开销）
         self.enable_statistics = enable_statistics
 
@@ -938,6 +941,7 @@ class Petri:
         self._release_violation_penalty = 0.0  # 重置释放时间违规惩罚
         self._per_wafer_reward = 0.0  # 重置单片完工奖励
         self.wafer_stats = {}  # 重置晶圆滞留时间统计
+        self._s5_first_estimate = {}  # 重置 s5 首次预估
         self.entered_wafer_count = 0  # 重置已进入系统的晶圆数
         self.done_count = 0           # 重置已完成的晶圆数
         self.resident_violation_count = 0 # 重置驻留违规计数
@@ -1363,6 +1367,9 @@ class Petri:
                     
                     release_s5 = corrected_enter_s5 + place_s5.processing_time
                     place_s5.add_release(wafer_id, release_s5)
+                    # 记录 s5 首次预估释放时间（路线2）
+                    if wafer_id not in self._s5_first_estimate:
+                        self._s5_first_estimate[wafer_id] = release_s5
                 
             elif t_name == "t_s1":
                 # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
@@ -1459,6 +1466,9 @@ class Petri:
                     place_s3.add_release(wafer_id, release_s3)
                     place_s4.add_release(wafer_id, release_s4)
                     place_s5.add_release(wafer_id, release_s5)
+                    # 记录 s5 首次预估释放时间（路线1）
+                    if wafer_id not in self._s5_first_estimate:
+                        self._s5_first_estimate[wafer_id] = release_s5
                     self._release_violation_penalty += penalty
                 
             elif t_name == "t_s3":
@@ -1521,8 +1531,21 @@ class Petri:
                 if "s5" in self.id2p_name:
                     s5_idx = self._get_place_index("s5")
                     self._pop_release(wafer_id, s5_idx)
+                
+                # 打印 s5 首次预估 vs 实际离开时间对比
+                est = self._s5_first_estimate.get(wafer_id)
+                actual_leave = start_time  # u_s5_LP_done 的 start_time 即晶圆离开 s5 的时刻
+                if est is not None:
+                    delta = actual_leave - est
+                    route = wafer_route_type if wafer_route_type else '?'
+                    print(f"[s5对比] wafer {wafer_id} (路线{route}) | "
+                          f"首次预估释放: {est} | 实际离开: {actual_leave} | "
+                          f"差值: {delta:+d}s")
+                else:
+                    print(f"[s5对比] wafer {wafer_id} | 实际离开: {start_time} | 无首次预估记录")
             
             elif t_name == "t_LP_done":
+                # 记录 s5 实际离开时间到 wafer_stats（已在 _track_wafer_statistics 中处理）
                 # 晶圆完成加工，给予单片完工奖励
                 self._per_wafer_reward += self.R_done
                 self.entered_wafer_count -= 1
