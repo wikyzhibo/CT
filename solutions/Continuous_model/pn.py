@@ -1253,14 +1253,6 @@ class Petri:
         out_te = np.flatnonzero(mask)
         return out_te
 
-    def next_enable_time(self) -> int:
-        te = self._resource_enable()
-        if len(te) == 0:
-            return self.time + 1
-        earliest = INF
-        for t in te:
-            earliest = min(earliest, self._earliest_enable_time(t))
-        return int(earliest)
 
     def _fire(self, t: Union[int, List[int]]):
         start_time = self.time
@@ -2047,10 +2039,6 @@ class Petri:
             enabled = self.get_enable_t()
 
             t2 = self.time + 5
-            #if len(enabled) > 0:
-            #    t2 = self.time + 5   # 有其他动作可用，小步等待 5
-            #else:
-                #t2 = self.next_enable_time()  # 没有任何动作，跳到下一可使能时间
 
             # 累计连续 WAIT 时间
             self._consecutive_wait_time += (t2 - t1)
