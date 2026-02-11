@@ -1669,7 +1669,9 @@ class Petri:
                                 )
                                 earliest_tm2_free_s4_s5 = t1
 
-                            expected_enter_s5 = s5_available
+                            # 修复：不能强制等于 s5_available，因为 robot 可能因为繁忙而导致实际到达时间晚于 s5_available
+                            # 正确做法是基于重新计算的 t1 (earliest_tm2_free_s4_s5) 来计算预计到达时间
+                            expected_enter_s5 = earliest_tm2_free_s4_s5 + transport_s4_to_s5
                     else:
                         # s5 有空位，正常计算
                         expected_enter_s5 = earliest_tm2_free_s4_s5 + transport_s4_to_s5
