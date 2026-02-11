@@ -1,8 +1,8 @@
 {
     "n_hidden": 256,
     "n_layer": 4,
-    "total_batch": 50,
-    "sub_batch_size": 256,
+    "total_batch": 100,
+    "sub_batch_size": 128,
     "num_epochs": 10,
     "gamma": 0.999,
     "gae_lambda": 0.95,

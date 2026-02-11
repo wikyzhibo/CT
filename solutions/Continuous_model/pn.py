@@ -198,6 +198,8 @@ class Petri:
         self.D_Residual_time = config.D_Residual_time
         self.P_Residual_time = config.P_Residual_time
         self.c_release_violation = config.c_release_violation
+        self.enable_release_penalty_detection = config.enable_release_penalty_detection
+        self.enable_s5_availability_check = config.enable_s5_availability_check
         self.T_transport = config.T_transport
         self.T_load = config.T_load
         self.T_pm1_to_pm2 = config.T_pm1_to_pm2
@@ -530,7 +532,7 @@ class Petri:
         
         penalty = 0.0
         corrected_enter = expected_enter
-        if self.reward_config.get('release_violation_penalty', 1):
+        if self.enable_release_penalty_detection and self.reward_config.get('release_violation_penalty', 1):
             penalty, corrected_enter = self._check_release_violation(target_place_idx, expected_enter)
         
         # 使用修正后的进入时间重新计算释放时间
@@ -579,7 +581,7 @@ class Petri:
             
             # 检查下游违规并获取修正后的进入时间
             corrected_downstream_enter = downstream_enter
-            if self.reward_config.get('release_violation_penalty', 1):
+            if self.enable_release_penalty_detection and self.reward_config.get('release_violation_penalty', 1):
                 downstream_penalty, corrected_downstream_enter = self._check_release_violation(downstream_idx, downstream_enter)
                 penalty += downstream_penalty
             
@@ -1267,7 +1269,7 @@ class Petri:
             
         # ========== 类型 2 晶圆进入限制 (基于 s5 可用性) ==========
         # 如果类型 2 晶圆预计进入 s5 的时间早于 s5 的可用时间，则禁止进入
-        if "u_LP2_s1" in self.id2t_name and "s5" in self.id2p_name:
+        if self.enable_s5_availability_check and "u_LP2_s1" in self.id2t_name and "s5" in self.id2p_name:
             t_idx = self._get_transition_index("u_LP2_s1")
             
             # 只有当该动作尚未被禁用时才检查
@@ -1506,8 +1508,8 @@ class Petri:
                                         
                     # [s5对比] Log
                     wait_time = earliest_tm2_free - release_s1
-                    if wait_time > 0:
-                        print(f"[s5对比] Route2 Wafer {wafer_id}: s1->s5. Robot Wait={wait_time}. Est Enter={expected_enter_s5} (vs ideal {release_s1 + transport_s1_to_s5})")
+                    #if wait_time > 0:
+                    #    print(f"[s5对比] Route2 Wafer {wafer_id}: s1->s5. Robot Wait={wait_time}. Est Enter={expected_enter_s5} (vs ideal {release_s1 + transport_s1_to_s5})")
 
                     penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
 
@@ -1778,14 +1780,14 @@ class Petri:
                 # 打印 s5 首次预估 vs 实际离开时间对比
                 est = self._s5_first_estimate.get(wafer_id)
                 actual_leave = start_time  # u_s5_LP_done 的 start_time 即晶圆离开 s5 的时刻
-                if est is not None:
-                    delta = actual_leave - est
-                    route = wafer_route_type if wafer_route_type else '?'
-                    print(f"[s5对比] wafer {wafer_id} (路线{route}) | "
-                          f"首次预估释放: {est} | 实际离开: {actual_leave} | "
-                          f"差值: {delta:+d}s")
-                else:
-                    print(f"[s5对比] wafer {wafer_id} | 实际离开: {start_time} | 无首次预估记录")
+                #if est is not None:
+                    #delta = actual_leave - est
+                    #route = wafer_route_type if wafer_route_type else '?'
+                    #print(f"[s5对比] wafer {wafer_id} (路线{route}) | "
+                    #      f"首次预估释放: {est} | 实际离开: {actual_leave} | "
+                    #      f"差值: {delta:+d}s")
+                #else:
+                    #print(f"[s5对比] wafer {wafer_id} | 实际离开: {start_time} | 无首次预估记录")
             
             elif t_name == "t_LP_done":
                 # 记录 s5 实际离开时间到 wafer_stats（已在 _track_wafer_statistics 中处理）

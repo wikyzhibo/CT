@@ -52,6 +52,8 @@ class PetriEnvConfig:
     D_Residual_time: int = 10
     P_Residual_time: int = 15
     c_release_violation: float = 0.1
+    enable_release_penalty_detection: bool = False
+    enable_s5_availability_check: bool = False
     T_transport: int = 5
     T_load: int = 5
     T_pm1_to_pm2: int = 5
