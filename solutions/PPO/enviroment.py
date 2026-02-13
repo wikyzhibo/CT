@@ -162,6 +162,10 @@ class Env_PN(EnvBase):
         # wafer 数量（从 LP 初始 token 数获取）
         self.n_wafer = config.n_wafer
 
+        # 观测特征开关
+        self.obs_features = config.obs_features or {}
+        self.obs_dim = self._calc_obs_dim()
+
         # 计算加工腔室数量（用于增强观测）
         self.chamber_indices = [
             i for i, place in enumerate(self.net.marks) if place.type == 1
@@ -177,13 +181,28 @@ class Env_PN(EnvBase):
             seed = torch.empty((), dtype=torch.int64).random_().item()
         self.set_seed(seed)
 
+    def _calc_obs_dim(self):
+        """根据启用的观测特征计算 obs 维度"""
+        MAX_WAFERS = 12
+        per_wafer = 6  # 基础 6 元组
+        if self.obs_features.get("wafer_progress"):
+            per_wafer += 2  # step + remaining_steps
+        dim = MAX_WAFERS * per_wafer
+        if self.obs_features.get("robot_status"):
+            dim += 4  # tm2_busy, tm3_busy, tm2_free_in, tm3_free_in
+        if self.obs_features.get("chamber_occupancy"):
+            dim += 6  # s1_occ, s3_occ, s5_occ, lp1_rem, lp2_rem, done_count
+        if self.obs_features.get("release_times"):
+            dim += 3  # s1_rel, s3_rel, s5_rel
+        if self.obs_features.get("global_progress"):
+            dim += 3  # done_pct, time_pct, entered_count
+        if self.obs_features.get("urgency_summary"):
+            dim += 2  # n_critical, min_scrap_time
+        return dim
+
     def _make_spec(self):
-        # 观测维度 = n_wafer * 6 (每个 wafer 的六元组)
-        # 六元组: (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
-        # 双路线：最多 9 个晶圆同时可见（s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1）
-        obs_dim = 12 * 6
         self.observation_spec = Composite(
-            observation=Unbounded(shape=(obs_dim,), dtype=torch.int64, device=self.device),
+            observation=Unbounded(shape=(self.obs_dim,), dtype=torch.int64, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
             shape=()
@@ -206,81 +225,216 @@ class Env_PN(EnvBase):
 
     def _build_obs(self):
         """
-        构建观测向量：只展示机械手可操作的 wafer 信息
-        每个 wafer 包含: (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
+        构建观测向量。
+
+        基础 per-wafer 特征 (6 元组):
+            (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
+
+        可选增强特征（通过 obs_features 配置开关控制）:
+            robot_status:      TM2/TM3 忙碌 + 最早空闲时间（4 标量）
+            chamber_occupancy: s1/s3/s5/LP1/LP2/LP_done 占用数（6 标量）
+            release_times:     s1/s3/s5 最早释放时间差（3 标量）
+            wafer_progress:    per-wafer step + remaining_steps（12×2=24）
+            global_progress:   done_pct + time_pct + entered_count（3 标量）
+            urgency_summary:   n_critical + min_scrap_time（2 标量）
 
         选择逻辑：
-        1. 优先收集所有在加工腔室（type=1）、运输位（type=2）和无驻留约束腔室（type=5）中的 wafer
-        2. 如果不满 MAX_WAFERS 个，分别从 LP1 和 LP2（type=3）中各取队首的 1 个 wafer
-        3. 不够则用全零的 6 元组补齐
-        4. 按 token_id 升序排列后输出
-
-        观测维度 = 9 * 6 = 54
+        1. 优先收集加工区（type=1/2/5）wafer
+        2. 不满 MAX_WAFERS 则从 LP1/LP2 各取 1 个队首
+        3. 全零补齐，按 token_id 升序排列
         """
-        MAX_WAFERS = 12  # 双路线：s1:2 + s2:1 + s3:4 + s4:1 + s5:2 + LP1:1 + LP2:1
+        MAX_WAFERS = 12
+        include_progress = self.obs_features.get("wafer_progress", False)
 
-        # 收集加工区（type=1, 2, 5）的 wafer 信息
-        processing_wafers = {}  # token_id -> (token_id, place_idx, place_type, stay_time, time_to_scrap, color)
-        lp1_wafers = []  # LP1 中的 wafer 列表，按队列顺序（队首在前）
-        lp2_wafers = []  # LP2 中的 wafer 列表，按队列顺序（队首在前）
+        # ── 收集 wafer 信息 ──
+        processing_wafers = {}  # token_id -> tuple
+        lp1_wafers = []
+        lp2_wafers = []
+        scrap_times_for_urgency = []  # 用于 urgency_summary
 
         for p_idx, place in enumerate(self.net.marks):
-            # 跳过资源库所（type=4 且名称以 r_ 开头）和终点（LP_done）
             if place.type == 4:
                 continue
 
             for tok in place.tokens:
                 if tok.token_id < 0:
-                    continue  # 跳过无效 token
+                    continue
 
                 stay_time = int(tok.stay_time)
-                color = getattr(tok, 'color', 0)  # 获取晶圆颜色
+                color = getattr(tok, 'color', 0)
 
                 # 计算距离报废时间
-                if place.type == 1:  # 加工腔室（有驻留约束）
+                if place.type == 1:
                     time_to_scrap = 20 - (stay_time - place.processing_time)
-                elif place.type == 2:  # 运输位
+                elif place.type == 2:
                     time_to_scrap = 10 - stay_time
-                elif place.type == 5:  # 无驻留约束腔室（s2/s4）
-                    time_to_scrap = -1  # 无报废风险
-                else:  # LP1/LP2 等
-                    time_to_scrap = -1  # 无报废风险
+                else:
+                    time_to_scrap = -1
 
-                wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap, color)
+                # 基础 6 元组
+                wafer_tuple = [tok.token_id, p_idx, place.type, stay_time, time_to_scrap, color]
 
-                if place.type in (1, 2, 5):  # 加工腔室、运输位或无驻留约束腔室
-                    processing_wafers[tok.token_id] = wafer_tuple
-                elif place.type == 3:  # LP1 或 LP2
+                # 可选：per-wafer 工序进度
+                if include_progress:
+                    step = getattr(tok, 'step', 0)
+                    route_type = getattr(tok, 'route_type', 1)
+                    route_cfg = self.net.ROUTE_CONFIG.get(route_type, [])
+                    remaining = max(0, len(route_cfg) - step)
+                    wafer_tuple.extend([step, remaining])
+
+                if place.type in (1, 2, 5):
+                    processing_wafers[tok.token_id] = tuple(wafer_tuple)
+                    if time_to_scrap >= 0:
+                        scrap_times_for_urgency.append(time_to_scrap)
+                elif place.type == 3:
                     if place.name == "LP1":
-                        lp1_wafers.append(wafer_tuple)
+                        lp1_wafers.append(tuple(wafer_tuple))
                     elif place.name == "LP2":
-                        lp2_wafers.append(wafer_tuple)
+                        lp2_wafers.append(tuple(wafer_tuple))
 
-        # 选择要展示的 wafer
         selected_wafers = list(processing_wafers.values())
-
-        # 如果加工区 wafer 不满 MAX_WAFERS 个，从 LP1 取 1 个队首 wafer
         if len(selected_wafers) < MAX_WAFERS and len(lp1_wafers) > 0:
             selected_wafers.append(lp1_wafers[0])
-
-        # 如果仍不满 MAX_WAFERS 个，从 LP2 取 1 个队首 wafer
         if len(selected_wafers) < MAX_WAFERS and len(lp2_wafers) > 0:
             selected_wafers.append(lp2_wafers[0])
-
-        # 按 token_id 升序排列
         selected_wafers.sort(key=lambda x: x[0])
 
-        # 构建观测向量（6 元组）
+        # ── 拼接 obs 向量 ──
         obs = []
+
+        # 全局特征（前缀）
+        if self.obs_features.get("robot_status"):
+            obs.extend(self._obs_robot_status())
+        if self.obs_features.get("chamber_occupancy"):
+            obs.extend(self._obs_chamber_occupancy())
+        if self.obs_features.get("release_times"):
+            obs.extend(self._obs_release_times())
+        if self.obs_features.get("global_progress"):
+            obs.extend(self._obs_global_progress())
+        if self.obs_features.get("urgency_summary"):
+            obs.extend(self._obs_urgency_summary(scrap_times_for_urgency))
+
+        # Per-wafer 特征
+        per_wafer_dim = 8 if include_progress else 6
         for i in range(MAX_WAFERS):
             if i < len(selected_wafers):
-                tid, p_idx, p_type, stay, scrap_time, color = selected_wafers[i]
-                obs.extend([tid, p_idx, p_type, stay, scrap_time, color])
+                obs.extend(selected_wafers[i])
             else:
-                # 不够则用全零补齐
-                obs.extend([0, 0, 0, 0, 0, 0])
+                obs.extend([0] * per_wafer_dim)
 
         return np.array(obs, dtype=np.int64)
+
+    # ========== 观测辅助方法 ==========
+
+    def _obs_robot_status(self):
+        """
+        机械手状态：[tm2_busy, tm3_busy, tm2_free_in, tm3_free_in]
+        busy: 1=忙碌（资源库所为空），0=空闲
+        free_in: 距最早空闲的时间差（秒），空闲时为 0
+        """
+        net = self.net
+        t_now = net.time
+
+        # TM2 忙碌状态
+        tm2_busy = 0
+        if "r_TM2" in net.id2p_name:
+            tm2_idx = net.id2p_name.index("r_TM2")
+            if net.m[tm2_idx] == 0:
+                tm2_busy = 1
+
+        # TM3 忙碌状态
+        tm3_busy = 0
+        if "r_TM3" in net.id2p_name:
+            tm3_idx = net.id2p_name.index("r_TM3")
+            if net.m[tm3_idx] == 0:
+                tm3_busy = 1
+
+        # 最早空闲时间（从时间轴预估）
+        def earliest_free(timeline):
+            if not timeline:
+                return 0
+            # 找最早结束时间 >= t_now 的区间
+            max_end = 0
+            for itv in timeline:
+                if itv.end > t_now:
+                    max_end = max(max_end, itv.end)
+            return max(0, max_end - t_now)
+
+        tm2_free_in = earliest_free(net._tm2_timeline)
+        tm3_free_in = earliest_free(net._tm3_timeline)
+
+        return [tm2_busy, tm3_busy, int(tm2_free_in), int(tm3_free_in)]
+
+    def _obs_chamber_occupancy(self):
+        """
+        腔室占用数：[s1_occ, s3_occ, s5_occ, lp1_rem, lp2_rem, done_count]
+        直接返回 token 数量（整数），智能体可推断负载状况
+        """
+        net = self.net
+
+        def count_tokens(name):
+            if name not in net.id2p_name:
+                return 0
+            idx = net.id2p_name.index(name)
+            return len(net.marks[idx].tokens)
+
+        return [
+            count_tokens("s1"),
+            count_tokens("s3"),
+            count_tokens("s5"),
+            count_tokens("LP1"),
+            count_tokens("LP2"),
+            count_tokens("LP_done"),
+        ]
+
+    def _obs_release_times(self):
+        """
+        腔室最早释放时间差：[s1_rel_delta, s3_rel_delta, s5_rel_delta]
+        = earliest_release - current_time，无预约则 -1
+        """
+        net = self.net
+        t_now = net.time
+        result = []
+        for name in ["s1", "s3", "s5"]:
+            if name not in net.id2p_name:
+                result.append(-1)
+                continue
+            idx = net.id2p_name.index(name)
+            place = net.marks[idx]
+            # release_schedule 是 deque[(token_id, release_time), ...]
+            if not place.release_schedule:
+                result.append(-1)
+            else:
+                earliest = min(rt for _, rt in place.release_schedule)
+                result.append(max(0, earliest - t_now))
+        return result
+
+    def _obs_global_progress(self):
+        """
+        全局进度指标：[done_pct, time_pct, entered_count]
+        百分比取整保持 int64（0~100）
+        """
+        net = self.net
+        n_wafer = getattr(net, 'n_wafer', 12)
+        max_time = getattr(net, 'MAX_TIME', 7000)
+        done_count = getattr(net, 'done_count', 0)
+        entered = getattr(net, 'entered_wafer_count', 0)
+
+        done_pct = int(done_count * 100 / max(1, n_wafer))
+        time_pct = int(net.time * 100 / max(1, max_time))
+        return [done_pct, time_pct, entered]
+
+    def _obs_urgency_summary(self, scrap_times):
+        """
+        紧急程度汇总：[n_critical, min_scrap_time]
+        n_critical: time_to_scrap < 5 的 wafer 数
+        min_scrap_time: 所有有报废风险 wafer 中最小的 time_to_scrap，无则 -1
+        """
+        if not scrap_times:
+            return [0, -1]
+        n_critical = sum(1 for t in scrap_times if t < 5)
+        min_scrap = min(scrap_times)
+        return [n_critical, min_scrap]
 
     def _reset(self, td_params):
         self.net.reset()
@@ -411,6 +565,10 @@ class Env_PN_Concurrent(EnvBase):
         
         self.detailed_reward = detailed_reward
         self.n_wafer = config.n_wafer
+
+        # 观测特征开关（复用 Env_PN 的逻辑）
+        self.obs_features = config.obs_features or {}
+        self.obs_dim = Env_PN._calc_obs_dim(self)
         
         self._make_spec()
         if seed is None:
@@ -418,9 +576,8 @@ class Env_PN_Concurrent(EnvBase):
         self.set_seed(seed)
 
     def _make_spec(self):
-        obs_dim = 12 * 6  # 与 Env_PN 相同
         self.observation_spec = Composite(
-            observation=Unbounded(shape=(obs_dim,), dtype=torch.int64, device=self.device),
+            observation=Unbounded(shape=(self.obs_dim,), dtype=torch.int64, device=self.device),
             action_mask_tm2=Binary(n=self.n_actions_tm2, dtype=torch.bool),
             action_mask_tm3=Binary(n=self.n_actions_tm3, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
@@ -441,48 +598,7 @@ class Env_PN_Concurrent(EnvBase):
 
     def _build_obs(self):
         """复用 Env_PN 的观测构建逻辑"""
-        MAX_WAFERS = 12
-        processing_wafers = {}
-        lp1_wafers = []
-        lp2_wafers = []
-
-        for p_idx, place in enumerate(self.net.marks):
-            if place.type == 4:
-                continue
-            for tok in place.tokens:
-                if tok.token_id < 0:
-                    continue
-                stay_time = int(tok.stay_time)
-                color = getattr(tok, 'color', 0)
-                if place.type == 1:
-                    time_to_scrap = 20 - (stay_time - place.processing_time)
-                elif place.type == 2:
-                    time_to_scrap = 10 - stay_time
-                else:
-                    time_to_scrap = -1
-                wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap, color)
-                if place.type in (1, 2, 5):
-                    processing_wafers[tok.token_id] = wafer_tuple
-                elif place.type == 3:
-                    if place.name == "LP1":
-                        lp1_wafers.append(wafer_tuple)
-                    elif place.name == "LP2":
-                        lp2_wafers.append(wafer_tuple)
-
-        selected_wafers = list(processing_wafers.values())
-        if len(selected_wafers) < MAX_WAFERS and len(lp1_wafers) > 0:
-            selected_wafers.append(lp1_wafers[0])
-        if len(selected_wafers) < MAX_WAFERS and len(lp2_wafers) > 0:
-            selected_wafers.append(lp2_wafers[0])
-        selected_wafers.sort(key=lambda x: x[0])
-
-        obs = []
-        for i in range(MAX_WAFERS):
-            if i < len(selected_wafers):
-                obs.extend(selected_wafers[i])
-            else:
-                obs.extend([0, 0, 0, 0, 0, 0])
-        return np.array(obs, dtype=np.int64)
+        return Env_PN._build_obs(self)
 
     def _build_action_masks(self):
         """构建 TM2/TM3 各自的动作掩码"""

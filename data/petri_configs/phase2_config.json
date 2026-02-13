@@ -40,5 +40,13 @@
     "start_place_names": null,
     "end_place_name": "LP_done",
     "no_residence_place_names": null,
-    "place_display_names": null
+    "place_display_names": null,
+    "obs_features": {
+        "robot_status": true,
+        "chamber_occupancy": false,
+        "release_times": false,
+        "wafer_progress": false,
+        "global_progress": false,
+        "urgency_summary": false
+    }
 }

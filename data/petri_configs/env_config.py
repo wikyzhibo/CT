@@ -10,6 +10,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
 
+def _default_obs_features() -> Dict[str, bool]:
+    """观测特征开关默认值（全部关闭，保持向后兼容）"""
+    return {
+        "robot_status":       False,  # TM2/TM3 忙碌 + 最早空闲时间（4 标量）
+        "chamber_occupancy":  False,  # s1/s3/s5/LP1/LP2/LP_done 占用率（6 标量）
+        "release_times":      False,  # s1/s3/s5 最早释放时间（3 标量）
+        "wafer_progress":     False,  # per-wafer 增加 step + remaining_steps（12×2=24）
+        "global_progress":    False,  # done_ratio + time_ratio + entered_count（3 标量）
+        "urgency_summary":    False,  # n_critical + min_time_to_scrap（2 标量）
+    }
+
+
 def _default_reward_config() -> Dict[str, int]:
     return {
         "proc_reward": 1,
@@ -88,9 +100,19 @@ class PetriEnvConfig:
     # 库所显示名（用于统计/甘特图），可选
     place_display_names: Optional[Dict[str, str]] = None
 
+    # 观测特征开关：控制 _build_obs 中各类增强特征是否启用
+    obs_features: Optional[Dict[str, bool]] = None
+
     def __post_init__(self) -> None:
         if self.reward_config is None:
             self.reward_config = _default_reward_config()
+        if self.obs_features is None:
+            self.obs_features = _default_obs_features()
+        else:
+            # 用默认值填充缺失的 key
+            defaults = _default_obs_features()
+            for k, v in defaults.items():
+                self.obs_features.setdefault(k, v)
 
     def format(self, detailed: bool = False) -> str:
         """
@@ -133,6 +155,10 @@ class PetriEnvConfig:
         if self.no_residence_place_names:
             lines.append(f"  无驻留腔室: {sorted(self.no_residence_place_names)}")
         
+        # 观测特征（仅显示启用的）
+        enabled_features = [k for k, v in self.obs_features.items() if v]
+        if enabled_features:
+            lines.append(f"  观测特征: {enabled_features}")
 
         
         # 奖励配置（仅显示非默认值）
@@ -207,7 +233,11 @@ class PetriEnvConfig:
         else:
             lines.append("  place_display_names: None")
         
-
+        # 观测特征
+        lines.append("\n【观测特征】")
+        for key, value in sorted(self.obs_features.items()):
+            status = "✓" if value else "✗"
+            lines.append(f"  {status} {key}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")
