@@ -55,12 +55,16 @@ def get_config_path(phase: int, custom_config: str = None):
     Returns:
         配置文件的绝对路径
     """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    config_path = os.path.join(project_root, "data", "ppo_configs", custom_config)
+
     if custom_config:
         if os.path.isabs(custom_config):
-            return custom_config
+            return config_path
         else:
             # 相对于当前工作目录
-            return os.path.abspath(custom_config)
+            return os.path.abspath(config_path)
     
     # 默认配置：相对于项目根目录
     script_dir = os.path.dirname(os.path.abspath(__file__))

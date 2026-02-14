@@ -1,6 +1,6 @@
 import argparse
 import torch
-from solutions.PPO.enviroment import CT_v2
+from solutions.Td_petri.tdpn import TimedPetri
 from solutions.PPO.train import train
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
 from torchrl.envs.utils import check_env_specs
@@ -9,6 +9,7 @@ from data.ppo_configs.training_config import PPOTrainingConfig
 import warnings
 import os
 import sys
+from pathlib import Path
 
 warnings.filterwarnings(
     "ignore",
@@ -28,8 +29,8 @@ def create_env(device, seed=None):
     Returns:
         (train_env, eval_env): 训练和评估环境
     """
-    base_env1 = CT_v2(device=device, seed=seed)
-    base_env2 = CT_v2(device=device, seed=seed)
+    base_env1 = TimedPetri(device=device, seed=seed, reward_mode='time')
+    base_env2 = TimedPetri(device=device, seed=seed, reward_mode='time')
 
     transform = Compose([
         ActionMask(),
@@ -45,7 +46,7 @@ def create_env(device, seed=None):
     train_env = TransformedEnv(base_env1, transform)
     eval_env = TransformedEnv(base_env2, transform)
 
-    return train_env, eval_env
+    return train_env,eval_env
 
 
 def get_config_path(custom_config: str = None):
@@ -63,7 +64,9 @@ def get_config_path(custom_config: str = None):
             return custom_config
         else:
             # 相对于当前工作目录
-            return os.path.abspath(custom_config)
+            ROOT_DIR = Path(__file__).resolve().parents[2]
+            path = os.path.join(ROOT_DIR, "data", "ppo_configs", custom_config)
+            return os.path.abspath(path)
     
     # 默认配置：使用 tdpn_config.json（如果不存在则使用 phase2_config.json）
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -94,7 +97,7 @@ def train_tdpn(device, config_path: str = None, checkpoint_path: str = None, see
     """
     print("\n" + "=" * 60)
     print("[Td_petri] 开始训练")
-    print("  环境: CT_v2 (Timed Discrete Petri Net)")
+    print("  环境: TimedPetri (Timed Discrete Petri Net)")
     print("  动作空间: Chain-based")
     print("=" * 60)
 

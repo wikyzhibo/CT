@@ -14,11 +14,13 @@ class BasedToken:
     stay_time: int = 0
     token_id: int = -1  # wafer 唯一标识，-1 表示未分配
     machine: int = -1   # 分配的机器编号，-1 表示未分配
-    color: int = 0      # 晶圆颜色/路线类型：0=未分配, 1=路线1, 2=路线2
+    route_type: int = 0 # 路线类型：0=未分配, 1=路线1, 2=路线2
+    step: int = 0       # 当前工序步骤索引（0-based）
 
     def clone(self):
         return BasedToken(enter_time=self.enter_time, stay_time=self.stay_time, 
-                          token_id=self.token_id, machine=self.machine, color=self.color)
+                          token_id=self.token_id, machine=self.machine, 
+                          route_type=self.route_type, step=self.step)
 
 @dataclass
 class RobotSpec:
@@ -187,6 +189,10 @@ class SuperPetriBuilder:
         for route in routes:
             all_edges |= self.expand_route_to_edges(route)
 
+        # 2) 创建按机械手分组的运输库所 (容量=1)
+        self.add_place("d_TM2", tokens=0, ptime=self.d_ptime, capacity=1)
+        self.add_place("d_TM3", tokens=0, ptime=self.d_ptime, capacity=1)
+
         # 4) 为每条模块边 a->b 创建 u-d-t 子结构
         for a, b in sorted(all_edges):
             if a not in modules or b not in modules:
@@ -194,25 +200,24 @@ class SuperPetriBuilder:
 
             robot = self.pick_robot_for_edge(a, b, robots)
             r_place = f"r_{robot}"
+            
+            # 根据机械手选择运输库所
+            d_place = f"d_{robot}"  # d_TM2 or d_TM3
 
-            # 命名：u__A__B, d__B, t__B
+            # 命名：u__A__B, t__B
             u = f"u_{a}_{b}"
-            d = f"d_{b}"
             t = f"t_{b}"
 
             # u/t 变迁：ttime=2（统一）
             self.add_transition(u, ttime=self.default_ttime)
             self.add_transition(t, ttime=self.default_ttime)
 
-            # d 库所：ptime=3（统一），capacity=INF
-            self.add_place(d, tokens=0, ptime=self.d_ptime, capacity=2)
-
             # 基本弧：
-            # A + r -> u -> d -> t -> B + r
+            # A + r -> u -> d_robot -> t -> B + r
             self.add_arc(a, u, edge_weight)
             self.add_arc(r_place, u, 1)  # 卸载消耗机械手token
-            self.add_arc(u, d, edge_weight)
-            self.add_arc(d, t, edge_weight)
+            self.add_arc(u, d_place, edge_weight)
+            self.add_arc(d_place, t, edge_weight)
             self.add_arc(t, b, edge_weight)
             self.add_arc(t, r_place, 1)  # 装载归还机械手token
 
@@ -312,20 +317,20 @@ class SuperPetriBuilder:
                 if pname.startswith('r_'):
                     for _ in range(cnt):
                         place.append(BasedToken(enter_time=0))
-                # LP1 库所的初始 token 分配唯一 ID 和颜色1（路线1）
+                # LP1 库所的初始 token 分配唯一 ID，路线1，步骤0
                 elif pname == "LP1":
                     for _ in range(cnt):
-                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, color=1))
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, route_type=1, step=0))
                         token_id_counter += 1
-                # LP2 库所的初始 token 分配唯一 ID 和颜色2（路线2）
+                # LP2 库所的初始 token 分配唯一 ID，路线2，步骤0
                 elif pname == "LP2":
                     for _ in range(cnt):
-                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, color=2))
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, route_type=2, step=0))
                         token_id_counter += 1
                 # 单起点 LP 库所（向后兼容）
                 elif pname == "LP":
                     for tok_id in range(cnt):
-                        place.append(BasedToken(enter_time=0, token_id=tok_id, color=0))
+                        place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=0, step=0))
                 else:
                     for _ in range(cnt):
                         place.append(BasedToken(enter_time=0))

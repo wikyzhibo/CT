@@ -1,7 +1,7 @@
 /results/
 /.cursor/
 /solutions/PPO/saved_models/
-/solutions/PPO/data/
+# /solutions/PPO/data/
 /specs/
 AGENTS.md
 
@@ -53,3 +53,13 @@ Thumbs.db
 # Environment
 .env
 .env.local
+*.png
+solutions/Td_petri/RL2_job8.png
+.idea/CT.iml
+.idea/misc.xml
+.idea/CT.iml
+.idea/CT.iml
+.idea/CT.iml
+.idea/misc.xml
+*.json
+*.pt

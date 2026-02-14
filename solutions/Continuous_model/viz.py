@@ -1048,7 +1048,7 @@ class PetriVisualizer:
         }, batch_size=[1])
         
         with torch.no_grad():
-            with set_exploration_type(ExplorationType.RANDOM):
+            with set_exploration_type(ExplorationType.MODE):
                 td = self.policy(td)
         
         return td["action"].item()
@@ -3090,6 +3090,7 @@ def main():
     
     print()
     env = Env_PN()
+    env.net.enable_statistics = True  # Enable statistics tracking for visualization
     visualizer = PetriVisualizer(env, model_path=model_path)
     visualizer.run()
 
