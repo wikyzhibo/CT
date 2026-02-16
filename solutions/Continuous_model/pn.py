@@ -144,6 +144,181 @@ class Place:
         return min(rt for _, rt in self.release_schedule)
 
 
+@dataclass
+class TransitionFilter:
+    """变迁过滤器：描述一个变迁的使能条件（在 construct 阶段预计算）"""
+    t_idx: int                    # 变迁索引
+    t_name: str                   # 变迁名称
+    robot: str                    # 所属机械手 ("TM2" / "TM3")
+    # 路由过滤（仅 t_ 变迁需要）：
+    # 检查运输库所队头 token 的 (route_type, step) 是否在 allowed_route_steps 中
+    check_source_idx: int = -1    # 需要检查的源运输库所索引，-1=不检查
+    allowed_route_steps: Optional[Set[Tuple[int, int]]] = None  # 允许的 (route_type, step) 集合
+    # 容量约束（仅 u_ 变迁到有限容量腔室时需要）
+    capacity_place_idx: int = -1  # 需要检查容量的目标库所索引, -1=不检查
+    # 系统入口约束：是否是入口变迁（u_LP1_s1, u_LP2_s1）
+    is_entry: bool = False        # 是否受 entered_wafer_count 限制
+
+
+class TransitionManager:
+    """
+    变迁使能管理器：在 construct 阶段构建过滤器，运行时高效查询。
+    
+    整合了原 _resource_enable + get_enable_t + get_enable_t_by_robot 的全部逻辑：
+    1. 基本 pre/cap mask
+    2. 容量约束（预计算哪些 u_ 变迁需要检查目标库所容量）
+    3. 系统晶圆数限制（入口变迁标记）
+    4. t_ 变迁路由过滤（预计算 allowed_route_steps）
+    5. 最早使能时间过滤
+    6. 按 TM2/TM3 分组返回
+    """
+    
+    def __init__(self, petri: "Petri"):
+        """从 Petri 网实例构建每个变迁的过滤器。"""
+        self._petri = petri
+        
+        # ---------- 预计算 allowed_route_steps ----------
+        # 对每个 t_ 变迁（装入腔室），从 ROUTE_CONFIG 推导允许的 (route_type, step) 组合
+        # 例如 t_s1 的目标是 "s1"，在 ROUTE_CONFIG 中 route1[0]="s1", route2[0]="s1"
+        # 所以 allowed = {(1,0), (2,0)}
+        target_to_route_steps: Dict[str, Set[Tuple[int, int]]] = {}
+        for route_type, route in petri.ROUTE_CONFIG.items():
+            for step_idx, target_name in enumerate(route):
+                if target_name not in target_to_route_steps:
+                    target_to_route_steps[target_name] = set()
+                target_to_route_steps[target_name].add((route_type, step_idx))
+        
+        # ---------- 预计算每个 u_ 变迁的容量约束目标 ----------
+        # 只有目标库所容量有限（非 INF）的 u_ 变迁需要额外容量检查
+        # 原 capacity_constraints: ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"), 
+        #   ("s3", "u_s2_s3"), ("s5", "u_s4_s5"), ("s5", "u_s1_s5")
+        # 这些都是 u_ 变迁将晶圆送往有限容量的加工腔室
+        u_trans_to_capacity_target: Dict[str, str] = {}
+        for t_name in petri.id2t_name:
+            if not t_name.startswith("u_"):
+                continue
+            # 从名称解析：u_{source}_{target}
+            parts = t_name.split("_", 2)  # ["u", source, target]
+            if len(parts) == 3:
+                target_name = parts[2]
+            else:
+                continue
+            # 检查目标库所是否有有限容量且是加工腔室
+            if target_name in petri.id2p_name:
+                p_idx = petri._get_place_index(target_name)
+                place = petri.marks[p_idx]
+                if place.capacity < 100:  # 有限容量（非 INF）
+                    u_trans_to_capacity_target[t_name] = target_name
+        
+        # ---------- 预计算 t_ 变迁的源运输库所索引 ----------
+        # t_ 变迁消耗 d_TM2 或 d_TM3 中的 token
+        t_trans_source: Dict[str, int] = {}
+        for t_name in petri.id2t_name:
+            if not t_name.startswith("t_"):
+                continue
+            t_idx = petri._get_transition_index(t_name)
+            pre_places = np.flatnonzero(petri.pre[:, t_idx] > 0)
+            for p_idx in pre_places:
+                p_name = petri.id2p_name[p_idx]
+                if p_name.startswith("d_"):  # 运输库所
+                    t_trans_source[t_name] = p_idx
+                    break
+        
+        # ---------- 构建所有过滤器 ----------
+        self.tm2_filters: List[TransitionFilter] = []
+        self.tm3_filters: List[TransitionFilter] = []
+        
+        for t_idx, t_name in enumerate(petri.id2t_name):
+            # 判断机械手归属
+            if t_name in TM2_TRANSITIONS:
+                robot = "TM2"
+            elif t_name in TM3_TRANSITIONS:
+                robot = "TM3"
+            else:
+                continue  # 不属于任何机械手的变迁跳过
+            
+            f = TransitionFilter(t_idx=t_idx, t_name=t_name, robot=robot)
+            
+            # t_ 变迁：设置路由过滤
+            if t_name.startswith("t_"):
+                target_name = t_name[2:]  # t_s1 -> s1
+                if target_name in target_to_route_steps:
+                    f.allowed_route_steps = target_to_route_steps[target_name]
+                if t_name in t_trans_source:
+                    f.check_source_idx = t_trans_source[t_name]
+            
+            # u_ 变迁：设置容量约束
+            if t_name.startswith("u_"):
+                if t_name in u_trans_to_capacity_target:
+                    cap_target = u_trans_to_capacity_target[t_name]
+                    f.capacity_place_idx = petri._get_place_index(cap_target)
+                
+                # 入口变迁标记
+                if t_name in ("u_LP1_s1", "u_LP2_s1"):
+                    f.is_entry = True
+            
+            if robot == "TM2":
+                self.tm2_filters.append(f)
+            else:
+                self.tm3_filters.append(f)
+    
+    def get_enable_t(self) -> Tuple[List[int], List[int]]:
+        """
+        返回 TM2/TM3 各自可用的变迁列表。
+        
+        Returns:
+            (tm2_enabled, tm3_enabled): 两个列表，分别是 TM2 和 TM3 当前可使能的变迁索引
+        """
+        petri = self._petri
+        
+        # ===== 1. 基本 pre/cap mask（向量化） =====
+        cond_pre = (petri.pre <= petri.m[:, None]).all(axis=0)
+        cond_cap = ((petri.m[:, None] + petri.pst) <= petri.k[:, None]).all(axis=0)
+        mask = cond_pre & cond_cap
+        
+        tm2_enabled = []
+        tm3_enabled = []
+        
+        for filters, result_list in [(self.tm2_filters, tm2_enabled), 
+                                     (self.tm3_filters, tm3_enabled)]:
+            for f in filters:
+                if not mask[f.t_idx]:
+                    continue
+                
+                # ===== 2. 入口变迁：系统晶圆数限制 =====
+                if f.is_entry and petri.entered_wafer_count >= petri.max_wafers_in_system:
+                    continue
+                
+                # ===== 3. u_ 容量约束：目标库所已满则不使能 =====
+                if f.capacity_place_idx >= 0:
+                    p_idx = f.capacity_place_idx
+                    if petri.m[p_idx] >= petri.marks[p_idx].capacity:
+                        continue
+                
+                # ===== 4. t_ 路由过滤：检查运输库所队头 token =====
+                if f.check_source_idx >= 0 and f.allowed_route_steps is not None:
+                    d_place = petri.marks[f.check_source_idx]
+                    if len(d_place.tokens) > 0:
+                        head_tok = d_place.head()
+                        if head_tok.route_type != 0:  # 跳过非晶圆 token
+                            if (head_tok.route_type, head_tok.step) not in f.allowed_route_steps:
+                                continue
+                
+                # ===== 5. 最早使能时间过滤 =====
+                pre_places = np.flatnonzero(petri.pre[:, f.t_idx] > 0)
+                earliest = 0
+                for p in pre_places:
+                    tok_enter = int(petri.marks[p].head().enter_time)
+                    tok_enter += int(petri.ptime[p])
+                    earliest = max(earliest, tok_enter)
+                if petri.time < earliest:
+                    continue
+                
+                result_list.append(f.t_idx)
+        
+        return tm2_enabled, tm3_enabled
+
+
 class Petri:
     def __init__(self, config: Optional[PetriEnvConfig] = None,
                  enable_statistics: bool = False) -> None:
@@ -319,6 +494,9 @@ class Petri:
         # 可视化统计开关（训练模式下为 False，避免性能开销)
         self.enable_statistics = enable_statistics
 
+        # 构建变迁使能管理器（预计算每个变迁的过滤器）
+        self._tm = TransitionManager(self)
+
     @staticmethod
     def _clone_marks(marks: List["Place"]) -> List[Place]:
         """克隆库所列表，确保使用 pn.py 中的 Place 类（带 release_schedule）"""
@@ -356,37 +534,7 @@ class Petri:
             指定类型的库所列表
         """
         return [p for p in self.marks if p.type == place_type]
-    
-    def _get_next_target(self, route_type: int, step: int) -> Optional[str]:
-        """
-        根据 (route_type, step) 获取下一个目标腔室名称。
-        
-        Args:
-            route_type: 路线类型 (1 或 2)
-            step: 当前工序步骤索引（0-based，表示已完成的步骤数）
-            
-        Returns:
-            目标腔室名称，如果步骤超出范围则返回 None
-        """
-        route = self.ROUTE_CONFIG.get(route_type, [])
-        if step < len(route):
-            return route[step]
-        return None
-    
-    def _can_enter_target(self, tok: BasedToken, target: str) -> bool:
-        """
-        检查 Token 是否可以进入指定目标腔室。
-        
-        Args:
-            tok: Token 对象
-            target: 目标腔室名称
-            
-        Returns:
-            True 如果 Token 的 (route_type, step) 允许进入该目标
-        """
-        expected_target = self._get_next_target(tok.route_type, tok.step)
-        return expected_target == target
-    
+
     def _build_release_chain(self) -> None:
         """
         构建释放时间链路映射。
@@ -1072,126 +1220,7 @@ class Petri:
         
         return int(earliest)
 
-    def _resource_enable(self):
-        # 双路线变迁:
-        # 路线1: ['u_LP1_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3', 
-        #         'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 库所: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5', 
-        #        'r_TM2', 'r_TM3', 'd_s1', 'd_s2', 'd_s3', 'd_s4', 'd_s5', 'd_LP_done']
-        
-        # 基本使能条件：前置库所有足够 token 且后置库所不超容量
-        cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
-        cond_cap = ((self.m[:, None] + self.pst) <= self.k[:, None]).all(axis=0)
-        mask = cond_pre & cond_cap
-        
-        # 双机械手容量约束：防止向已满的加工腔室发送晶圆
-        # s1 容量=2：当 s1 已满时，禁用 u_LP1_s1 和 u_LP2_s1
-        # s3 容量=4：当 s3 已满时，禁用 u_s2_s3
-        # s5 容量=2：当 s5 已满时，禁用 u_s4_s5 和 u_s1_s5
-        capacity_constraints = [
-            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),  # 双起点到 s1
-            ("s3", "u_s2_s3"),                        # 路线1: s2 -> s3
-            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),    # 路线1: s4 -> s5, 路线2: s1 -> s5
-        ]
-        for place_name, u_trans_name in capacity_constraints:
-            if place_name in self.id2p_name and u_trans_name in self.id2t_name:
-                p_idx = self._get_place_index(place_name)
-                t_idx = self._get_transition_index(u_trans_name)
-                if self.m[p_idx] >= self.marks[p_idx].capacity:
-                    mask[t_idx] = False
-        
-        # ========== 限制进入系统的晶圆数量 ==========
-        # 当已进入系统的晶圆数达到上限时，禁用 u_LP1_s1 和 u_LP2_s1
-        if self.entered_wafer_count >= self.max_wafers_in_system:
-            if "u_LP1_s1" in self.id2t_name:
-                t_idx = self._get_transition_index("u_LP1_s1")
-                mask[t_idx] = False
-            if "u_LP2_s1" in self.id2t_name:
-                t_idx = self._get_transition_index("u_LP2_s1")
-                mask[t_idx] = False
 
-        # ========== 步骤索引感知的路由约束 (u_变迁) ==========
-        # 使用 (route_type, step) 决定晶圆下一个目标
-        # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
-        
-        # 定义 u 变迁到其目标腔室的映射
-        u_trans_targets = {
-            "u_LP1_s1": "s1",
-            "u_LP2_s1": "s1",
-            "u_s1_s2": "s2",
-            "u_s1_s5": "s5",
-            "u_s2_s3": "s3",
-            "u_s3_s4": "s4",
-            "u_s4_s5": "s5",
-            "u_s5_LP_done": "LP_done",
-        }
-        
-        # 定义 u 变迁的源库所
-        u_trans_sources = {
-            "u_LP1_s1": "LP1",
-            "u_LP2_s1": "LP2",
-            "u_s1_s2": "s1",
-            "u_s1_s5": "s1",
-            "u_s2_s3": "s2",
-            "u_s3_s4": "s3",
-            "u_s4_s5": "s4",
-            "u_s5_LP_done": "s5",
-        }
-        
-        for u_name, target in u_trans_targets.items():
-            if u_name not in self.id2t_name:
-                continue
-            t_idx = self._get_transition_index(u_name)
-            if not mask[t_idx]:  # 已被禁用
-                continue
-            
-            # 获取源库所
-            source_name = u_trans_sources.get(u_name)
-            if source_name not in self.id2p_name:
-                continue
-            
-            source_idx = self._get_place_index(source_name)
-            source_place = self.marks[source_idx]
-            
-            if len(source_place.tokens) == 0:
-                continue
-            
-            # 检查队头晶圆的下一目标是否匹配
-            head_tok = source_place.head()
-            if not self._can_enter_target(head_tok, target):
-                mask[t_idx] = False
-
-        # ========== 运输库所 FIFO 约束 (t_变迁) ==========
-        # 对所有 d_ 开头的运输库所 (d_TM2, d_TM3等) 应用 FIFO 策略
-        # 确保从 d_xxx 取出的晶圆确实是去往该 t_变迁对应的目标腔室
-        for p_name in self.id2p_name:
-            if not p_name.startswith("d_"):
-                continue
-                
-            d_idx = self._get_place_index(p_name)
-            d_place = self.marks[d_idx]
-            
-            if len(d_place.tokens) > 0:
-                head_tok = d_place.head()
-                # 确保是 wafer token (有 route_type)
-                if head_tok.route_type == 0:
-                    continue
-                    
-                expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
-                
-                # 找到所有消费此 d_place 的变迁
-                consumers = np.where(self.pre[d_idx, :] > 0)[0]
-                for t_idx in consumers:
-                    t_name = self.id2t_name[t_idx]
-                    if t_name.startswith("t_") and mask[t_idx]:
-                        # t_name 格式为 t_{target}
-                        target = t_name[2:]
-                        if target != expected_target:
-                            mask[t_idx] = False
-        
-        out_te = np.flatnonzero(mask)
-        return out_te
 
 
     def _fire(self, t: Union[int, List[int]]):
@@ -1931,33 +1960,13 @@ class Petri:
 
 
     def get_enable_t(self) -> List[int]:
-        te = self._resource_enable()
-        use_t = []
-        for t in te:
-            el = self._earliest_enable_time(t=t)
-            if self.time >= el:
-                use_t.append(int(t))
-        return use_t
+        """返回所有可使能的变迁索引列表（兼容接口）。"""
+        tm2, tm3 = self._tm.get_enable_t()
+        return sorted(tm2 + tm3)
 
     def get_enable_t_by_robot(self) -> Tuple[List[int], List[int]]:
-        """
-        返回两个机械手各自可用的变迁列表。
-        
-        Returns:
-            (tm2_enabled, tm3_enabled): 两个列表，分别是 TM2 和 TM3 当前可使能的变迁索引
-        """
-        all_enabled = self.get_enable_t()
-        tm2_enabled = []
-        tm3_enabled = []
-        
-        for t in all_enabled:
-            t_name = self.id2t_name[t]
-            if t_name in TM2_TRANSITIONS:
-                tm2_enabled.append(t)
-            elif t_name in TM3_TRANSITIONS:
-                tm3_enabled.append(t)
-        
-        return tm2_enabled, tm3_enabled
+        """返回两个机械手各自可用的变迁列表。"""
+        return self._tm.get_enable_t()
 
 
     def _check_scrap(self, return_info: bool = False) -> bool | Tuple[bool, Optional[Dict]]:
