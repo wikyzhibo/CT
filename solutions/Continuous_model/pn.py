@@ -522,36 +522,62 @@ class Petri:
     def _get_transition_index(self, name: str) -> int:
         """获取变迁索引"""
         return self.id2t_name.index(name)
-    
-    def _get_marks_by_type(self, place_type: int) -> List[Place]:
-        """
-        获取指定类型的库所列表。
-        
-        Args:
-            place_type: 库所类型（1=加工腔室, 2=运输库所, 3=空闲库所, 4=资源库所, 5=无驻留约束腔室）
-            
-        Returns:
-            指定类型的库所列表
-        """
-        return [p for p in self.marks if p.type == place_type]
+
+    # ==================== Release subsystem ====================
+    #
+    # Release tracks estimated wafer arrival times at chambers,
+    # detects capacity conflicts early, and applies penalties to
+    # prevent "wafer arrives but chamber is full" deadlocks.
+    #
+    # Design principles:
+    #   1. Check-on-leave: violation detection only on first add
+    #      (when wafer leaves current chamber), not on update.
+    #   2. Estimate-then-refine: record with transport estimate,
+    #      update with actual time when wafer enters chamber.
+    #   3. Chain propagation: one operation propagates along the
+    #      release chain to all downstream chambers.
+    #   4. Dual-route separation: release_chain (route 1) and
+    #      release_chain_route2 (route 2) are independent.
+    #
+    # Function index (lifecycle order):
+    #   _build_release_chain     -> init: build chain mapping
+    #   _record_initial_release  -> first record + violation check
+    #   _chain_record_release    -> chain first-record downstream
+    #   _check_release_violation -> detect capacity conflict
+    #   _update_release          -> refine with actual enter time
+    #   _chain_update_release    -> chain refine downstream (no check)
+    #   _pop_release             -> remove on chamber exit
+    #
+    # Transition -> Release operation mapping:
+    #   u_LP1_s1 / u_LP2_s1 -> _record_initial_release(s1);
+    #                           route2 also reserves s5
+    #   t_s1                -> _update_release(s1, chain=False)
+    #   u_s1_s2             -> _pop_release(s1)
+    #   u_s1_s5             -> _pop_release(s1) + update_release(s5)
+    #   u_s2_s3             -> add_release(s3, s4, s5) + violation
+    #   t_s3                -> _update_release(s3, chain=True)
+    #                           -> chain updates s4, s5
+    #   u_s3_s4             -> _pop_release(s3)
+    #   t_s4                -> _update_release(s4, chain=False)
+    #   u_s4_s5             -> update_release(s5) + _pop_release(s4)
+    #   t_s5                -> _update_release(s5)
+    #   u_s5_LP_done        -> _pop_release(s5)
+    # ============================================================
 
     def _build_release_chain(self) -> None:
         """
-        构建释放时间链路映射。
+        构建释放时间链路映射（初始化时调用一次）。
         
         release_chain[place_idx] = (downstream_place_idx, transport_time)
         用于链式更新下游腔室的预估释放时间。
         
-        双路线：
-        路线1：LP1 -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
-        路线2：LP2 -> s1 -> s5 -> LP_done
+        构建两条链路：
+          路线1 (color=1): s1 -> s3 -> s4 -> s5
+          路线2 (color=2): s1 -> s5
+        运行时根据 wafer_color 选择对应链路进行传播。
         
         有驻留约束腔室：s1, s3, s5
         无驻留约束腔室：s2, s4（作为机械手交接点）
-        
-        注意：由于双路线在 s1 分流，release_chain 需要按颜色区分。
-        路线1的链路：s1 -> s3 -> s4 -> s5（s4 已纳入释放链，接受链式惩罚）。
-        路线2的链路：s1 -> s5（在运行时处理）。
         """
         self.release_chain: Dict[int, Tuple[int, int]] = {}
         
@@ -600,13 +626,13 @@ class Petri:
         """
         检查晶圆预计进入时间是否违反腔室的释放约束，并返回修正后的进入时间。
         
-        容量检查逻辑：
-        - release_schedule：记录**预估中**即将进入腔室的晶圆（已承诺但未到达）
-        - tokens：记录**实际已在**腔室中的晶圆
-        - 实际占用 = len(tokens) + len(release_schedule)（两者不重叠，因为进入腔室后会从 schedule 移除）
+        被 _record_initial_release 和 _chain_record_release 调用；
+        _update_release / _chain_update_release 不调用此方法（更新已有记录不应约束自己）。
         
-        违规条件：实际占用 >= capacity 且 expected_enter_time < earliest_release
-        如果违规，将 expected_enter_time 修正为 earliest_release，确保后续晶圆看到正确的释放时间。
+        判定流程：
+        1. 若 release_schedule 记录数 < 容量 -> 不违规
+        2. 否则取第 (len - capacity) 早的释放时间作为约束
+        3. 若预计进入时间早于该约束 -> 违规，返回惩罚并修正进入时间
         
         Args:
             place_idx: 目标腔室索引
@@ -615,7 +641,7 @@ class Petri:
         Returns:
             (penalty: float, corrected_enter_time: int)
             - penalty: 惩罚值（0 表示不违规）
-            - corrected_enter_time: 修正后的进入时间（如果违规则为 earliest_release，否则为 expected_enter_time）
+            - corrected_enter_time: 修正后的进入时间
         """
         place = self.marks[place_idx]
         actual_occupancy = len(place.release_schedule)
@@ -639,8 +665,15 @@ class Petri:
                                  chain_downstream: bool = False) -> float:
         """
         晶圆进入运输位时，记录初步预估的释放时间；可选链式传播到下游腔室。
+        
+        触发时机：u_LP1_s1 / u_LP2_s1（晶圆离开 LP 进入 d_s1）。
 
-        按「离开才检查」规则：离开 LP 时只对 s1 记录并检查，不链式传播。
+        执行流程：
+        1. 预估进入时间 = enter_d_time + T_transport + T_load
+        2. _check_release_violation 检查违规并修正
+        3. 释放时间 = 修正后进入时间 + processing_time
+        4. add_release 记录到目标腔室
+        5. 若 chain_downstream=True，调用 _chain_record_release 传播到下游
         
         Args:
             token_id: 晶圆编号
@@ -674,9 +707,18 @@ class Petri:
     def _chain_record_release(self, token_id: int, start_place_idx: int, 
                                start_release_time: int, wafer_color: int = 0) -> float:
         """
-        链式记录/更新下游腔室的预估释放时间。
+        链式首次记录下游腔室的预估释放时间。
         
-        对链上的每个下游腔室（包括 s4）进行释放违规检查并累加惩罚。
+        由 _record_initial_release（chain_downstream=True）触发。
+        沿释放链逐个下游腔室：计算进入时间 -> 违规检查 -> add_release -> 继续传播。
+        
+        与 _chain_update_release 的区别：
+        - 本方法是首次 add，会检查违规并施加惩罚
+        - _chain_update_release 是更新已有记录，不检查违规
+        
+        根据 wafer_color 选择链路：
+          color=1 -> release_chain (s1->s3->s4->s5)
+          color=2 -> release_chain_route2 (s1->s5)
         
         Args:
             token_id: 晶圆编号
@@ -728,9 +770,22 @@ class Petri:
                         place_idx: int, wafer_color: int = 0,
                         chain_downstream: bool = True) -> None:
         """
-        晶圆实际进入腔室时，更新精确的释放时间；可选链式更新下游。
+        晶圆实际进入腔室时，用精确时间替换先前的预估值，可选链式更新下游。
         
-        注意：更新操作不进行违规检测。按「离开才检查」规则，t_s1 时下游尚未写入，只更新 s1。
+        触发时机：t_s1 / t_s3 / t_s4 / t_s5（晶圆从运输位进入腔室）。
+        
+        执行流程：
+        1. 新释放时间 = actual_enter_time + processing_time
+        2. update_release 更新该腔室的记录
+        3. 若 chain_downstream=True，调用 _chain_update_release 更新下游
+        
+        重要：不调用 _check_release_violation（已有记录不应约束自己）。
+        
+        chain_downstream 使用场景：
+          t_s1 -> False（下游在离开 s2 时才写入，还不存在）
+          t_s3 -> True（链式更新 s4、s5）
+          t_s4 -> False（s5 在 u_s4_s5 时单独更新）
+          t_s5 -> True（默认）
         
         Args:
             token_id: 晶圆编号
@@ -748,11 +803,14 @@ class Petri:
     def _chain_update_release(self, token_id: int, start_place_idx: int, 
                                start_release_time: int, wafer_color: int = 0) -> None:
         """
-        链式更新下游腔室中指定晶圆的预估释放时间。
+        链式精确更新下游腔室中指定晶圆的预估释放时间。
         
-        重要：这是更新已有记录，不是添加新记录，因此：
-        1. 不调用 _check_release_violation（当前晶圆自己的记录不应约束自己）
-        2. 不施加惩罚
+        由 _update_release（chain_downstream=True）触发。
+        典型场景：t_s3 时链式更新 s4、s5 的预估时间。
+        
+        与 _chain_record_release 的区别：
+        - 本方法更新已有记录（update_release），不检查违规、不施加惩罚
+        - _chain_record_release 是首次添加记录（add_release），会检查违规
         
         Args:
             token_id: 晶圆编号
@@ -794,6 +852,12 @@ class Petri:
     def _pop_release(self, token_id: int, place_idx: int) -> None:
         """
         晶圆离开腔室时，从释放队列中移除记录。
+        
+        触发时机：u_s1_s2 / u_s1_s5 / u_s3_s4 / u_s4_s5 / u_s5_LP_done
+        （所有 u_ 离开变迁）。
+        
+        移除后该腔室的 release_schedule 空出位置，
+        后续晶圆的 _check_release_violation 将看到容量减少。
         
         Args:
             token_id: 晶圆编号
