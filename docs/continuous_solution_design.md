@@ -185,19 +185,19 @@ flowchart LR
 为便于检查 `collect_rollout` 的“二次惩罚回填”逻辑，新增了一个脚本式验证流程：
 
 - 序列文件：`solutions/Continuous_model/action_series/test_release_penalty_sequence.json`
-- 验证脚本：`solutions/Continuous_model/test_release_penalty_collection.py`
+- 验证脚本：`solutions/Continuous_model/check_release_penalty.py`
 - 输出目录：`results/`
 
 ### 运行方式
 
 ```bash
-python -m solutions.Continuous_model.test_release_penalty_collection
+python -m solutions.Continuous_model.check_release_penalty
 ```
 
 可选参数：
 
 ```bash
-python -m solutions.Continuous_model.test_release_penalty_collection \
+python -m solutions.Continuous_model.check_release_penalty \
   --sequence solutions/Continuous_model/action_series/wrong_seq.json \
   --results-dir results
 ```
@@ -217,7 +217,34 @@ python -m solutions.Continuous_model.test_release_penalty_collection \
 
 可直接用于人工核查“最后一次 `u_LP2_s1` 是否被二次惩罚命中”。
 
-## 8. 常见问题与排错
+## 8. 并发模型推理序列导出（validation）
+
+为减少手工编写动作序列的成本，新增并发模型推理序列导出脚本：
+
+- 脚本：`solutions/Continuous_model/export_inference_sequence.py`
+- 输入：训练好的并发模型（`DualHeadPolicyNet` 权重）
+- 输出格式：`[{"step": int, "time": int, "actions": [tm2_action_or_null, tm3_action_or_null]}]`
+
+### 运行方式
+
+```bash
+python -m solutions.Continuous_model.export_inference_sequence \
+  --model solutions/Continuous_model/saved_models/CT_concurrent_phase2_best.pt \
+  --max-steps 500 \
+  --seed 0 \
+  --out-name concurrent_infer_seq \
+  --phase 2 \
+  --force-overwrite-planb
+```
+
+### 输出位置
+
+- `solutions/Continuous_model/action_series/concurrent_infer_seq_<timestamp>.json`
+- `solutions/Td_petri/planB_sequence.json`
+
+其中 `planB_sequence.json` 可直接被 `visualization/main_window.py` 的 Model B 回放逻辑读取。
+
+## 9. 常见问题与排错
 
 | 问题现象 | 可能原因 | 修复建议 |
 | :--- | :--- | :--- |

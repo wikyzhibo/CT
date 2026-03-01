@@ -23,7 +23,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 import traceback
 
 INF = 10**6
-MAX_TIME = 1200  # 例如 300s
+MAX_TIME = 2800  # 例如 300s
 
 # 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
 TM2_TRANSITIONS = frozenset({
@@ -678,11 +678,13 @@ class Petri:
 
     def blame_release_violations(self) -> Dict[int, float]:
         """
-        事后追责（链式检查）：利用 _chamber_timeline（_fire 中实时填充的精确占用时间线），
-        找出因过早开工导致下游容量冲突的动作。
+        事后追责（链式前瞻）：利用 _chamber_timeline（_fire 中实时填充的占用时间线），
+        对每个 u_* 卸载动作检查该晶圆沿后续工序“最早到达”是否会触发容量冲突。
         
-        路线2（u_LP2_s1）：检查 s5，min_arrival = t_leave + 100
-        路线1（u_LP1_s1）：依次检查 s1(+15) → s3(+115) → s5(+815)
+        核心规则：
+        - 对当前 u_* 对应路线的后续站点逐站检查（包含多道工序）。
+        - 每站最早到达时间 = 上一站最早到达 + 上一站处理时间 + 边转运时间。
+        - 容量判定采用：在该时刻已占用数量（排除当前晶圆）+1（当前晶圆） > capacity。
         
         Returns:
             Dict[int, float]: fire_log_index -> penalty
@@ -692,23 +694,22 @@ class Petri:
             return blame
         
         # 从 _chamber_timeline 构建区间（对未离开的晶圆用 enter + proc_time 预估 leave）
-        proc_times = {"s1": 70, "s2": 0, "s3": 600, "s4": 70, "s5": 200}
-        capacities = {"s1": 2, "s3": 4, "s5": 2}
+        proc_times = {p.name: p.processing_time for p in self.marks}
+        capacities = {p.name: p.capacity for p in self.marks}
         chamber_intervals: Dict[str, list] = {}
-        for ch in ("s1", "s3", "s5"):
+        for ch in ("s1", "s2", "s3", "s4", "s5"):
+            if ch not in self._chamber_timeline:
+                continue
             intervals = []
             for (enter, leave, wid) in self._chamber_timeline[ch]:
                 if leave is None:
-                    leave = enter + proc_times[ch]
+                    leave = enter + proc_times.get(ch, 0)
                 intervals.append((enter, leave, wid))
             intervals.sort(key=lambda x: x[0])
             chamber_intervals[ch] = intervals
-        
-        # 最早到达时间常量
-        ROUTE2_MIN_S5 = 15 + 70 + 15  # = 100
-        ROUTE1_MIN_S1 = 15
-        ROUTE1_MIN_S3 = 15 + 70 + 15 + 0 + 15  # = 115
-        ROUTE1_MIN_S5 = ROUTE1_MIN_S3 + 600 + 15 + 70 + 15  # = 815
+
+        # 单段最短转运时间（u 卸载 + d_* 运输 + t 装载）
+        edge_transfer = self.ttime * 3
         
         def will_exceed_capacity(intervals, at_time, capacity, current_wid):
             """
@@ -719,53 +720,65 @@ class Petri:
             """
             occupied_without_current = sum(
                 1 for (e, l, wid0) in intervals
-                if e <= at_time < l and wid0 != current_wid
+                if e <= at_time < l and wid0 < current_wid
             )
             return occupied_without_current + 1 > capacity
+
+        def get_downstream_chain(t_name: str) -> List[str]:
+            """
+            返回当前 u_* 动作后需要检查的后续站点（按到达顺序）。
+            """
+            chain_map = {
+                # 路线1
+                "u_LP1_s1": ["s1", "s2", "s3", "s4", "s5"],
+                "u_s1_s2": ["s2", "s3", "s4", "s5"],
+                "u_s2_s3": ["s3", "s4", "s5"],
+                "u_s3_s4": ["s4", "s5"],
+                "u_s4_s5": ["s5"],
+                # 路线2
+                "u_LP2_s1": ["s1", "s5"],
+                "u_s1_s5": ["s5"],
+            }
+            return chain_map.get(t_name, [])
         
         penalty_coeff = self.c_release_violation * 100
         
         for i, log in enumerate(self.fire_log):
             t_name = log["t_name"]
             wid = log.get("token_id", -1)
-            if wid < 0:
+            if wid < 0 or not t_name.startswith("u_"):
                 continue
-            
-            if t_name == "u_LP2_s1":
-                # 路线2：检查 s5
-                t_leave = log["t1"]
+
+            chain = get_downstream_chain(t_name)
+            if not chain:
+                continue
+
+            # 从当前 u_* 开始，第一站最早到达 = 当前离开时刻 + 单段转运
+            t_leave = log["t1"]
+            arrival = t_leave + edge_transfer
+
+            violated = False
+            for idx, station in enumerate(chain):
+                if station not in chamber_intervals:
+                    continue
+                if station not in capacities:
+                    continue
+
                 if will_exceed_capacity(
-                    chamber_intervals["s5"],
-                    t_leave + ROUTE2_MIN_S5,
-                    capacities["s5"],
+                    chamber_intervals[station],
+                    arrival,
+                    capacities[station],
                     wid,
                 ):
-                    blame[i] = penalty_coeff
-            
-            elif t_name == "u_LP1_s1":
-                # 路线1：依次检查 s1 -> s3 -> s5
-                t_leave = log["t1"]
-                if will_exceed_capacity(
-                    chamber_intervals["s1"],
-                    t_leave + ROUTE1_MIN_S1,
-                    capacities["s1"],
-                    wid,
-                ):
-                    blame[i] = penalty_coeff
-                elif will_exceed_capacity(
-                    chamber_intervals["s3"],
-                    t_leave + ROUTE1_MIN_S3,
-                    capacities["s3"],
-                    wid,
-                ):
-                    blame[i] = penalty_coeff
-                elif will_exceed_capacity(
-                    chamber_intervals["s5"],
-                    t_leave + ROUTE1_MIN_S5,
-                    capacities["s5"],
-                    wid,
-                ):
-                    blame[i] = penalty_coeff
+                    violated = True
+                    break
+
+                # 推进到下一站：当前站处理完成后再转运
+                if idx < len(chain) - 1:
+                    arrival = arrival + proc_times.get(station, 0) + edge_transfer
+
+            if violated:
+                blame[i] = penalty_coeff
         
         return blame
 
@@ -2080,26 +2093,6 @@ class Petri:
                     overtime = (self.time - tok.enter_time) - place.processing_time - self.P_Residual_time
                     if overtime > 0:
                         self.resident_violation_count += 0.5 # 每步检测可能多次，但在step里是一次性的scrap判断
-                        # 注意：scrap_count 是由 external caller (step) 增加的，这里只增加分类计数
-                        # 但由于 _check_scrap 可能被多次调用（wait和fire后），计数需要小心。
-                        # 不过 pn.py 的设计是发现 scrap 就 done，所以计数只加一次没问题。
-                        # 修正：caller (step) 会增加 total scrap_count。这里我们可以增加分类计数。
-                        # 为了避免重复计数，这里暂不加？
-                        # 不，step 代码里是 if is_scrap: self.scrap_count += 1
-                        # 所以这里不需要加 self.scrap_count，但需要加 self.resident_violation_count
-                        # 等等，如果 _check_scrap 只是检测，那 counters 应该在 confirm scrap 时加。
-                        # 但这里我们必须在检测时就知道是哪种 breach。
-                        # step 函数只有 "is_scrap" bool。
-                        # 为防止副作用，我们只返回 info，由 step 或专门的方法增加计数？
-                        # 或者为了简单，并在 step 中只调用一次 stop_on_scrap，就在这里加？
-                        # 细看 step 代码：
-                        # is_scrap, scrap_info = self._check_scrap(return_info=True)
-                        # if is_scrap: ...
-                        # 所以这里是实时检测。
-                        # 既然 step 会终止 episode (或者记录)，那我们在 step 里增加计数比较好。
-                        # 但 step 里没分类型。
-                        # 所以在 return_info 里返回 type，step 里根据 info['type'] 增加计数？
-                        # 这样改动最小且安全。
                         
                         if return_info:
                             return True, {
@@ -2114,22 +2107,22 @@ class Petri:
                         return True
             
             # Type 2: 运输库所/机械手 (Q-time 约束 > 15s) - 已禁用
-            elif place.type == 2:
-                 for tok in place.tokens:
-                     # Q-time limit = 15s
-                     overtime = (self.time - tok.enter_time) - 15
-                     if overtime > 0:
-                         if return_info:
-                             return True, {
-                                 "token_id": getattr(tok, "token_id", -1),
-                                 "place": place.name,
-                                 "enter_time": tok.enter_time,
-                                 "stay_time": self.time - tok.enter_time,
-                                 "proc_time": 0,
-                                 "overtime": overtime,
-                                 "type": "qtime"
-                             }
-                         return True
+            #elif place.type == 2:
+            #     for tok in place.tokens:
+            #         # Q-time limit = 15s
+            #         overtime = (self.time - tok.enter_time) - 15
+            #         if overtime > 0:
+            #             if return_info:
+            #                 return True, {
+            #                     "token_id": getattr(tok, "token_id", -1),
+            #                     "place": place.name,
+            #                     "enter_time": tok.enter_time,
+            #                     "stay_time": self.time - tok.enter_time,
+            #                     "proc_time": 0,
+            #                     "overtime": overtime,
+            #                     "type": "qtime"
+            #                 }
+            #             return True
 
                         
         if return_info:

@@ -57,6 +57,13 @@ def _tm2_action_index(env: Env_PN_Concurrent, name: str | None) -> int:
             return i
     raise ValueError(f"TM2 动作名无效或不受 TM2 控制: {name}")
 
+def _tm3_action_index(env: Env_PN_Concurrent, name: str | None) -> int:
+    if name is None or str(name).lower() == "wait":
+        return env.tm3_wait_action
+    for i, t_idx in enumerate(env.tm3_transition_indices):
+        if env.net.id2t_name[t_idx] == name:
+            return i
+    raise ValueError(f"TM3 动作名无效或不受 TM3 控制: {name}")
 
 def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
     seq = _load_sequence(sequence_path)
@@ -72,9 +79,10 @@ def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
         for idx, item in enumerate(seq):
             actions = item.get("actions", [None, None])
             tm2_name = actions[0] if len(actions) > 0 else None
+            tm3_name = actions[1] if len(actions) > 0 else None
 
             a_tm2 = _tm2_action_index(env, tm2_name)
-            a_tm3 = env.tm3_wait_action  # 按你的要求，TM3 全程 WAIT
+            a_tm3 = _tm3_action_index(env, tm3_name)
 
             # 检查动作合法性
             mask_tm2 = td["action_mask_tm2"]
