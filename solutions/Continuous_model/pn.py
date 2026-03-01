@@ -23,7 +23,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 import traceback
 
 INF = 10**6
-MAX_TIME = 15000  # 例如 300s
+MAX_TIME = 1200  # 例如 300s
 
 # 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
 TM2_TRANSITIONS = frozenset({
@@ -323,6 +323,16 @@ class Petri:
         # 累计的释放时间违规惩罚（每个 step 计算后清零）
         self._release_violation_penalty = 0.0
         
+        # 事后追责模式：True 时仍记录 release_schedule（掩码需要），但跳过惩罚和时间修正
+        self.no_release_penalty = False
+        
+        # 腔室实际占用时间线（事后追责用，_fire 中实时填充）
+        # _chamber_timeline[chamber] = [(enter_time, leave_time, wafer_id), ...]
+        # enter: t_sX 的 t2；leave: u_sX_* 的 t1（尚未离开时为 None）
+        self._chamber_timeline: Dict[str, list] = {"s1": [], "s2": [], "s3": [], "s4": [], "s5": []}
+        # 辅助记录进入但尚未离开的晶圆索引：{chamber: {wafer_id: index_in_timeline}}
+        self._chamber_active: Dict[str, Dict[int, int]] = {"s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": {}}
+        
         # 晶圆滞留时间统计追踪
         # {token_id: {enter_system, exit_system, chambers: {name: {enter, exit}}, transports: {name: {enter, exit}}}}
         self.wafer_stats: Dict[int, Dict[str, Any]] = {}
@@ -523,7 +533,7 @@ class Petri:
         
         penalty = 0.0
         corrected_enter = expected_enter
-        if self.reward_config.get('release_violation_penalty', 1):
+        if not self.no_release_penalty and self.reward_config.get('release_violation_penalty', 1):
             penalty, corrected_enter = self._check_release_violation(target_place_idx, expected_enter)
         
         # 使用修正后的进入时间重新计算释放时间
@@ -572,7 +582,7 @@ class Petri:
             
             # 检查下游违规并获取修正后的进入时间
             corrected_downstream_enter = downstream_enter
-            if self.reward_config.get('release_violation_penalty', 1):
+            if not self.no_release_penalty and self.reward_config.get('release_violation_penalty', 1):
                 downstream_penalty, corrected_downstream_enter = self._check_release_violation(downstream_idx, downstream_enter)
                 penalty += downstream_penalty
             
@@ -665,6 +675,99 @@ class Petri:
         """
         place = self.marks[place_idx]
         place.pop_release(token_id)
+
+    def blame_release_violations(self) -> Dict[int, float]:
+        """
+        事后追责（链式检查）：利用 _chamber_timeline（_fire 中实时填充的精确占用时间线），
+        找出因过早开工导致下游容量冲突的动作。
+        
+        路线2（u_LP2_s1）：检查 s5，min_arrival = t_leave + 100
+        路线1（u_LP1_s1）：依次检查 s1(+15) → s3(+115) → s5(+815)
+        
+        Returns:
+            Dict[int, float]: fire_log_index -> penalty
+        """
+        blame: Dict[int, float] = {}
+        if not self.fire_log:
+            return blame
+        
+        # 从 _chamber_timeline 构建区间（对未离开的晶圆用 enter + proc_time 预估 leave）
+        proc_times = {"s1": 70, "s2": 0, "s3": 600, "s4": 70, "s5": 200}
+        capacities = {"s1": 2, "s3": 4, "s5": 2}
+        chamber_intervals: Dict[str, list] = {}
+        for ch in ("s1", "s3", "s5"):
+            intervals = []
+            for (enter, leave, wid) in self._chamber_timeline[ch]:
+                if leave is None:
+                    leave = enter + proc_times[ch]
+                intervals.append((enter, leave, wid))
+            intervals.sort(key=lambda x: x[0])
+            chamber_intervals[ch] = intervals
+        
+        # 最早到达时间常量
+        ROUTE2_MIN_S5 = 15 + 70 + 15  # = 100
+        ROUTE1_MIN_S1 = 15
+        ROUTE1_MIN_S3 = 15 + 70 + 15 + 0 + 15  # = 115
+        ROUTE1_MIN_S5 = ROUTE1_MIN_S3 + 600 + 15 + 70 + 15  # = 815
+        
+        def will_exceed_capacity(intervals, at_time, capacity, current_wid):
+            """
+            判断“当前晶圆在 at_time 尝试进入”是否会超容量。
+
+            规则：统计 at_time 已占用数量（排除当前晶圆），再 +1（当前晶圆），
+            若结果 > capacity，则认定为容量冲突。
+            """
+            occupied_without_current = sum(
+                1 for (e, l, wid0) in intervals
+                if e <= at_time < l and wid0 != current_wid
+            )
+            return occupied_without_current + 1 > capacity
+        
+        penalty_coeff = self.c_release_violation * 100
+        
+        for i, log in enumerate(self.fire_log):
+            t_name = log["t_name"]
+            wid = log.get("token_id", -1)
+            if wid < 0:
+                continue
+            
+            if t_name == "u_LP2_s1":
+                # 路线2：检查 s5
+                t_leave = log["t1"]
+                if will_exceed_capacity(
+                    chamber_intervals["s5"],
+                    t_leave + ROUTE2_MIN_S5,
+                    capacities["s5"],
+                    wid,
+                ):
+                    blame[i] = penalty_coeff
+            
+            elif t_name == "u_LP1_s1":
+                # 路线1：依次检查 s1 -> s3 -> s5
+                t_leave = log["t1"]
+                if will_exceed_capacity(
+                    chamber_intervals["s1"],
+                    t_leave + ROUTE1_MIN_S1,
+                    capacities["s1"],
+                    wid,
+                ):
+                    blame[i] = penalty_coeff
+                elif will_exceed_capacity(
+                    chamber_intervals["s3"],
+                    t_leave + ROUTE1_MIN_S3,
+                    capacities["s3"],
+                    wid,
+                ):
+                    blame[i] = penalty_coeff
+                elif will_exceed_capacity(
+                    chamber_intervals["s5"],
+                    t_leave + ROUTE1_MIN_S5,
+                    capacities["s5"],
+                    wid,
+                ):
+                    blame[i] = penalty_coeff
+        
+        return blame
 
     def _track_wafer_statistics(self, t_name: str, wafer_id: int, 
                                  start_time: int, enter_new: int) -> None:
@@ -944,6 +1047,9 @@ class Petri:
         self.resident_violation_count = 0 # 重置驻留违规计数
         self.qtime_violation_count = 0    # 重置Q-time违规计数
         self.violated_tokens = {}         # 重置违规记录
+        # 重置腔室时间线（事后追责用）
+        self._chamber_timeline = {"s1": [], "s2": [], "s3": [], "s4": [], "s5": []}
+        self._chamber_active = {"s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": {}}
         # 清空所有库所的释放时间队列，并重置机器分配计数器
         for place in self.marks:
             place.release_schedule.clear()
@@ -1151,41 +1257,6 @@ class Petri:
                 t_idx = self._get_transition_index("u_LP2_s1")
                 mask[t_idx] = False
         
-            
-        # ========== 类型 2 晶圆进入限制 (基于 s5 可用性) ==========
-        # 如果类型 2 晶圆预计进入 s5 的时间早于 s5 的可用时间，则禁止进入
-        if "u_LP2_s1" in self.id2t_name and "s5" in self.id2p_name:
-            t_idx = self._get_transition_index("u_LP2_s1")
-            
-            # 只有当该动作尚未被禁用时才检查
-            if mask[t_idx]:
-                s5_idx = self._get_place_index("s5")
-                place_s5 = self.marks[s5_idx]
-                place_s1 = self.marks[self._get_place_index("s1")] # 获取 s1 以读取加工时间
-                
-                # s5 满载检查改进：检查预期时间段内是否有可用 Capacity (支持插队)
-                enter_new = self.time + self.ttime
-                expected_enter_s1 = enter_new + self.T_transport + self.T_load
-                release_s1 = expected_enter_s1 + place_s1.processing_time
-                transport_s1_to_s5 = self.ttime * 2 + 15 # s5取出、运送、装载到LP_done 约15s
-                expected_enter_s5 = release_s1 + transport_s1_to_s5 + self.T_load
-                expected_leave_s5 = expected_enter_s5 + place_s5.processing_time
-                
-                # 统计在 [expected_enter_s5, expected_leave_s5] 期间的重叠预约数
-                overlap_count = 0
-                for _, release_time in place_s5.release_schedule:
-                    # 现有预约的占用区间: [release_time - processing_time, release_time]
-                    existing_start = release_time - place_s5.processing_time
-                    existing_end = release_time
-                    
-                    # 检查区间重叠: max(start1, start2) < min(end1, end2)
-                    if max(expected_enter_s5, existing_start) < min(expected_leave_s5, existing_end):
-                        overlap_count += 1
-                
-                # 如果重叠数达到容量上限，则禁止进入
-                if overlap_count >= place_s5.capacity:
-                     mask[t_idx] = False
-
         # ========== 步骤索引感知的路由约束 (u_变迁) ==========
         # 使用 (route_type, step) 决定晶圆下一个目标
         # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
@@ -1357,6 +1428,49 @@ class Petri:
             if t_name in ("u_LP1_s1", "u_LP2_s1"):
                 # 递增已进入系统的晶圆计数
                 self.entered_wafer_count += 1
+            
+            # ========== 4.1) 记录腔室实际占用时间线（事后追责优化）==========
+            # 注意：这是独立的 if/elif 链，不与下面的释放追踪逻辑 elif 联动
+            _ct = self._chamber_timeline
+            _ca = self._chamber_active
+            if wafer_id >= 0:
+                # 进入腔室
+                if t_name in ("t_s1", "t_s2", "t_s3", "t_s4", "t_s5"):
+                    ch = t_name[2:]  # "s1", "s2", ...
+                    idx = len(_ct[ch])
+                    _ct[ch].append((enter_new, None, wafer_id))
+                    _ca[ch][wafer_id] = idx
+                # 离开腔室
+                elif t_name in ("u_s1_s2", "u_s1_s5"):
+                    if wafer_id in _ca["s1"]:
+                        idx = _ca["s1"].pop(wafer_id)
+                        e, _, wid = _ct["s1"][idx]
+                        _ct["s1"][idx] = (e, start_time, wid)
+                elif t_name == "u_s2_s3":
+                    if wafer_id in _ca["s2"]:
+                        idx = _ca["s2"].pop(wafer_id)
+                        e, _, wid = _ct["s2"][idx]
+                        _ct["s2"][idx] = (e, start_time, wid)
+                elif t_name == "u_s3_s4":
+                    if wafer_id in _ca["s3"]:
+                        idx = _ca["s3"].pop(wafer_id)
+                        e, _, wid = _ct["s3"][idx]
+                        _ct["s3"][idx] = (e, start_time, wid)
+                elif t_name == "u_s4_s5":
+                    if wafer_id in _ca["s4"]:
+                        idx = _ca["s4"].pop(wafer_id)
+                        e, _, wid = _ct["s4"][idx]
+                        _ct["s4"][idx] = (e, start_time, wid)
+                elif t_name == "u_s5_LP_done":
+                    if wafer_id in _ca["s5"]:
+                        idx = _ca["s5"].pop(wafer_id)
+                        e, _, wid = _ct["s5"][idx]
+                        _ct["s5"][idx] = (e, start_time, wid)
+            
+            # ========== 4.2) 释放时间追踪逻辑 ==========
+            # 根据变迁类型处理释放时间（只追踪有驻留约束的腔室：s1, s3, s5）
+            # 双路线：u_LP1_s1 和 u_LP2_s1 都进入 d_s1
+            if t_name in ("u_LP1_s1", "u_LP2_s1"):
                 # 晶圆离开 LP 进入 d_s1：对 s1 记录并检查
                 if "s1" in self.id2p_name:
                     s1_idx = self._get_place_index("s1")
@@ -1380,7 +1494,7 @@ class Petri:
 
                     penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
 
-                    if self.reward_config.get('release_violation_penalty', 1):
+                    if not self.no_release_penalty and self.reward_config.get('release_violation_penalty', 1):
                         penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
                         self._release_violation_penalty += penalty_s5
                     
@@ -1419,8 +1533,9 @@ class Petri:
                         constraint_time = other_releases_sorted[-place_s5.capacity][1]
                         if expected_enter_s5 < constraint_time:
                             # 实际进入与其他晶圆冲突，施加惩罚
-                            penalty = self.c_release_violation * 100
-                            self._release_violation_penalty += penalty
+                            if not self.no_release_penalty:
+                                penalty = self.c_release_violation * 100
+                                self._release_violation_penalty += penalty
                     
                     # 更新 s5 的释放时间（用实际进入时间）
                     release_s5 = expected_enter_s5 + place_s5.processing_time
@@ -1440,7 +1555,7 @@ class Petri:
                     # 检查 s3 违规并获取修正后的进入时间
                     penalty = 0.0
                     corrected_enter_s3 = expected_enter_s3
-                    if self.reward_config.get('release_violation_penalty', 1):
+                    if not self.no_release_penalty and self.reward_config.get('release_violation_penalty', 1):
                         penalty_s3, corrected_enter_s3 = self._check_release_violation(s3_idx, expected_enter_s3)
                         penalty += penalty_s3
                     
@@ -1451,7 +1566,7 @@ class Petri:
                     
                     # 检查 s4 违规并获取修正后的进入时间
                     corrected_enter_s4 = expected_enter_s4
-                    if self.reward_config.get('release_violation_penalty', 1):
+                    if not self.no_release_penalty and self.reward_config.get('release_violation_penalty', 1):
                         penalty_s4, corrected_enter_s4 = self._check_release_violation(s4_idx, expected_enter_s4)
                         penalty += penalty_s4
                     

@@ -32,6 +32,7 @@
 
 - **LLC (s2)** 不参与释放链、不施加释放违规惩罚；晶圆可在 LLC 缓冲，以推迟进入 s3/s4 从而避免 LLD 冲突。
 - **LLC 容量为 1**：PM7/PM8 近似同时完工时仅一片可进入 LLC，由 capacity 与使能约束保证。
+- 事后追责（`blame_release_violations`）的容量判定采用：`在该时刻已占用数量（排除当前晶圆） + 1（当前晶圆） > capacity`，即“加入当前晶圆后是否超容量”。
 
 #### release_schedule 与 tokens 的关系
 

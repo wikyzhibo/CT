@@ -180,7 +180,44 @@ flowchart LR
     Reserve --> Chain[向链式下游传播]
 ```
 
-## 7. 常见问题与排错
+## 7. 二次释放惩罚验证脚本（动作序列驱动）
+
+为便于检查 `collect_rollout` 的“二次惩罚回填”逻辑，新增了一个脚本式验证流程：
+
+- 序列文件：`solutions/Continuous_model/action_series/test_release_penalty_sequence.json`
+- 验证脚本：`solutions/Continuous_model/test_release_penalty_collection.py`
+- 输出目录：`results/`
+
+### 运行方式
+
+```bash
+python -m solutions.Continuous_model.test_release_penalty_collection
+```
+
+可选参数：
+
+```bash
+python -m solutions.Continuous_model.test_release_penalty_collection \
+  --sequence solutions/Continuous_model/action_series/wrong_seq.json \
+  --results-dir results
+```
+
+### 验证逻辑
+
+脚本严格分两阶段执行：
+
+1. 第一阶段：`env.net.no_release_penalty = True`，按固定动作序列采样并记录每步 reward 与 `fire_log` 范围；
+2. 第二阶段：序列结束后调用 `blame_release_violations()`，将 `fire_log_index -> rollout_step` 映射后的惩罚回填到对应 step reward。
+
+输出 JSON 包含：
+
+- `reward_before_second_pass` / `reward_after_second_pass`
+- `blame_raw` 与 `blame_mapped`
+- `last_u_LP2_s1_second_pass_penalty` 与 `last_u_LP2_s1_penalized`
+
+可直接用于人工核查“最后一次 `u_LP2_s1` 是否被二次惩罚命中”。
+
+## 8. 常见问题与排错
 
 | 问题现象 | 可能原因 | 修复建议 |
 | :--- | :--- | :--- |
