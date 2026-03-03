@@ -75,9 +75,9 @@ flowchart TB
 
 ---
 
-## 3. RL 环境层 (`solutions/PPO/enviroment.py`)
+## 3. RL 环境层 (`solutions/Continuous_model/env.py`)
 
-`Env_PN_Concurrent` 类将原始 Petri 网封装为兼容 TorchRL 的环境。
+`Env_PN_Concurrent` 类定义在 **`solutions/Continuous_model/env.py`**，将原始 Petri 网封装为兼容 TorchRL 的环境。为保持向后兼容，`solutions/PPO/enviroment` 会 re-export 此类，故现有代码中 `from solutions.PPO.enviroment import Env_PN_Concurrent` 仍可使用；新代码推荐直接使用 `from solutions.Continuous_model.env import Env_PN_Concurrent`。
 
 ### 观测空间 (Observation Space)
 系统状态的简化向量表示 (`_build_obs`)：
