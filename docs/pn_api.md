@@ -4,7 +4,7 @@
 
 ### Place
 
-**说明**：Petri 网库所，支持 token 管理与释放时间追踪。
+**说明**：Petri 网库所，支持 token 管理。
 
 **属性**
 - `name: str` 库所名
@@ -12,7 +12,6 @@
 - `processing_time: int` 加工时间
 - `type: int` 库所类型（1=加工腔室，2=运输库所，3=空闲库所，4=资源库所，5=无驻留约束腔室）
 - `tokens: Deque[BasedToken]` token 队列
-- `release_schedule: Deque[(token_id, release_time)]` 释放时间队列
 - `last_machine: int` 加工腔室轮换分配记录
 
 **方法**
@@ -21,10 +20,6 @@
 - `pop_head() -> BasedToken` 弹出队首 token
 - `append(token) -> None` 追加 token
 - `res_time(current_time, P_Residual_time=15, D_Residual_time=10) -> int` 计算剩余驻留时间
-- `add_release(token_id, release_time)` 添加释放时间
-- `update_release(token_id, new_release_time)` 更新释放时间
-- `pop_release(token_id) -> Optional[int]` 移除释放时间记录
-- `earliest_release() -> Optional[int]` 返回最早释放时间
 
 ### Petri
 
@@ -52,11 +47,9 @@ Petri(
 - `_calc_reward_original(...)` 原始奖励计算
 - `_calc_reward_vectorized(...)` 向量化奖励计算
 
-**释放时间追踪**
-- `_build_release_chain()` 构建链式映射
-- `_record_initial_release(...)` 初始释放时间记录
-- `_update_release(...)` 实际进入后的时间更新
-- `_check_release_violation(...)` 释放时间违规检测
+**事后追责**
+- `_chamber_timeline` / `_chamber_active`：记录腔室实际进入/离开时间
+- `blame_release_violations()`：按 `u_*` 动作链式前瞻并回填惩罚
 
 **统计**
 - `_track_wafer_statistics(...)` 追踪统计

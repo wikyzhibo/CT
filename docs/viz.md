@@ -82,6 +82,25 @@ python -c "from visualization.debug_tools import DebugTools; import sys; from Py
 python -c "from visualization.export_tools import ExportTools; import sys; from PySide6.QtWidgets import QApplication; app=QApplication(sys.argv); from visualization.petri_adapter import PetriAdapter; from solutions.PPO.enviroment import Env_PN; from visualization.viewmodel import PetriViewModel; vm=PetriViewModel(PetriAdapter(Env_PN(detailed_reward=True))); w=ExportTools(vm); w.show(); vm.reset(); sys.exit(app.exec())"
 ```
 
+### 并发模型推理序列自动生成
+
+如果需要给 Model B 回放准备动作序列，不必手工编写，可直接使用并发模型导出：
+
+```bash
+python -m solutions.Continuous_model.export_inference_sequence \
+  --model solutions/Continuous_model/saved_models/CT_concurrent_phase2_best.pt \
+  --max-steps 500 \
+  --seed 0 \
+  --out-name concurrent_infer_seq \
+  --phase 2 \
+  --force-overwrite-planb
+```
+
+该命令会同时输出：
+
+- `solutions/Continuous_model/action_series/concurrent_infer_seq_<timestamp>.json`（留档）
+- `solutions/Td_petri/planB_sequence.json`（`main_window.py` 的 Model B 默认读取文件）
+
 ### 命令行参数
 
 - `--model`, `-m`: 指定模型文件路径

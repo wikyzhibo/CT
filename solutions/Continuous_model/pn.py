@@ -4,7 +4,7 @@ Petri 网调度环境（连续时间版本）。
 该模块实现了一个双路线、双机械手协作的半导体制造调度 Petri 网环境，支持：
 - 两条加工路线在 s1 分流（color=1 走路线1，color=2 走路线2）
 - 有/无驻留约束腔室并存（s1/s3/s5 有驻留约束，s2/s4 无驻留约束）
-- 释放时间追踪与链式违规检测（避免容量冲突）
+- 事后追责（基于实际占用时间线）检测容量冲突
 - 奖励塑形与向量化优化计算
 - 甘特图生成与晶圆滞留时间统计
 
@@ -23,7 +23,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 import traceback
 
 INF = 10**6
-MAX_TIME = 15000  # 例如 300s
+MAX_TIME = 4000  # 例如 300s
 
 # 双机械手变迁映射：TM2/TM3 各自控制的变迁名称
 TM2_TRANSITIONS = frozenset({
@@ -35,7 +35,7 @@ TM3_TRANSITIONS = frozenset({
 })
 
 
-@dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 和 release_schedule 是可变字段（deque）
+@dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 是可变字段（deque）
 class Place:
     """
     Petri 网库所。
@@ -51,18 +51,15 @@ class Place:
         4=资源库所（机械手）
         5=无驻留约束腔室（如 s2/LLC、s4/LLD）
     - tokens: token 队列（FIFO）
-    - release_schedule: 释放时间追踪队列 [(token_id, release_time), ...]
     - last_machine: 上次分配的机器编号（type=1 使用）
     """
-    # 注意：不能使用 __slots__，因为 tokens 和 release_schedule 是可变字段（deque）
+    # 注意：不能使用 __slots__，因为 tokens 是可变字段（deque）
     # 但可以通过其他方式优化属性访问（如使用局部变量缓存）
     name: str
     capacity: int
     processing_time: int
     type: int  # 1 manipulator place, 2 delivery place, 3 idle place, 4 source/other
     tokens: Deque[BasedToken] = field(default_factory=deque)
-    # 晶圆释放时间追踪队列：[(token_id, release_time), ...]
-    release_schedule: Deque[Tuple[int, int]] = field(default_factory=deque)
     # 上次分配的机器编号（仅 type=1 使用），用于轮换分配机器
     last_machine: int = -1
 
@@ -75,7 +72,6 @@ class Place:
             last_machine=self.last_machine,
         )
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
-        cloned.release_schedule = deque(self.release_schedule)  # 复制释放时间队列
         return cloned
 
     def head(self) -> BasedToken:
@@ -102,46 +98,6 @@ class Place:
 
     def __len__(self) -> int:
         return len(self.tokens)
-    
-    # ========== 释放时间追踪方法 ==========
-    def add_release(self, token_id: int, release_time: int) -> None:
-        """添加晶圆的预估释放时间"""
-        self.release_schedule.append((token_id, release_time))
-    
-    def update_release(self, token_id: int, new_release_time: int) -> None:
-        """更新指定晶圆的释放时间"""
-        for i, (tid, _) in enumerate(self.release_schedule):
-            if tid == token_id:
-                self.release_schedule[i] = (token_id, new_release_time)
-                return
-    
-    def pop_release(self, token_id: int) -> Optional[int]:
-        """晶圆离开时移除记录，返回释放时间"""
-        for i, (tid, rt) in enumerate(self.release_schedule):
-            if tid == token_id:
-                del self.release_schedule[i]
-                return rt
-        return None
-
-    def get_release(self, token_id: int) -> Optional[int]:
-        """查询指定晶圆的释放时间（不移除）"""
-        for tid, rt in self.release_schedule:
-            if tid == token_id:
-                return rt
-        return None
-    
-    def earliest_release(self) -> Optional[int]:
-        """
-        返回队列中最早的释放时间
-        
-        优化：使用生成器表达式和 min()，对于小规模数据（<10个元素）这是最高效的方式。
-        如果 release_schedule 元素较多，可以考虑使用堆（heapq）优化。
-        """
-        if not self.release_schedule:
-            return None
-        # 对于小规模数据，min() 已经足够高效
-        # 如果 release_schedule 元素较多（>10），可以考虑使用 heapq
-        return min(rt for _, rt in self.release_schedule)
 
 
 class Petri:
@@ -201,8 +157,8 @@ class Petri:
         self.T_transport = config.T_transport
         self.T_load = config.T_load
         self.T_pm1_to_pm2 = config.T_pm1_to_pm2
-        self.idle_timeout = config.idle_timeout
         self.idle_penalty = config.idle_penalty
+        # idle_timeout 在 marks 就绪后设为 最大处理时间+30，见下方
         self.stop_on_scrap = config.stop_on_scrap
         self.training_phase = config.training_phase
         self.reward_config = config.reward_config
@@ -308,6 +264,9 @@ class Petri:
             if place.name in no_constraint_places:
                 place.type = 5
 
+        # 闲置惩罚超时：最大腔室处理时间 + 30（不再依赖配置中的手动参数）
+        self.idle_timeout = max(p.processing_time for p in self.marks) + 30
+
         # petri网系统时钟
         self.time = 0
         self.fire_log = []
@@ -315,13 +274,15 @@ class Petri:
         # 错峰启动：记录 t_PM1 上次发射时间
         self._last_t_pm1_fire_time = -INF
         
-        # 释放时间追踪：构建加工腔室链路映射
-        # release_chain[place_idx] = (downstream_place_idx, transport_time)
-        # 例如：PM1 -> PM2，运输时间为 T_pm1_to_pm2
-        self._build_release_chain()
+        # 兼容保留：训练脚本仍可能切换该开关；在线阶段已不再施加释放惩罚
+        self.no_release_penalty = False
         
-        # 累计的释放时间违规惩罚（每个 step 计算后清零）
-        self._release_violation_penalty = 0.0
+        # 腔室实际占用时间线（事后追责用，_fire 中实时填充）
+        # _chamber_timeline[chamber] = [(enter_time, leave_time, wafer_id), ...]
+        # enter: t_sX 的 t2；leave: u_sX_* 的 t1（尚未离开时为 None）
+        self._chamber_timeline: Dict[str, list] = {"s1": [], "s2": [], "s3": [], "s4": [], "s5": []}
+        # 辅助记录进入但尚未离开的晶圆索引：{chamber: {wafer_id: index_in_timeline}}
+        self._chamber_active: Dict[str, Dict[int, int]] = {"s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": {}}
         
         # 晶圆滞留时间统计追踪
         # {token_id: {enter_system, exit_system, chambers: {name: {enter, exit}}, transports: {name: {enter, exit}}}}
@@ -332,7 +293,7 @@ class Petri:
 
     @staticmethod
     def _clone_marks(marks: List["Place"]) -> List[Place]:
-        """克隆库所列表，确保使用 pn.py 中的 Place 类（带 release_schedule）"""
+        """克隆库所列表，确保使用 pn.py 中的 Place 类。"""
         cloned_list = []
         for p in marks:
             # 使用 pn.py 中的 Place 类创建新对象
@@ -399,272 +360,111 @@ class Petri:
         expected_target = self._get_next_target(tok.route_type, tok.step)
         return expected_target == target
     
-    def _build_release_chain(self) -> None:
+    def blame_release_violations(self) -> Dict[int, float]:
         """
-        构建释放时间链路映射。
+        事后追责（链式前瞻）：利用 _chamber_timeline（_fire 中实时填充的占用时间线），
+        对每个 u_* 卸载动作检查该晶圆沿后续工序“最早到达”是否会触发容量冲突。
         
-        release_chain[place_idx] = (downstream_place_idx, transport_time)
-        用于链式更新下游腔室的预估释放时间。
+        核心规则：
+        - 对当前 u_* 对应路线的后续站点逐站检查（包含多道工序）。
+        - 每站最早到达时间 = 上一站最早到达 + 上一站处理时间 + 边转运时间。
+        - 容量判定采用：在该时刻已占用数量（排除当前晶圆）+1（当前晶圆） > capacity。
         
-        双路线：
-        路线1：LP1 -> s1 -> s2 -> s3 -> s4 -> s5 -> LP_done
-        路线2：LP2 -> s1 -> s5 -> LP_done
-        
-        有驻留约束腔室：s1, s3, s5
-        无驻留约束腔室：s2, s4（作为机械手交接点）
-        
-        注意：由于双路线在 s1 分流，release_chain 需要按颜色区分。
-        路线1的链路：s1 -> s3 -> s4 -> s5（s4 已纳入释放链，接受链式惩罚）。
-        路线2的链路：s1 -> s5（在运行时处理）。
-        """
-        self.release_chain: Dict[int, Tuple[int, int]] = {}
-        
-        # 获取腔室索引（如果存在）
-        def get_idx(name: str) -> int:
-            if name in self.id2p_name:
-                return self.id2p_name.index(name)
-            return -1
-        
-        s1_idx = get_idx("s1")
-        s3_idx = get_idx("s3")
-        s4_idx = get_idx("s4")
-        s5_idx = get_idx("s5")
-        
-        # 路线1的链路（有驻留约束的腔室之间）
-        # s1 -> s3：经过 s2（交接点），预估运输时间
-        if s1_idx >= 0 and s3_idx >= 0:
-            # 运输时间 = s1卸载 + d_s2运输 + s2装载 + s2卸载 + d_s3运输 + s3装载
-            transport_s1_to_s3 = self.T_transport * 2 + self.T_load * 4  # 约 30s
-            self.release_chain[s1_idx] = (s3_idx, transport_s1_to_s3)
-        
-        # s3 -> s4 -> s5：将 s4 纳入释放链，使其接受链式惩罚
-        # s3 -> s4：预估运输时间
-        if s3_idx >= 0 and s4_idx >= 0:
-            # 运输时间 = s3卸载 + d_s4运输 + s4装载
-            transport_s3_to_s4 = self.ttime * 3  # 约 15s
-            self.release_chain[s3_idx] = (s4_idx, transport_s3_to_s4)
-        
-        # s4 -> s5：预估运输时间
-        # 注意：release_s4 已经是 s4 的释放时间（= 进入时间 + 加工时间 70s）
-        # 所以运输时间只需要：s4卸载 + d_s5运输 + s5装载，不需要再加 70s
-        if s4_idx >= 0 and s5_idx >= 0:
-            # 运输时间 = s4卸载 + d_s5运输 + s5装载
-            transport_s4_to_s5 = self.ttime * 3  # 约 15s
-            self.release_chain[s4_idx] = (s5_idx, transport_s4_to_s5)
-        
-        # 路线2的链路：s1 -> s5（直接）
-        # 存储为单独的映射，在运行时根据颜色选择
-        self.release_chain_route2: Dict[int, Tuple[int, int]] = {}
-        if s1_idx >= 0 and s5_idx >= 0:
-            # 运输时间 = s1卸载 + d_s5运输 + s5装载
-            transport_s1_to_s5 = self.ttime * 2  # 约 10s
-            self.release_chain_route2[s1_idx] = (s5_idx, transport_s1_to_s5)
-
-    def _check_release_violation(self, place_idx: int, expected_enter_time: int) -> Tuple[float, int]:
-        """
-        检查晶圆预计进入时间是否违反腔室的释放约束，并返回修正后的进入时间。
-        
-        容量检查逻辑：
-        - release_schedule：记录**预估中**即将进入腔室的晶圆（已承诺但未到达）
-        - tokens：记录**实际已在**腔室中的晶圆
-        - 实际占用 = len(tokens) + len(release_schedule)（两者不重叠，因为进入腔室后会从 schedule 移除）
-        
-        违规条件：实际占用 >= capacity 且 expected_enter_time < earliest_release
-        如果违规，将 expected_enter_time 修正为 earliest_release，确保后续晶圆看到正确的释放时间。
-        
-        Args:
-            place_idx: 目标腔室索引
-            expected_enter_time: 预计进入时间
-            
         Returns:
-            (penalty: float, corrected_enter_time: int)
-            - penalty: 惩罚值（0 表示不违规）
-            - corrected_enter_time: 修正后的进入时间（如果违规则为 earliest_release，否则为 expected_enter_time）
+            Dict[int, float]: fire_log_index -> penalty
         """
-        place = self.marks[place_idx]
-        actual_occupancy = len(place.release_schedule)
+        blame: Dict[int, float] = {}
+        if not self.fire_log:
+            return blame
         
-        # 如果占用未满，不违规
-        if actual_occupancy < place.capacity:
-            return (0.0, expected_enter_time)
+        # 从 _chamber_timeline 构建区间（对未离开的晶圆用 enter + proc_time 预估 leave）
+        proc_times = {p.name: p.processing_time for p in self.marks}
+        capacities = {p.name: p.capacity for p in self.marks}
+        chamber_intervals: Dict[str, list] = {}
+        for ch in ("s1", "s2", "s3", "s4", "s5"):
+            if ch not in self._chamber_timeline:
+                continue
+            intervals = []
+            for (enter, leave, wid) in self._chamber_timeline[ch]:
+                if leave is None:
+                    leave = enter + proc_times.get(ch, 0)
+                intervals.append((enter, leave, wid))
+            intervals.sort(key=lambda x: x[0])
+            chamber_intervals[ch] = intervals
 
-        release = sorted(place.release_schedule, key=lambda x: x[1])  # 按释放时间排序
-        _,earliest = release[-place.capacity]
-        if earliest is None or expected_enter_time >= earliest:
-            return (0.0, expected_enter_time)  # 不违规
+        # 单段最短转运时间（u 卸载 + d_* 运输 + t 装载）
+        edge_transfer = self.ttime * 3
         
-        # 违规：计算惩罚，并修正进入时间为 earliest_release
-        penalty = self.c_release_violation * 100
-        corrected_enter_time = earliest
-        return (penalty, corrected_enter_time)
+        def will_exceed_capacity(intervals, at_time, capacity, current_wid):
+            """
+            判断“当前晶圆在 at_time 尝试进入”是否会超容量。
 
-    def _record_initial_release(self, token_id: int, enter_d_time: int,
-                                 target_place_idx: int, wafer_color: int = 0,
-                                 chain_downstream: bool = False) -> float:
-        """
-        晶圆进入运输位时，记录初步预估的释放时间；可选链式传播到下游腔室。
+            规则：统计 at_time 已占用数量（排除当前晶圆），再 +1（当前晶圆），
+            若结果 > capacity，则认定为容量冲突。
+            """
+            occupied_without_current = sum(
+                1 for (e, l, wid0) in intervals
+                if e <= at_time < l and wid0 < current_wid
+            )
+            return occupied_without_current + 1 > capacity
 
-        按「离开才检查」规则：离开 LP 时只对 s1 记录并检查，不链式传播。
+        def get_downstream_chain(t_name: str) -> List[str]:
+            """
+            返回当前 u_* 动作后需要检查的后续站点（按到达顺序）。
+            """
+            chain_map = {
+                # 路线1
+                "u_LP1_s1": ["s1", "s2"],
+                "u_s1_s2": ["s2"],
+                "u_s2_s3": ["s3", "s4"],
+                #"u_s3_s4": ["s4"],
+                "u_s4_s5": ["s5"],
+                # 路线2
+                "u_LP2_s1": ["s1", "s5"],
+                #"u_s1_s5": ["s5"],
+            }
+            return chain_map.get(t_name, [])
         
-        Args:
-            token_id: 晶圆编号
-            enter_d_time: 进入运输位的时间
-            target_place_idx: 目标腔室索引
-            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
-            chain_downstream: 是否链式传播到下游（默认 False，仅记录 target）
-            
-        Returns:
-            违规惩罚值
-        """
-        target_place = self.marks[target_place_idx]
+        penalty_coeff = self.c_release_violation * 100
         
-        # 计算预估进入时间和释放时间
-        expected_enter = enter_d_time + self.T_transport + self.T_load
-        
-        penalty = 0.0
-        corrected_enter = expected_enter
-        if self.reward_config.get('release_violation_penalty', 1):
-            penalty, corrected_enter = self._check_release_violation(target_place_idx, expected_enter)
-        
-        # 使用修正后的进入时间重新计算释放时间
-        release_time = corrected_enter + target_place.processing_time
-        target_place.add_release(token_id, release_time)
-        
-        if chain_downstream:
-            penalty += self._chain_record_release(token_id, target_place_idx, release_time, wafer_color)
-        
-        return penalty
+        for i, log in enumerate(self.fire_log):
+            t_name = log["t_name"]
+            wid = log.get("token_id", -1)
+            if wid < 0 or not t_name.startswith("u_"):
+                continue
 
-    def _chain_record_release(self, token_id: int, start_place_idx: int, 
-                               start_release_time: int, wafer_color: int = 0) -> float:
-        """
-        链式记录/更新下游腔室的预估释放时间。
-        
-        对链上的每个下游腔室（包括 s4）进行释放违规检查并累加惩罚。
-        
-        Args:
-            token_id: 晶圆编号
-            start_place_idx: 起始腔室索引
-            start_release_time: 起始腔室的释放时间
-            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
-            
-        Returns:
-            下游违规惩罚值
-        """
-        penalty = 0.0
-        current_idx = start_place_idx
-        current_release = start_release_time
-        
-        # 根据颜色选择释放链路
-        # 路线1（color=1）：使用 release_chain（s1 -> s3 -> s4 -> s5）
-        # 路线2（color=2）：使用 release_chain_route2（s1 -> s5）
-        if wafer_color == 2 and hasattr(self, 'release_chain_route2'):
-            chain = self.release_chain_route2
-        else:
-            chain = self.release_chain
-        
-        while current_idx in chain:
-            downstream_idx, transport_time = chain[current_idx]
-            downstream_place = self.marks[downstream_idx]
-            
-            # 下游预估进入时间 = 当前释放时间 + 运输时间
-            downstream_enter = current_release + transport_time
-            
-            # 检查下游违规并获取修正后的进入时间
-            corrected_downstream_enter = downstream_enter
-            if self.reward_config.get('release_violation_penalty', 1):
-                downstream_penalty, corrected_downstream_enter = self._check_release_violation(downstream_idx, downstream_enter)
-                penalty += downstream_penalty
-            
-            # 使用修正后的进入时间重新计算释放时间
-            downstream_release = corrected_downstream_enter + downstream_place.processing_time
-            
-            # 记录下游释放时间
-            downstream_place.add_release(token_id, downstream_release)
-            
-            # 继续链式传播
-            current_idx = downstream_idx
-            current_release = downstream_release
-        
-        return penalty
+            chain = get_downstream_chain(t_name)
+            if not chain:
+                continue
 
-    def _update_release(self, token_id: int, actual_enter_time: int,
-                        place_idx: int, wafer_color: int = 0,
-                        chain_downstream: bool = True) -> None:
-        """
-        晶圆实际进入腔室时，更新精确的释放时间；可选链式更新下游。
-        
-        注意：更新操作不进行违规检测。按「离开才检查」规则，t_s1 时下游尚未写入，只更新 s1。
-        
-        Args:
-            token_id: 晶圆编号
-            actual_enter_time: 实际进入时间
-            place_idx: 腔室索引
-            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
-            chain_downstream: 是否链式更新下游（默认 True；t_s1 时传 False）
-        """
-        place = self.marks[place_idx]
-        new_release_time = actual_enter_time + place.processing_time
-        place.update_release(token_id, new_release_time)
-        if chain_downstream:
-            self._chain_update_release(token_id, place_idx, new_release_time, wafer_color)
+            # 从当前 u_* 开始，第一站最早到达 = 当前离开时刻 + 单段转运
+            t_leave = log["t1"]
+            arrival = t_leave + edge_transfer
 
-    def _chain_update_release(self, token_id: int, start_place_idx: int, 
-                               start_release_time: int, wafer_color: int = 0) -> None:
-        """
-        链式更新下游腔室中指定晶圆的预估释放时间。
-        
-        重要：这是更新已有记录，不是添加新记录，因此：
-        1. 不调用 _check_release_violation（当前晶圆自己的记录不应约束自己）
-        2. 不施加惩罚
-        
-        Args:
-            token_id: 晶圆编号
-            start_place_idx: 起始腔室索引
-            start_release_time: 起始腔室的新释放时间
-            wafer_color: 晶圆颜色（1=路线1, 2=路线2）
-        """
-        current_idx = start_place_idx
-        current_release = start_release_time
-        
-        # 根据颜色选择释放链路
-        if wafer_color == 2 and hasattr(self, 'release_chain_route2'):
-            chain = self.release_chain_route2
-        else:
-            chain = self.release_chain
-        
-        while current_idx in chain:
-            downstream_idx, transport_time = chain[current_idx]
-            downstream_place = self.marks[downstream_idx]
-            
-            # 下游预估进入时间 = 当前释放时间 + 运输时间
-            downstream_enter = current_release + transport_time
-            
-            # 重要修复：更新已有记录时，不调用 _check_release_violation
-            # 因为当前晶圆自己的记录已经在 release_schedule 中，
-            # 把它自己的释放时间当作约束会导致错误的修正
-            # 违规检查只在首次添加记录（add_release）时才有意义
-            
-            # 直接使用预估进入时间计算释放时间
-            downstream_release = downstream_enter + downstream_place.processing_time
-            
-            # 更新下游释放时间
-            downstream_place.update_release(token_id, downstream_release)
-            
-            # 继续链式传播
-            current_idx = downstream_idx
-            current_release = downstream_release
+            violated = False
+            for idx, station in enumerate(chain):
+                if station not in chamber_intervals:
+                    continue
+                if station not in capacities:
+                    continue
 
-    def _pop_release(self, token_id: int, place_idx: int) -> None:
-        """
-        晶圆离开腔室时，从释放队列中移除记录。
+                if will_exceed_capacity(
+                    chamber_intervals[station],
+                    arrival,
+                    capacities[station],
+                    wid,
+                ):
+                    violated = True
+                    break
+
+                # 推进到下一站：当前站处理完成后再转运
+                if idx < len(chain) - 1:
+                    arrival = arrival + proc_times.get(station, 0) + edge_transfer
+
+            if violated:
+                blame[i] = penalty_coeff
         
-        Args:
-            token_id: 晶圆编号
-            place_idx: 腔室索引
-        """
-        place = self.marks[place_idx]
-        place.pop_release(token_id)
+        return blame
 
     def _track_wafer_statistics(self, t_name: str, wafer_id: int, 
                                  start_time: int, enter_new: int) -> None:
@@ -936,7 +736,6 @@ class Petri:
         self.scrap_count = 0  # 重置报废计数器
         self._idle_penalty_applied = False  # 重置停滞惩罚标记
         self._consecutive_wait_time = 0  # 重置连续 WAIT 时间
-        self._release_violation_penalty = 0.0  # 重置释放时间违规惩罚
         self._per_wafer_reward = 0.0  # 重置单片完工奖励
         self.wafer_stats = {}  # 重置晶圆滞留时间统计
         self.entered_wafer_count = 0  # 重置已进入系统的晶圆数
@@ -944,9 +743,11 @@ class Petri:
         self.resident_violation_count = 0 # 重置驻留违规计数
         self.qtime_violation_count = 0    # 重置Q-time违规计数
         self.violated_tokens = {}         # 重置违规记录
-        # 清空所有库所的释放时间队列，并重置机器分配计数器
+        # 重置腔室时间线（事后追责用）
+        self._chamber_timeline = {"s1": [], "s2": [], "s3": [], "s4": [], "s5": []}
+        self._chamber_active = {"s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": {}}
+        # 重置机器分配计数器
         for place in self.marks:
-            place.release_schedule.clear()
             if place.type == 1:
                 place.last_machine = -1  # 重置机器轮换计数器
 
@@ -1151,41 +952,6 @@ class Petri:
                 t_idx = self._get_transition_index("u_LP2_s1")
                 mask[t_idx] = False
         
-            
-        # ========== 类型 2 晶圆进入限制 (基于 s5 可用性) ==========
-        # 如果类型 2 晶圆预计进入 s5 的时间早于 s5 的可用时间，则禁止进入
-        if "u_LP2_s1" in self.id2t_name and "s5" in self.id2p_name:
-            t_idx = self._get_transition_index("u_LP2_s1")
-            
-            # 只有当该动作尚未被禁用时才检查
-            if mask[t_idx]:
-                s5_idx = self._get_place_index("s5")
-                place_s5 = self.marks[s5_idx]
-                place_s1 = self.marks[self._get_place_index("s1")] # 获取 s1 以读取加工时间
-                
-                # s5 满载检查改进：检查预期时间段内是否有可用 Capacity (支持插队)
-                enter_new = self.time + self.ttime
-                expected_enter_s1 = enter_new + self.T_transport + self.T_load
-                release_s1 = expected_enter_s1 + place_s1.processing_time
-                transport_s1_to_s5 = self.ttime * 2 + 15 # s5取出、运送、装载到LP_done 约15s
-                expected_enter_s5 = release_s1 + transport_s1_to_s5 + self.T_load
-                expected_leave_s5 = expected_enter_s5 + place_s5.processing_time
-                
-                # 统计在 [expected_enter_s5, expected_leave_s5] 期间的重叠预约数
-                overlap_count = 0
-                for _, release_time in place_s5.release_schedule:
-                    # 现有预约的占用区间: [release_time - processing_time, release_time]
-                    existing_start = release_time - place_s5.processing_time
-                    existing_end = release_time
-                    
-                    # 检查区间重叠: max(start1, start2) < min(end1, end2)
-                    if max(expected_enter_s5, existing_start) < min(expected_leave_s5, existing_end):
-                        overlap_count += 1
-                
-                # 如果重叠数达到容量上限，则禁止进入
-                if overlap_count >= place_s5.capacity:
-                     mask[t_idx] = False
-
         # ========== 步骤索引感知的路由约束 (u_变迁) ==========
         # 使用 (route_type, step) 决定晶圆下一个目标
         # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
@@ -1347,205 +1113,54 @@ class Petri:
             if t_name == "t_s1":
                 self._last_t_pm1_fire_time = start_time
             
-            # ========== 4) 释放时间追踪逻辑 ==========
+            # ========== 4) 占用时间追踪逻辑（事后追责） ==========
             # 获取晶圆 token_id 和 route_type（第一个非资源库所消费的 token）
             wafer_id = consumed_token_ids[0] if consumed_token_ids else -1
-            wafer_route_type = consumed_route_types[0] if consumed_route_types else 0
             
-            # 根据变迁类型处理释放时间（只追踪有驻留约束的腔室：s1, s3, s5）
-            # 双路线：u_LP1_s1 和 u_LP2_s1 都进入 d_s1
+            # 统计进入系统的晶圆数量（用于 WIP 上限控制）
             if t_name in ("u_LP1_s1", "u_LP2_s1"):
-                # 递增已进入系统的晶圆计数
                 self.entered_wafer_count += 1
-                # 晶圆离开 LP 进入 d_s1：对 s1 记录并检查
-                if "s1" in self.id2p_name:
-                    s1_idx = self._get_place_index("s1")
-                    penalty = self._record_initial_release(wafer_id, enter_new, s1_idx, wafer_route_type, chain_downstream=False)
-                    self._release_violation_penalty += penalty
-                
-                # 类型 2 晶圆（LP2 路线）：同时预约 s5（拉式预约）
-                if wafer_route_type == 2 and "s5" in self.id2p_name:
-                    s1_idx = self._get_place_index("s1")
-                    s5_idx = self._get_place_index("s5")
-                    place_s1 = self.marks[s1_idx]
-                    place_s5 = self.marks[s5_idx]
-                    
-                    # 预估 s1 释放时间（基于 s1 预约）
-                    expected_enter_s1 = enter_new + self.T_transport + self.T_load
-                    release_s1 = expected_enter_s1 + place_s1.processing_time
-                    
-                    # 预估 s5 进入时间
-                    transport_s1_to_s5 = self.T_load * 2 + self.T_transport + 15 # +15s buffer for s5 clearing
-                    expected_enter_s5 = release_s1 + transport_s1_to_s5
-
-                    penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
-
-                    if self.reward_config.get('release_violation_penalty', 1):
-                        penalty_s5, corrected_enter_s5 = self._check_release_violation(s5_idx, expected_enter_s5)
-                        self._release_violation_penalty += penalty_s5
-                    
-                    release_s5 = corrected_enter_s5 + place_s5.processing_time
-                    place_s5.add_release(wafer_id, release_s5)
-                
-            elif t_name == "t_s1":
-                # 晶圆进入 s1：只更新 s1，不链式更新（下游 s3/s4/s5 在离开 s2/s4 时才写入）
-                if "s1" in self.id2p_name:
-                    s1_idx = self._get_place_index("s1")
-                    self._update_release(wafer_id, enter_new, s1_idx, wafer_route_type, chain_downstream=False)
-                
-            elif t_name == "u_s1_s2":
-                # 路线1：晶圆离开 s1 去 s2，从 s1 队列移除
-                if "s1" in self.id2p_name:
-                    s1_idx = self._get_place_index("s1")
-                    self._pop_release(wafer_id, s1_idx)
             
-            elif t_name == "u_s1_s5":
-                # 路线2：晶圆离开 s1 直接去 s5，从 s1 队列移除；检查实际进入时间是否与其他晶圆冲突
-                if "s1" in self.id2p_name:
-                    s1_idx = self._get_place_index("s1")
-                    self._pop_release(wafer_id, s1_idx)
-                if "s5" in self.id2p_name:
-                    s5_idx = self._get_place_index("s5")
-                    place_s5 = self.marks[s5_idx]
-                    # 晶圆进入 d_s5 时间 = enter_new，预计进入 s5 = enter_new + T_load
-                    expected_enter_s5 = enter_new + self.T_load
-                    
-                    # 检查实际进入是否与其他晶圆冲突（排除自己的预约）
-                    other_releases = [(tid, rt) for tid, rt in place_s5.release_schedule if tid != wafer_id]
-                    other_releases_sorted = sorted(other_releases, key=lambda x: x[1])
-                    
-                    if len(other_releases_sorted) >= place_s5.capacity:
-                        # 其他晶圆占满了 s5，检查是否可以进入
-                        constraint_time = other_releases_sorted[-place_s5.capacity][1]
-                        if expected_enter_s5 < constraint_time:
-                            # 实际进入与其他晶圆冲突，施加惩罚
-                            penalty = self.c_release_violation * 100
-                            self._release_violation_penalty += penalty
-                    
-                    # 更新 s5 的释放时间（用实际进入时间）
-                    release_s5 = expected_enter_s5 + place_s5.processing_time
-                    place_s5.update_release(wafer_id, release_s5)
-                
-            elif t_name == "u_s2_s3":
-                # 路线1：离开 s2(LLC)，对 s3、s4、s5 做 add_release + 违规检查（离开才检查）
-                if "s3" in self.id2p_name and "s4" in self.id2p_name and "s5" in self.id2p_name:
-                    s3_idx = self._get_place_index("s3")
-                    s4_idx = self._get_place_index("s4")
-                    s5_idx = self._get_place_index("s5")
-                    place_s3 = self.marks[s3_idx]
-                    place_s4 = self.marks[s4_idx]
-                    place_s5 = self.marks[s5_idx]
-                    expected_enter_s3 = enter_new + self.T_load
-                    
-                    # 检查 s3 违规并获取修正后的进入时间
-                    penalty = 0.0
-                    corrected_enter_s3 = expected_enter_s3
-                    if self.reward_config.get('release_violation_penalty', 1):
-                        penalty_s3, corrected_enter_s3 = self._check_release_violation(s3_idx, expected_enter_s3)
-                        penalty += penalty_s3
-                    
-                    # 使用修正后的 s3 进入时间重新计算 s3 释放时间和 s4 进入时间
-                    release_s3 = corrected_enter_s3 + place_s3.processing_time
-                    transport_s3_to_s4 = self.ttime * 3
-                    expected_enter_s4 = release_s3 + transport_s3_to_s4
-                    
-                    # 检查 s4 违规并获取修正后的进入时间
-                    corrected_enter_s4 = expected_enter_s4
-                    if self.reward_config.get('release_violation_penalty', 1):
-                        penalty_s4, corrected_enter_s4 = self._check_release_violation(s4_idx, expected_enter_s4)
-                        penalty += penalty_s4
-                    
-                    # 使用修正后的 s4 进入时间计算初步 s4 释放时间
-                    release_s4 = corrected_enter_s4 + place_s4.processing_time
-                    transport_s4_to_s5 = self.ttime * 3
-                    
-                    # ========== 拉式预约：根据 s5 可用时间反推 s4 释放时间 ==========
-                    s5_schedule = sorted(place_s5.release_schedule, key=lambda x: x[1])
-                    if len(s5_schedule) >= place_s5.capacity:
-                        # s5 满了，找第 (len - capacity) 个释放时间（即下一个可用 slot）
-                        s5_available = s5_schedule[-place_s5.capacity][1]
-                        expected_enter_s5 = release_s4 + transport_s4_to_s5
-                        
-                        if expected_enter_s5 < s5_available:
-                            # 反推 s4 应该何时释放（晶圆在 s4 多停留）
-                            s4_should_release = s5_available - transport_s4_to_s5
-                            if s4_should_release > release_s4:
-                                release_s4 = s4_should_release
-                            expected_enter_s5 = s5_available
-                    else:
-                        # s5 有空位，正常计算
-                        expected_enter_s5 = release_s4 + transport_s4_to_s5
-                    
-                    # 计算 s5 释放时间
-                    release_s5 = expected_enter_s5 + place_s5.processing_time
-                    
-                    place_s3.add_release(wafer_id, release_s3)
-                    place_s4.add_release(wafer_id, release_s4)
-                    place_s5.add_release(wafer_id, release_s5)
-                    self._release_violation_penalty += penalty
-                
-            elif t_name == "t_s3":
-                # 晶圆进入 s3：更新精确释放时间 + 链式更新 s4（s4 已在 u_s2_s3 时加入）
-                if "s3" in self.id2p_name:
-                    s3_idx = self._get_place_index("s3")
-                    self._update_release(wafer_id, enter_new, s3_idx, wafer_route_type)
+            # ========== 4.1) 记录腔室实际占用时间线（事后追责优化）==========
+            # 注意：这是独立的 if/elif 链，不与下面的释放追踪逻辑 elif 联动
+            _ct = self._chamber_timeline
+            _ca = self._chamber_active
+            if wafer_id >= 0:
+                # 进入腔室
+                if t_name in ("t_s1", "t_s2", "t_s3", "t_s4", "t_s5"):
+                    ch = t_name[2:]  # "s1", "s2", ...
+                    idx = len(_ct[ch])
+                    _ct[ch].append((enter_new, None, wafer_id))
+                    _ca[ch][wafer_id] = idx
+                # 离开腔室
+                elif t_name in ("u_s1_s2", "u_s1_s5"):
+                    if wafer_id in _ca["s1"]:
+                        idx = _ca["s1"].pop(wafer_id)
+                        e, _, wid = _ct["s1"][idx]
+                        _ct["s1"][idx] = (e, start_time, wid)
+                elif t_name == "u_s2_s3":
+                    if wafer_id in _ca["s2"]:
+                        idx = _ca["s2"].pop(wafer_id)
+                        e, _, wid = _ct["s2"][idx]
+                        _ct["s2"][idx] = (e, start_time, wid)
+                elif t_name == "u_s3_s4":
+                    if wafer_id in _ca["s3"]:
+                        idx = _ca["s3"].pop(wafer_id)
+                        e, _, wid = _ct["s3"][idx]
+                        _ct["s3"][idx] = (e, start_time, wid)
+                elif t_name == "u_s4_s5":
+                    if wafer_id in _ca["s4"]:
+                        idx = _ca["s4"].pop(wafer_id)
+                        e, _, wid = _ct["s4"][idx]
+                        _ct["s4"][idx] = (e, start_time, wid)
+                elif t_name == "u_s5_LP_done":
+                    if wafer_id in _ca["s5"]:
+                        idx = _ca["s5"].pop(wafer_id)
+                        e, _, wid = _ct["s5"][idx]
+                        _ct["s5"][idx] = (e, start_time, wid)
             
-            elif t_name == "t_s4":
-                # 晶圆进入 s4：只更新 s4，不链式更新（s5 在 u_s4_s5 时才加入）
-                if "s4" in self.id2p_name:
-                    s4_idx = self._get_place_index("s4")
-                    self._update_release(wafer_id, enter_new, s4_idx, wafer_route_type, chain_downstream=False)
-                
-            elif t_name == "u_s3_s4":
-                # 晶圆离开 s3：从 s3 队列移除
-                if "s3" in self.id2p_name:
-                    s3_idx = self._get_place_index("s3")
-                    self._pop_release(wafer_id, s3_idx)
-            
-            elif t_name == "u_s4_s5":
-                # 路线1：离开 s4(LLD)，更新 s5 的释放时间（已在 u_s2_s3 时添加）；再从 s4 队列移除
-                if "s4" in self.id2p_name and "s5" in self.id2p_name:
-                    s4_idx = self._get_place_index("s4")
-                    s5_idx = self._get_place_index("s5")
-                    place_s4 = self.marks[s4_idx]
-                    place_s5 = self.marks[s5_idx]
-                    release_s4 = place_s4.get_release(wafer_id)
-                    if release_s4 is not None:
-                        # 运输时间 = s4卸载 + d_s5运输 + s5装载
-                        transport_s4_to_s5 = self.ttime * 3  # 约 15s
-                        expected_enter_s5 = release_s4 + transport_s4_to_s5
-                        
-                        # 更新 s5 的释放时间（不再检查违规，因为已在 u_s2_s3 时检查）
-                        release_s5 = expected_enter_s5 + place_s5.processing_time
-                        place_s5.update_release(wafer_id, release_s5)
-                    else:
-                        # 防御性处理：release_s4 为 None 时使用当前时间估算
-                        import warnings
-                        warnings.warn(
-                            f"[释放时间异常] wafer_id={wafer_id} 在 u_s4_s5 时 release_s4 为 None，"
-                            f"s4.release_schedule={list(place_s4.release_schedule)}，使用当前时间估算",
-                            RuntimeWarning
-                        )
-                        # 使用当前时间 + 运输时间作为 fallback
-                        transport_s4_to_s5 = self.ttime * 3
-                        expected_enter_s5 = enter_new + transport_s4_to_s5
-                        release_s5 = expected_enter_s5 + place_s5.processing_time
-                        place_s5.update_release(wafer_id, release_s5)
-                    self._pop_release(wafer_id, s4_idx)
-                
-            elif t_name == "t_s5":
-                # 晶圆进入 s5：更新精确释放时间
-                if "s5" in self.id2p_name:
-                    s5_idx = self._get_place_index("s5")
-                    self._update_release(wafer_id, enter_new, s5_idx, wafer_route_type)
-                
-            elif t_name == "u_s5_LP_done":
-                # 晶圆离开 s5：从 s5 队列移除
-                if "s5" in self.id2p_name:
-                    s5_idx = self._get_place_index("s5")
-                    self._pop_release(wafer_id, s5_idx)
-            
-            elif t_name == "t_LP_done":
+            # 单片完工奖励与统计
+            if t_name == "t_LP_done":
                 # 晶圆完成加工，给予单片完工奖励
                 self._per_wafer_reward += self.R_done
                 self.entered_wafer_count -= 1
@@ -1965,26 +1580,6 @@ class Petri:
                     overtime = (self.time - tok.enter_time) - place.processing_time - self.P_Residual_time
                     if overtime > 0:
                         self.resident_violation_count += 0.5 # 每步检测可能多次，但在step里是一次性的scrap判断
-                        # 注意：scrap_count 是由 external caller (step) 增加的，这里只增加分类计数
-                        # 但由于 _check_scrap 可能被多次调用（wait和fire后），计数需要小心。
-                        # 不过 pn.py 的设计是发现 scrap 就 done，所以计数只加一次没问题。
-                        # 修正：caller (step) 会增加 total scrap_count。这里我们可以增加分类计数。
-                        # 为了避免重复计数，这里暂不加？
-                        # 不，step 代码里是 if is_scrap: self.scrap_count += 1
-                        # 所以这里不需要加 self.scrap_count，但需要加 self.resident_violation_count
-                        # 等等，如果 _check_scrap 只是检测，那 counters 应该在 confirm scrap 时加。
-                        # 但这里我们必须在检测时就知道是哪种 breach。
-                        # step 函数只有 "is_scrap" bool。
-                        # 为防止副作用，我们只返回 info，由 step 或专门的方法增加计数？
-                        # 或者为了简单，并在 step 中只调用一次 stop_on_scrap，就在这里加？
-                        # 细看 step 代码：
-                        # is_scrap, scrap_info = self._check_scrap(return_info=True)
-                        # if is_scrap: ...
-                        # 所以这里是实时检测。
-                        # 既然 step 会终止 episode (或者记录)，那我们在 step 里增加计数比较好。
-                        # 但 step 里没分类型。
-                        # 所以在 return_info 里返回 type，step 里根据 info['type'] 增加计数？
-                        # 这样改动最小且安全。
                         
                         if return_info:
                             return True, {
@@ -1999,36 +1594,27 @@ class Petri:
                         return True
             
             # Type 2: 运输库所/机械手 (Q-time 约束 > 15s) - 已禁用
-            elif place.type == 2:
-                 for tok in place.tokens:
-                     # Q-time limit = 15s
-                     overtime = (self.time - tok.enter_time) - 15
-                     if overtime > 0:
-                         if return_info:
-                             return True, {
-                                 "token_id": getattr(tok, "token_id", -1),
-                                 "place": place.name,
-                                 "enter_time": tok.enter_time,
-                                 "stay_time": self.time - tok.enter_time,
-                                 "proc_time": 0,
-                                 "overtime": overtime,
-                                 "type": "qtime"
-                             }
-                         return True
+            #elif place.type == 2:
+            #     for tok in place.tokens:
+            #         # Q-time limit = 15s
+            #         overtime = (self.time - tok.enter_time) - 15
+            #         if overtime > 0:
+            #             if return_info:
+            #                 return True, {
+            #                     "token_id": getattr(tok, "token_id", -1),
+            #                     "place": place.name,
+            #                     "enter_time": tok.enter_time,
+            #                     "stay_time": self.time - tok.enter_time,
+            #                     "proc_time": 0,
+            #                     "overtime": overtime,
+            #                     "type": "qtime"
+            #                 }
+            #             return True
 
                         
         if return_info:
             return False, None
         return False
-
-    def _check_idle_timeout(self) -> bool:
-        """
-        检查是否连续执行 WAIT 动作超过阈值时间（停滞检测）
-        
-        Returns:
-            True 如果连续 WAIT 时间超过 idle_timeout
-        """
-        return self._consecutive_wait_time >= self.idle_timeout
 
     def step(self, t: Optional[Union[int, List[int]]] = None, wait: bool = False, with_reward: bool = False, 
              detailed_reward: bool = False):
@@ -2124,7 +1710,7 @@ class Petri:
                     pass
             
             # 检查停滞（连续执行 WAIT 超过阈值时间）
-            if self._check_idle_timeout() and not self._idle_penalty_applied:
+            if self._consecutive_wait_time >= self.idle_timeout and not self._idle_penalty_applied:
                 self._idle_penalty_applied = True  # 只惩罚一次
                 if with_reward:
                     if detailed_reward:
@@ -2140,8 +1726,6 @@ class Petri:
         # 执行变迁动作
         # 重置连续 WAIT 时间（执行非 WAIT 动作）
         self._consecutive_wait_time = 0
-        # 重置释放时间违规惩罚累积器
-        self._release_violation_penalty = 0.0
         
         t1 = self.time
         t2 = self.time + self.ttime
@@ -2155,15 +1739,6 @@ class Petri:
         
         reward_result = self.calc_reward(t1, t2, moving_pre_places=pre_places, detailed=detailed_reward)
         self._fire(t=t)
-        
-        # 将释放时间违规惩罚加入奖励
-        if self._release_violation_penalty > 0:
-            if with_reward:
-                if detailed_reward:
-                    reward_result["release_violation_penalty"] = -self._release_violation_penalty
-                    reward_result["total"] -= self._release_violation_penalty
-                else:
-                    reward_result -= self._release_violation_penalty
         
         # 添加单片完工奖励（在 _fire 中累积）
         if self._per_wafer_reward > 0:

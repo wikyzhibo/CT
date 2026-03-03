@@ -55,16 +55,16 @@ class PetriEnvConfig:
     T_transport: int = 5
     T_load: int = 5
     T_pm1_to_pm2: int = 5
-    idle_timeout: int = 300
+    idle_timeout: int = 300  # 仅默认值；pn.py 实际使用 最大腔室处理时间+30
     idle_penalty: int = 10
     stop_on_scrap: bool = True
     training_phase: int = 2
     max_wafers_in_system: int = 7
     
     # 奖励计算系数
-    transport_overtime_coef: float = 3.0    # 运输超时惩罚系数 (原 Q1_p)
+    transport_overtime_coef: float = 1.0    # 运输超时惩罚系数 (原 Q1_p)
     chamber_overtime_coef: float = 0.2      # 加工腔室超时惩罚系数 (原 Q2_p)
-    processing_reward_coef: float = 2.0     # 加工奖励系数 (原 r)
+    processing_reward_coef: float = 3.0     # 加工奖励系数 (原 r)
     
     reward_config: Optional[Dict[str, int]] = None
 

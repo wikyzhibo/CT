@@ -70,7 +70,10 @@ class DualActionPolicyModule(nn.Module):
 def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModule, 
                     n_steps: int, device: str = "cpu"):
     """
-    收集一轮 rollout 数据。
+    收集一轮 rollout 数据（两阶段模式）。
+    
+    第一阶段：关闭释放时间惩罚，让 policy 自由跑完 episode
+    第二阶段：事后追责，分析动作序列，给犯错的动作施加惩罚
     
     Returns:
         TensorDict 包含轨迹数据
@@ -93,6 +96,12 @@ def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModul
         "next_observation_f": [],
     }
     
+    # ========== 第一阶段：无约束跑完 ==========
+    env.net.no_release_penalty = True
+    
+    # 追踪每个 rollout step 对应的 fire_log 范围
+    fire_log_ranges = []  # [(start_idx, end_idx), ...] 每个 step 对应的 fire_log 索引范围
+    
     td = env.reset()
     
     for _ in range(n_steps):
@@ -114,6 +123,9 @@ def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModul
         data["log_prob_tm2"].append(lp1.squeeze(0))
         data["log_prob_tm3"].append(lp2.squeeze(0))
         
+        # 记录 fire_log 起始位置
+        fire_log_start = len(env.net.fire_log)
+        
         # 构造 step 输入
         step_td = td.clone()
         step_td["action_tm2"] = a1.squeeze(0).cpu()
@@ -121,6 +133,10 @@ def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModul
         
         # 执行动作
         td_next = env.step(step_td)
+        
+        # 记录 fire_log 结束位置
+        fire_log_end = len(env.net.fire_log)
+        fire_log_ranges.append((fire_log_start, fire_log_end))
         
         # reward 在 next 键下或直接在顶层
         if "next" in td_next.keys() and "reward" in td_next["next"].keys():
@@ -147,7 +163,22 @@ def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModul
         data["next_observation_f"].append(next_obs.float())
         
         if terminated.item():
+            # ===== 第二阶段：事后追责（episode 结束时）=====
+            blame = env.net.blame_release_violations()
+            if blame:
+                # 将 fire_log_index 映射到 rollout step_index
+                # fire_log_ranges[step_idx] = (start, end) 表示该 step 产生的 fire_log 范围
+                rollout_step = len(data["reward"]) - 1  # 当前是最后一个 step
+                for fire_idx, penalty in blame.items():
+                    # 找到包含该 fire_log_index 的 rollout step
+                    for step_idx, (fstart, fend) in enumerate(fire_log_ranges):
+                        if fstart <= fire_idx < fend:
+                            # 追加惩罚到该 step 的 reward
+                            data["reward"][step_idx] = data["reward"][step_idx] - penalty
+                            break
+            
             td = env.reset()
+            fire_log_ranges = []  # 重置 fire_log 范围追踪
         else:
             # 从 next 中提取下一状态
             if "next" in td_next.keys():
@@ -155,10 +186,14 @@ def collect_rollout(env: Env_PN_Concurrent, policy_module: DualActionPolicyModul
             else:
                 td = td_next.clone()
     
+    # 恢复释放惩罚模式
+    env.net.no_release_penalty = False
+    
     # 转换为 TensorDict
     return TensorDict({
         k: torch.stack(v) for k, v in data.items()
     }, batch_size=[n_steps])
+
 
 
 def train_concurrent(
@@ -386,7 +421,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="双机械手并发动作 PPO 训练")
     parser.add_argument("--config", type=str, 
-                       default="data/ppo_configs/concurrent_phase2_config.json",
+                       default=r"C:\Users\khand\OneDrive\code\dqn\CT\data\ppo_configs\concurrent_phase2_config.json",
                        help="训练配置文件路径")
     parser.add_argument("--phase", type=int, default=2, 
                        help="训练阶段 (1 or 2)")
