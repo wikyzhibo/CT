@@ -63,10 +63,10 @@ class PetriEnvConfig:
     max_wafers_in_system: int = 7
     
     # 奖励计算系数
-    transport_overtime_coef: float = 5.0    # 运输超时惩罚系数 (原 Q1_p)
+    transport_overtime_coef: float = 2.0    # 运输超时惩罚系数 (原 Q1_p)
     chamber_overtime_coef: float = 0.2      # 加工腔室超时惩罚系数 (原 Q2_p)
     processing_reward_coef: float = 3.0     # 加工奖励系数 (原 r)
-    in_system_time_penalty_coef: float = 0.3  # 系统内停留惩罚系数（温和，避免掩盖加工奖励）
+    in_system_time_penalty_coef: float = 0.1  # 系统内停留惩罚系数（温和，避免掩盖加工奖励）
     
     reward_config: Optional[Dict[str, int]] = None
 

@@ -7,17 +7,16 @@
 本项目采用**模块化子网建模**方法，使用 `SuperPetriBuilder` 自动构建 Petri 网结构：
 
 1. **模块定义**：每个加工腔室（PM1, PM2）、装载位（LP）、卸载位（LP_done）建模为独立的库所（Place）
-2. **资源建模**：机械手（TM1）建模为资源库所（`r_TM1`），容量等于机械手数量
+2. **机械手建模**：机械手通过 `RobotSpec.reach` 做可达性约束，并通过按机械手分组的运输库所（如 `d_TM1`）承载搬运过程
 3. **路径展开**：每条工艺路径（如 `LP → PM1 → PM2 → LP_done`）的每个边 `A → B` 自动展开为 **u-d-t 子结构**：
-   - `u_A_B`（卸载变迁）：从源库所 A 卸载晶圆，消耗机械手资源
-   - `d_B`（运输库所）：晶圆在运输过程中的缓冲位置
-   - `t_B`（装载变迁）：将晶圆装载到目标库所 B，归还机械手资源
+   - `u_A_B`（卸载变迁）：从源库所 A 卸载晶圆
+   - `d_TMx`（运输库所）：晶圆在对应机械手通道中的缓冲位置
+   - `t_B`（装载变迁）：将晶圆装载到目标库所 B
 
 **示例**：路径 `LP → PM1` 展开为：
 
 ```
-LP --[消耗]--> u_LP_PM1 --[生产]--> d_PM1 --[消耗]--> t_PM1 --[生产]--> PM1
-r_TM1 --[消耗]--> u_LP_PM1                    t_PM1 --[生产]--> r_TM1
+LP --[消耗]--> u_LP_PM1 --[生产]--> d_TM1 --[消耗]--> t_PM1 --[生产]--> PM1
 ```
 
 #### 库所类型（Place Types）
@@ -29,7 +28,7 @@ r_TM1 --[消耗]--> u_LP_PM1                    t_PM1 --[生产]--> r_TM1
 | **type=1** | 加工腔室  | PM1, PM2                | 有处理时间（`processing_time`） | 超过 `proc_time + P_Residual_time` 报废 |
 | **type=2** | 运输位    | d_PM1, d_PM2, d_LP_done | 晶圆运输中的缓冲位置            | 超过 `D_Residual_time` 后有超时惩罚     |
 | **type=3** | 起点      | LP                      | 晶圆初始位置                    | 无时间约束                              |
-| **type=4** | 资源/终点 | r_TM1, LP_done          | 机械手资源或完成位置            | 无时间约束                              |
+| **type=4** | 其他/兼容保留 | （可选）           | 兼容旧模型中的非工艺库所分类    | 无时间约束                              |
 
 #### Token 机制
 
@@ -76,7 +75,7 @@ builder = SuperPetriBuilder(d_ptime=5, default_ttime=5)
 info = builder.build(modules=modules, robots=robots, routes=routes)
 ```
 
-生成的 Petri 网包含：
+生成的 Petri 网包含（单机械手示例）：
 
-- **库所**：`LP`, `PM1`, `PM2`, `LP_done`, `r_TM1`, `d_PM1`, `d_PM2`, `d_LP_done`
+- **库所**：`LP`, `PM1`, `PM2`, `LP_done`, `d_TM1`
 - **变迁**：`u_LP_PM1`, `t_PM1`, `u_PM1_PM2`, `t_PM2`, `u_PM2_LP_done`, `t_LP_done`

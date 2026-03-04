@@ -24,8 +24,8 @@ class BasedToken:
 
 @dataclass
 class RobotSpec:
-    """机械手资源库所 r__TMx"""
-    tokens: int  # 初始 token 数量（TM1=1, TM2/TM3=2）
+    """机械手配置（仅用于边归属与可达性约束）"""
+    tokens: int  # 兼容字段：保留但在连续模型构图中不再显式建资源库所
     reach: Set[str]  # 该机械手可以触达的模块集合（用于自动选 robot）
 
 
@@ -181,8 +181,7 @@ class SuperPetriBuilder:
             self.add_place(m, tokens=spec.tokens, ptime=spec.ptime, capacity=spec.capacity)
 
         # 1) 建机器人资源 place：capacity=tokens；ptime=0
-        for rname, rspec in robots.items():
-            self.add_place(name=f"r_{rname}", tokens=rspec.tokens, ptime=0, capacity=rspec.tokens)
+        # 连续模型优化：不再显式构造 r_TMx 资源库所，机械手通过动作通道分工与 d_TMx 运输库所建模
 
         # 3) 汇总所有路线的相邻模块边
         all_edges: Set[Tuple[str, str]] = set()
@@ -199,7 +198,6 @@ class SuperPetriBuilder:
                 raise KeyError(f"Unknown module in route: {a}->{b}")
 
             robot = self.pick_robot_for_edge(a, b, robots)
-            r_place = f"r_{robot}"
             
             # 根据机械手选择运输库所
             d_place = f"d_{robot}"  # d_TM2 or d_TM3
@@ -213,13 +211,11 @@ class SuperPetriBuilder:
             self.add_transition(t, ttime=self.default_ttime)
 
             # 基本弧：
-            # A + r -> u -> d_robot -> t -> B + r
+            # A -> u -> d_robot -> t -> B
             self.add_arc(a, u, edge_weight)
-            self.add_arc(r_place, u, 1)  # 卸载消耗机械手token
             self.add_arc(u, d_place, edge_weight)
             self.add_arc(d_place, t, edge_weight)
             self.add_arc(t, b, edge_weight)
-            self.add_arc(t, r_place, 1)  # 装载归还机械手token
 
         return self.finalize()
 
@@ -289,8 +285,8 @@ class SuperPetriBuilder:
         ttime = np.array(self._ttime_by_tid, dtype=int)
 
         marks = []
-        # idle_places: 资源库所（如 r_TM2, r_TM3）的 token 不需要 ID
-        # 通过名称判断而非硬编码索引
+        # idle_places: 非工艺晶圆 token（若存在）不需要 ID
+        # 通过名称判断而非硬编码索引，兼容是否存在 r_ 资源库所
         token_id_counter = 0  # 全局 token ID 计数器
         
         for i in range(P):

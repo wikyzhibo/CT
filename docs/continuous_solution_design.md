@@ -62,7 +62,7 @@ flowchart TB
 ### 核心概念
 | 组件 | 说明 |
 | :--- | :--- |
-| **Place (库所)** | 代表资源容器：加工腔室 (`s1`-`s5`)、缓冲区 (`s2`, `s4`)、机械手 (`r_TM2`)、输入/输出 (`LP`)。 |
+| **Place (库所)** | 代表资源容器：加工腔室 (`s1`-`s5`)、缓冲区 (`s2`, `s4`)、按机械手分组运输位 (`d_TM2`, `d_TM3`)、输入/输出 (`LP`)。 |
 | **Token ** | 代表晶圆（携带 `token_id`, `route`, `step`）或资源占用状态。 |
 | **Transition ** | 代表动作：`u_` (Unload，从腔室取出) 和 `t_` (Load，放入腔室)。 |
 | **Release Check ** | 基于 `_chamber_timeline` 的事后追责机制用于定位容量违规动作。 |
@@ -250,3 +250,20 @@ python -m solutions.Continuous_model.export_inference_sequence \
 | **缓冲区滞留严重** | 缺少在系统内停留约束，或惩罚系数过小。 | 启用 `in_system_time_penalty` 并从 `in_system_time_penalty_coef=0.02` 开始小步调参（`0.03~0.05`）。 |
 | **报废率高** | 机械手太慢或系统拥堵。 | 调整 `max_wafers_in_system` 限制新晶圆进入。检查 `P_Residual_time` 是否过短。 |
 | **训练坍塌** | 熵 (Entropy) 下降过快。 | 在 `training_config` 中调整 `entropy_start` 或学习率 (LR)。 |
+
+---
+
+## 10. 建模变更记录（2026-03）
+
+### What changed
+- 在 `solutions/Continuous_model/construct.py` 中，连续模型构图不再显式创建 `r_TM2/r_TM3` 资源库所；
+- `u-d-t` 子结构由 `A + r -> u -> d -> t -> B + r` 调整为 `A -> u -> d_TMx -> t -> B`。
+
+### Why
+- 机械手分工已由 TM2/TM3 动作通道与 `RobotSpec.reach` 约束表达，显式资源库所在当前并发环境中不再提供额外判别信息；
+- 去除冗余库所有助于减少状态维度与构图复杂度。
+
+### Impact / How to use
+- 环境入口与训练接口不变，仍使用 `Env_PN_Concurrent` 的双动作通道；
+- 观测中的 `place_idx` 编码会随库所集合变化而变化，旧模型权重不保证与新编码完全一致；
+- `check_release_penalty.py` 的既有 `wrong_seq/corr_seq` 在 `n_wafer_route2=0` 配置下首步可能不可执行，验证时需使用与当前配置匹配的动作序列。

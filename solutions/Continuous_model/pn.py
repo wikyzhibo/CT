@@ -934,8 +934,8 @@ class Petri:
         # 路线1: ['u_LP1_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3', 
         #         'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
         # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 库所: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5', 
-        #        'r_TM2', 'r_TM3', 'd_s1', 'd_s2', 'd_s3', 'd_s4', 'd_s5', 'd_LP_done']
+        # 库所示例: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5',
+        #           'd_TM2', 'd_TM3']
         
         # 基本使能条件：前置库所有足够 token 且后置库所不超容量
         cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
@@ -1851,7 +1851,7 @@ class Petri:
         pre2 = set(np.flatnonzero(self.pre[:, a2] > 0))
         pst2 = set(np.flatnonzero(self.pst[:, a2] > 0))
         
-        # 获取资源库所索引（r_TM2, r_TM3）
+        # 获取资源类库所索引（若存在 r_ 前缀库所）
         resource_indices = set()
         for i, name in enumerate(self.id2p_name):
             if name.startswith("r_"):
