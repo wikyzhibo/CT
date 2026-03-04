@@ -367,6 +367,7 @@ class Petri:
         self.training_phase = config.training_phase
         self.reward_config = config.reward_config
         self.MAX_TIME = config.MAX_TIME
+        self.Wait_time = config.Wait_time
         
         # ============ 性能优化配置 ============
         # 内部状态
@@ -1239,7 +1240,14 @@ class Petri:
                             safe_reward += self.b_safe * (safe_end - safe_start)
         
         time_cost = self.c_time * delta_t if self.reward_config.get('time_cost', 1) else 0.0
-        total = proc_reward + safe_reward - (overtime_penalty + warn_penalty + transport_penalty) - time_cost
+        
+        # 9. 停滞惩罚（连续 WAIT 超过阈值）
+        idle_penalty_val = 0.0
+        if (self._consecutive_wait_time >= self.idle_timeout) and not self._idle_penalty_applied:
+            self._idle_penalty_applied = True  # 只惩罚一次
+            idle_penalty_val = self.idle_penalty
+        
+        total = proc_reward + safe_reward - (overtime_penalty + warn_penalty + transport_penalty) - time_cost - idle_penalty_val
         
         if detailed:
             return {
@@ -1250,6 +1258,7 @@ class Petri:
                 "warn_penalty": warn_penalty,
                 "transport_penalty": transport_penalty,
                 "time_cost": time_cost,
+                "idle_timeout_penalty": -idle_penalty_val if idle_penalty_val > 0 else 0.0
             }
         
         return total
@@ -2054,7 +2063,6 @@ class Petri:
 
     def step(self, t: Optional[Union[int, List[int]]] = None,
              wait: bool = False,
-             with_reward: bool = False,
              detailed_reward: bool = False):
         """
         执行一步动作。
@@ -2062,33 +2070,24 @@ class Petri:
         Args:
             t: 要执行的变迁索引或变迁索引列表（当 wait=False 时）
             wait: 是否执行 WAIT 动作
-            with_reward: 是否返回奖励
             detailed_reward: 是否返回详细奖励分解（仅当 with_reward=True 时有效）
             
         Returns:
-            如果 with_reward=True 且 detailed_reward=False: (done, reward, scrap)
-            如果 with_reward=True 且 detailed_reward=True: (done, reward_dict, scrap)
-            否则: (done, scrap)
+            detailed_reward=False: (done, reward, scrap)
+            detailed_reward=True: (done, reward_dict, scrap)
             
             done=True 表示 episode 结束（完成或报废）
             scrap=True 表示因报废而结束
         """
         if self.time >= self.MAX_TIME:
-            if with_reward:
-                if detailed_reward:
-                    return True, {"total": -100, "timeout": True}, True
-                return True, -100, True  # 超时视为报废
-            return True, True
+            if detailed_reward:
+                return True, {"total": -100, "timeout": True}, True
+            return True, -100, True  # 超时视为报废
 
         if wait:
             t1 = self.time
-
-            enabled = self.get_enable_t()
-
-            t2 = self.time + 5
-
-            # 累计连续 WAIT 时间
-            self._consecutive_wait_time += (t2 - t1)
+            t2 = self.time + self.Wait_time
+            self._consecutive_wait_time += self.Wait_time # 累计连续 WAIT 时间
 
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
             self.time = t2
@@ -2117,14 +2116,12 @@ class Petri:
                         self.resident_violation_count += 1
                     
                     done = self.stop_on_scrap
-                    if with_reward:
-                        if detailed_reward:
-                            reward_result["scrap_penalty"] = -self.R_scrap
-                            reward_result["total"] -= self.R_scrap
-                            reward_result["scrap_info"] = scrap_info
-                            return done, reward_result, True
-                        return done, reward_result - self.R_scrap, True
-                    return done, True
+                    if detailed_reward:
+                        reward_result["scrap_penalty"] = -self.R_scrap
+                        reward_result["total"] -= self.R_scrap
+                        reward_result["scrap_info"] = scrap_info
+                        return done, reward_result, True
+                    return done, reward_result - self.R_scrap, True
 
                 # 2. Q-time 违规 - 警告，不停止，不计入 scrap_count (以免触发外部停止)
                 elif sType == "qtime":
@@ -2132,34 +2129,20 @@ class Petri:
                         self.qtime_violation_count += 1
                     
                     # 施加惩罚但不停止
-                    if with_reward:
-                        if detailed_reward:
-                            # 使用较小的惩罚或特定 Q-time 惩罚
-                            reward_result["qtime_penalty"] = -self.R_scrap # 或其他系数
-                            reward_result["total"] -= self.R_scrap
-                            reward_result["scrap_info"] = scrap_info # 记录详情
-                        else:
-                             reward_result -= self.R_scrap
-                    # 不返回，继续执行
-                    pass
-            
-            # 检查停滞（连续执行 WAIT 超过阈值时间）
-            if (self._consecutive_wait_time >= self.idle_timeout) and not self._idle_penalty_applied:
-                self._idle_penalty_applied = True  # 只惩罚一次
-                if with_reward:
                     if detailed_reward:
-                        reward_result["idle_timeout_penalty"] = -self.idle_penalty
-                        reward_result["total"] -= self.idle_penalty
+                        # 使用较小的惩罚或特定 Q-time 惩罚
+                        reward_result["qtime_penalty"] = -self.R_scrap  # 或其他系数
+                        reward_result["total"] -= self.R_scrap
+                        reward_result["scrap_info"] = scrap_info  # 记录详情
                     else:
-                        reward_result -= self.idle_penalty
+                        reward_result -= self.R_scrap
             
-            if with_reward:
-                return False, reward_result, False
-            return False, False
+            return False, reward_result, False
 
         # 执行变迁动作
-        # 重置连续 WAIT 时间（执行非 WAIT 动作）
+        # 重置连续 WAIT 时间和停滞标记（执行非 WAIT 动作）
         self._consecutive_wait_time = 0
+        self._idle_penalty_applied = False
         # 重置释放时间违规惩罚累积器
         self._release_violation_penalty = 0.0
         
@@ -2178,21 +2161,21 @@ class Petri:
         
         # 将释放时间违规惩罚加入奖励
         if self._release_violation_penalty > 0:
-            if with_reward:
-                if detailed_reward:
-                    reward_result["release_violation_penalty"] = -self._release_violation_penalty
-                    reward_result["total"] -= self._release_violation_penalty
-                else:
-                    reward_result -= self._release_violation_penalty
+            if detailed_reward:
+                reward_result["release_violation_penalty"] = -self._release_violation_penalty
+                reward_result["total"] -= self._release_violation_penalty
+            else:
+                reward_result -= self._release_violation_penalty
+
         
         # 添加单片完工奖励（在 _fire 中累积）
         if self._per_wafer_reward > 0:
-            if with_reward:
-                if detailed_reward:
-                    reward_result["wafer_done_bonus"] = self._per_wafer_reward
-                    reward_result["total"] += self._per_wafer_reward
-                else:
-                    reward_result += self._per_wafer_reward
+            if detailed_reward:
+                reward_result["wafer_done_bonus"] = self._per_wafer_reward
+                reward_result["total"] += self._per_wafer_reward
+            else:
+                reward_result += self._per_wafer_reward
+
             self._per_wafer_reward = 0.0  # 清零
 
         # 检查完成
@@ -2201,12 +2184,12 @@ class Petri:
         
         # 全部完工大奖励
         if finish:
-            if with_reward:
-                if detailed_reward:
-                    reward_result["finish_bonus"] = self.R_finish
-                    reward_result["total"] += self.R_finish
-                else:
-                    reward_result += self.R_finish
+            if detailed_reward:
+                reward_result["finish_bonus"] = self.R_finish
+                reward_result["total"] += self.R_finish
+            else:
+                reward_result += self.R_finish
+
         
         # fire 后也检查报废
         is_scrap, scrap_info = self._check_scrap(return_info=True)
@@ -2231,14 +2214,12 @@ class Petri:
                     self.resident_violation_count += 1
                 
                 done = self.stop_on_scrap
-                if with_reward:
-                    if detailed_reward:
-                        reward_result["scrap_penalty"] = -self.R_scrap
-                        reward_result["total"] -= self.R_scrap
-                        reward_result["scrap_info"] = scrap_info
-                        return done, reward_result, True
-                    return done, reward_result - self.R_scrap, True
-                return done, True
+                if detailed_reward:
+                    reward_result["scrap_penalty"] = -self.R_scrap
+                    reward_result["total"] -= self.R_scrap
+                    reward_result["scrap_info"] = scrap_info
+                    return done, reward_result, True
+                return done, reward_result - self.R_scrap, True
 
             # 2. Q-time 违规 - 警告，不停止
             elif sType == "qtime":
@@ -2246,18 +2227,13 @@ class Petri:
                     self.qtime_violation_count += 1
                 
                 # 施加惩罚但不停止
-                if with_reward:
-                    if detailed_reward:
-                        reward_result["qtime_penalty"] = -self.R_scrap
-                        reward_result["total"] -= self.R_scrap
-                        reward_result["scrap_info"] = scrap_info
-                    else:
-                         reward_result -= self.R_scrap
-                # 不返回，继续执行
-                pass
+                if detailed_reward:
+                    reward_result["qtime_penalty"] = -self.R_scrap
+                    reward_result["total"] -= self.R_scrap
+                    reward_result["scrap_info"] = scrap_info
+                else:
+                    reward_result -= self.R_scrap
 
-        if with_reward:
-            return finish, reward_result, False
         return finish, False
 
     def step_concurrent(self, a1: Optional[int] = None, a2: Optional[int] = None,

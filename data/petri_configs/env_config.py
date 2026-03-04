@@ -50,7 +50,7 @@ class PetriEnvConfig:
     chamber_overtime_coef: float = 0.2  # 加工腔室超时惩罚系数 (原 Q2_p)
     processing_reward_coef: float = 2.0  # 加工奖励系数 (原 r)
 
-    # =========变量===========
+    # =========常量===========
     D_Residual_time: int = 10 #最大驻留时间
     P_Residual_time: int = 15 #最大驻留时间
     T_warn: int = 30
@@ -58,6 +58,7 @@ class PetriEnvConfig:
     T_transport: int = 5 #运输时间
     T_load: int = 5 #装载和卸载时间
     idle_timeout: int = 300 #系统最大停滞时间，防止策略陷入持续空转
+    Wait_time = 5 #等待的时长
 
     # =========向后兼容=================
     enable_release_penalty_detection: bool = False #施放时间惩罚开关
