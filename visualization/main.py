@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from solutions.PPO.enviroment import Env_PN
+from solutions.PPO.enviroment import Env_PN_Concurrent
 
 from .petri_adapter import PetriAdapter
 from .viewmodel import PetriViewModel
@@ -53,7 +53,7 @@ def set_windows_app_id():
 def build_adapter(adapter_name: str) -> PetriAdapter:
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
-    env = Env_PN(detailed_reward=True)
+    env = Env_PN_Concurrent(detailed_reward=True)
     return PetriAdapter(env)
 
 
@@ -113,7 +113,8 @@ def load_model(model_path: str, adapter: PetriAdapter):
             try:
                 # 获取观察和动作掩码
                 obs = adapter.env._build_obs()
-                action_mask_indices = adapter.net.get_enable_t()
+                tm2_enabled, tm3_enabled = adapter.net.get_enable_t()
+                action_mask_indices = tm2_enabled + tm3_enabled
                 
                 # [DEBUG] Check mask indices
                 # print(f"[DEBUG] Mask indices: {action_mask_indices}")
@@ -209,7 +210,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
             """返回 (a1, a2) 双动作（Petri 网变迁索引，-1 表示 WAIT）"""
             try:
                 obs = adapter.env._build_obs()
-                tm2_enabled, tm3_enabled = adapter.net.get_enable_t_by_robot()
+                tm2_enabled, tm3_enabled = adapter.net.get_enable_t()
                 tm2_enabled_set = set(tm2_enabled)
                 tm3_enabled_set = set(tm3_enabled)
                 
@@ -258,7 +259,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="PySide6 Petri 可视化")
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
-    parser.add_argument("--concurrent", "-c", action="store_true", help="使用并发模型（双动作）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     args = parser.parse_args()
 
@@ -285,10 +285,7 @@ def main() -> int:
             model_path = args.model
         else:
             # 默认模型路径
-            if args.concurrent:
-                default_model = Path("solutions/PPO/saved_models/CT_concurrent_phase2_best.pt")
-            else:
-                default_model = Path("result/best_policy.pt")
+            default_model = Path("solutions/PPO/saved_models/CT_concurrent_phase2_best.pt")
             if default_model.exists():
                 model_path = str(default_model)
                 print(f"使用默认模型: {model_path}")
@@ -297,16 +294,10 @@ def main() -> int:
                 print("未找到默认模型，将以手动模式运行")
         
         if model_path:
-            if args.concurrent:
-                # 加载并发模型
-                model_handler = load_concurrent_model(model_path, adapter)
-                if model_handler:
-                    window.set_concurrent_model_handler(model_handler)
-            else:
-                # 加载单动作模型
-                model_handler = load_model(model_path, adapter)
-                if model_handler:
-                    window.set_model_handler(model_handler)
+            # 默认加载并发模型
+            model_handler = load_concurrent_model(model_path, adapter)
+            if model_handler:
+                window.set_concurrent_model_handler(model_handler)
     else:
         print("已禁用模型加载")
     

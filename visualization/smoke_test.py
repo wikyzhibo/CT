@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-from solutions.PPO.enviroment import Env_PN
+from solutions.PPO.enviroment import Env_PN_Concurrent
 
 from .petri_adapter import PetriAdapter
 
 
 def run_smoke() -> None:
-    env = Env_PN(detailed_reward=True)
+    env = Env_PN_Concurrent(detailed_reward=True)
     adapter = PetriAdapter(env)
     state = adapter.reset()
     print("time:", state.time)

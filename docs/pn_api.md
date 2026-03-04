@@ -37,7 +37,7 @@ Petri(
 
 **常用方法**
 - `reset()` 重置环境
-- `get_enable_t() -> List[int]` 获取当前可使能变迁
+- `get_enable_t() -> Tuple[List[int], List[int]]` 获取当前可使能变迁（按 TM2/TM3 分组）
 - `next_enable_time() -> int` 估计下一可使能时间
 - `step(t=None, wait=False, with_reward=False, detailed_reward=False)` 执行一步
 - `render_gantt(out_path)` 输出甘特图

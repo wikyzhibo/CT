@@ -929,27 +929,19 @@ class Petri:
         
         return int(earliest)
 
-    def _resource_enable(self):
-        # 双路线变迁:
-        # 路线1: ['u_LP1_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3', 
-        #         'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
-        # 库所示例: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5',
-        #           'd_TM2', 'd_TM3']
-        
+    def next_enable_time(self) -> int:
+        te = []
+        # 仅用于估计下一可使能时间，需复用使能逻辑但不做时间门槛过滤
+        # 这里与 get_enable_t 的 mask 计算保持一致（并发模型）
         # 基本使能条件：前置库所有足够 token 且后置库所不超容量
         cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
         cond_cap = ((self.m[:, None] + self.pst) <= self.k[:, None]).all(axis=0)
         mask = cond_pre & cond_cap
-        
-        # 双机械手容量约束：防止向已满的加工腔室发送晶圆
-        # s1 容量=2：当 s1 已满时，禁用 u_LP1_s1 和 u_LP2_s1
-        # s3 容量=4：当 s3 已满时，禁用 u_s2_s3
-        # s5 容量=2：当 s5 已满时，禁用 u_s4_s5 和 u_s1_s5
+
         capacity_constraints = [
-            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),  # 双起点到 s1
-            ("s3", "u_s2_s3"),                        # 路线1: s2 -> s3
-            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),    # 路线1: s4 -> s5, 路线2: s1 -> s5
+            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),
+            ("s3", "u_s2_s3"),
+            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),
         ]
         for place_name, u_trans_name in capacity_constraints:
             if place_name in self.id2p_name and u_trans_name in self.id2t_name:
@@ -957,9 +949,7 @@ class Petri:
                 t_idx = self._get_transition_index(u_trans_name)
                 if self.m[p_idx] >= self.marks[p_idx].capacity:
                     mask[t_idx] = False
-        
-        # ========== 限制进入系统的晶圆数量 ==========
-        # 当已进入系统的晶圆数达到上限时，禁用 u_LP1_s1 和 u_LP2_s1
+
         if self.entered_wafer_count >= self.max_wafers_in_system:
             if "u_LP1_s1" in self.id2t_name:
                 t_idx = self._get_transition_index("u_LP1_s1")
@@ -967,12 +957,7 @@ class Petri:
             if "u_LP2_s1" in self.id2t_name:
                 t_idx = self._get_transition_index("u_LP2_s1")
                 mask[t_idx] = False
-        
-        # ========== 步骤索引感知的路由约束 (u_变迁) ==========
-        # 使用 (route_type, step) 决定晶圆下一个目标
-        # u_变迁：检查源库所队头晶圆的 step 对应的下一目标是否匹配变迁的目标
-        
-        # 定义 u 变迁到其目标腔室的映射
+
         u_trans_targets = {
             "u_LP1_s1": "s1",
             "u_LP2_s1": "s1",
@@ -983,8 +968,6 @@ class Petri:
             "u_s4_s5": "s5",
             "u_s5_LP_done": "LP_done",
         }
-        
-        # 定义 u 变迁的源库所
         u_trans_sources = {
             "u_LP1_s1": "LP1",
             "u_LP2_s1": "LP2",
@@ -995,63 +978,42 @@ class Petri:
             "u_s4_s5": "s4",
             "u_s5_LP_done": "s5",
         }
-        
         for u_name, target in u_trans_targets.items():
             if u_name not in self.id2t_name:
                 continue
             t_idx = self._get_transition_index(u_name)
-            if not mask[t_idx]:  # 已被禁用
+            if not mask[t_idx]:
                 continue
-            
-            # 获取源库所
             source_name = u_trans_sources.get(u_name)
             if source_name not in self.id2p_name:
                 continue
-            
             source_idx = self._get_place_index(source_name)
             source_place = self.marks[source_idx]
-            
             if len(source_place.tokens) == 0:
                 continue
-            
-            # 检查队头晶圆的下一目标是否匹配
             head_tok = source_place.head()
             if not self._can_enter_target(head_tok, target):
                 mask[t_idx] = False
 
-        # ========== 运输库所 FIFO 约束 (t_变迁) ==========
-        # 对所有 d_ 开头的运输库所 (d_TM2, d_TM3等) 应用 FIFO 策略
-        # 确保从 d_xxx 取出的晶圆确实是去往该 t_变迁对应的目标腔室
         for p_name in self.id2p_name:
             if not p_name.startswith("d_"):
                 continue
-                
             d_idx = self._get_place_index(p_name)
             d_place = self.marks[d_idx]
-            
             if len(d_place.tokens) > 0:
                 head_tok = d_place.head()
-                # 确保是 wafer token (有 route_type)
                 if head_tok.route_type == 0:
                     continue
-                    
                 expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
-                
-                # 找到所有消费此 d_place 的变迁
                 consumers = np.where(self.pre[d_idx, :] > 0)[0]
                 for t_idx in consumers:
                     t_name = self.id2t_name[t_idx]
                     if t_name.startswith("t_") and mask[t_idx]:
-                        # t_name 格式为 t_{target}
                         target = t_name[2:]
                         if target != expected_target:
                             mask[t_idx] = False
-        
-        out_te = np.flatnonzero(mask)
-        return out_te
 
-    def next_enable_time(self) -> int:
-        te = self._resource_enable()
+        te = np.flatnonzero(mask)
         if len(te) == 0:
             return self.time + 1
         earliest = INF
@@ -1544,27 +1506,114 @@ class Petri:
             raise
 
 
-    def get_enable_t(self) -> List[int]:
-        te = self._resource_enable()
-        use_t = []
-        for t in te:
-            el = self._earliest_enable_time(t=t)
-            if self.time >= el:
-                use_t.append(int(t))
-        return use_t
-
-    def get_enable_t_by_robot(self) -> Tuple[List[int], List[int]]:
+    def get_enable_t(self) -> Tuple[List[int], List[int]]:
         """
-        返回两个机械手各自可用的变迁列表。
+        返回两个机械手各自可用的变迁列表（并发模型专用）。
         
         Returns:
             (tm2_enabled, tm3_enabled): 两个列表，分别是 TM2 和 TM3 当前可使能的变迁索引
         """
-        all_enabled = self.get_enable_t()
-        tm2_enabled = []
-        tm3_enabled = []
+        # 双路线变迁:
+        # 路线1: ['u_LP1_s1', 't_s1', 'u_s1_s2', 't_s2', 'u_s2_s3', 't_s3',
+        #         'u_s3_s4', 't_s4', 'u_s4_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
+        # 路线2: ['u_LP2_s1', 't_s1', 'u_s1_s5', 't_s5', 'u_s5_LP_done', 't_LP_done']
+        # 库所示例: ['LP1', 'LP2', 'LP_done', 's1', 's2', 's3', 's4', 's5',
+        #           'd_TM2', 'd_TM3']
         
-        for t in all_enabled:
+        # 基本使能条件：前置库所有足够 token 且后置库所不超容量
+        cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
+        cond_cap = ((self.m[:, None] + self.pst) <= self.k[:, None]).all(axis=0)
+        mask = cond_pre & cond_cap
+        
+        # 双机械手容量约束：防止向已满的加工腔室发送晶圆
+        capacity_constraints = [
+            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),
+            ("s3", "u_s2_s3"),
+            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),
+        ]
+        for place_name, u_trans_name in capacity_constraints:
+            if place_name in self.id2p_name and u_trans_name in self.id2t_name:
+                p_idx = self._get_place_index(place_name)
+                t_idx = self._get_transition_index(u_trans_name)
+                if self.m[p_idx] >= self.marks[p_idx].capacity:
+                    mask[t_idx] = False
+        
+        # ========== 限制进入系统的晶圆数量 ==========
+        if self.entered_wafer_count >= self.max_wafers_in_system:
+            if "u_LP1_s1" in self.id2t_name:
+                t_idx = self._get_transition_index("u_LP1_s1")
+                mask[t_idx] = False
+            if "u_LP2_s1" in self.id2t_name:
+                t_idx = self._get_transition_index("u_LP2_s1")
+                mask[t_idx] = False
+        
+        # ========== 步骤索引感知的路由约束 (u_变迁) ==========
+        u_trans_targets = {
+            "u_LP1_s1": "s1",
+            "u_LP2_s1": "s1",
+            "u_s1_s2": "s2",
+            "u_s1_s5": "s5",
+            "u_s2_s3": "s3",
+            "u_s3_s4": "s4",
+            "u_s4_s5": "s5",
+            "u_s5_LP_done": "LP_done",
+        }
+        u_trans_sources = {
+            "u_LP1_s1": "LP1",
+            "u_LP2_s1": "LP2",
+            "u_s1_s2": "s1",
+            "u_s1_s5": "s1",
+            "u_s2_s3": "s2",
+            "u_s3_s4": "s3",
+            "u_s4_s5": "s4",
+            "u_s5_LP_done": "s5",
+        }
+        for u_name, target in u_trans_targets.items():
+            if u_name not in self.id2t_name:
+                continue
+            t_idx = self._get_transition_index(u_name)
+            if not mask[t_idx]:
+                continue
+            source_name = u_trans_sources.get(u_name)
+            if source_name not in self.id2p_name:
+                continue
+            source_idx = self._get_place_index(source_name)
+            source_place = self.marks[source_idx]
+            if len(source_place.tokens) == 0:
+                continue
+            head_tok = source_place.head()
+            if not self._can_enter_target(head_tok, target):
+                mask[t_idx] = False
+
+        # ========== 运输库所 FIFO 约束 (t_变迁) ==========
+        for p_name in self.id2p_name:
+            if not p_name.startswith("d_"):
+                continue
+            d_idx = self._get_place_index(p_name)
+            d_place = self.marks[d_idx]
+            if len(d_place.tokens) > 0:
+                head_tok = d_place.head()
+                if head_tok.route_type == 0:
+                    continue
+                expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
+                consumers = np.where(self.pre[d_idx, :] > 0)[0]
+                for t_idx in consumers:
+                    t_name = self.id2t_name[t_idx]
+                    if t_name.startswith("t_") and mask[t_idx]:
+                        target = t_name[2:]
+                        if target != expected_target:
+                            mask[t_idx] = False
+        
+        raw_enabled = np.flatnonzero(mask)
+        enabled = []
+        for t in raw_enabled:
+            el = self._earliest_enable_time(t=t)
+            if self.time >= el:
+                enabled.append(int(t))
+
+        tm2_enabled: List[int] = []
+        tm3_enabled: List[int] = []
+        for t in enabled:
             t_name = self.id2t_name[t]
             if t_name in TM2_TRANSITIONS:
                 tm2_enabled.append(t)
@@ -1661,7 +1710,8 @@ class Petri:
         if wait:
             t1 = self.time
 
-            enabled = self.get_enable_t()
+            tm2_enabled, tm3_enabled = self.get_enable_t()
+            enabled = tm2_enabled + tm3_enabled
 
             t2 = self.time + 5
             #if len(enabled) > 0:
@@ -2060,7 +2110,8 @@ def main():
 
     max_steps = 300
     for step_i in range(max_steps):
-        enabled = model.get_enable_t()
+        tm2_enabled, tm3_enabled = model.get_enable_t()
+        enabled = tm2_enabled + tm3_enabled
         enabled.append(wait_id)
 
         t = int(np.random.choice(enabled))

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple, Any
 
-from solutions.PPO.enviroment import Env_PN
+from solutions.PPO.enviroment import Env_PN_Concurrent
 
 from .algorithm_interface import (
     AlgorithmAdapter,
@@ -22,7 +22,7 @@ from .algorithm_interface import (
 class PetriAdapter(AlgorithmAdapter):
     """Petri 网算法适配器"""
 
-    def __init__(self, env: Env_PN) -> None:
+    def __init__(self, env: Env_PN_Concurrent) -> None:
         self.env = env
         self.net = env.net
         self._last_reward_detail: Dict[str, float] = {}
@@ -101,7 +101,8 @@ class PetriAdapter(AlgorithmAdapter):
         return f"UNKNOWN_{action}"
 
     def get_enabled_actions(self) -> List[ActionInfo]:
-        enabled_t = set(self.net.get_enable_t())
+        tm2_enabled, tm3_enabled = self.net.get_enable_t()
+        enabled_t = set(tm2_enabled + tm3_enabled)
         actions: List[ActionInfo] = []
         for t in range(self.net.T):
             enabled = t in enabled_t
@@ -129,7 +130,7 @@ class PetriAdapter(AlgorithmAdapter):
         """
         from solutions.Continuous_model.pn import TM2_TRANSITIONS, TM3_TRANSITIONS
         
-        tm2_enabled, tm3_enabled = self.net.get_enable_t_by_robot()
+        tm2_enabled, tm3_enabled = self.net.get_enable_t()
         tm2_enabled_set = set(tm2_enabled)
         tm3_enabled_set = set(tm3_enabled)
         

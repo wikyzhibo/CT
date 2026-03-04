@@ -153,7 +153,7 @@ class Env_PN_Concurrent(EnvBase):
 
     def _build_action_masks(self):
         """构建 TM2/TM3 各自的动作掩码"""
-        tm2_enabled, tm3_enabled = self.net.get_enable_t_by_robot()
+        tm2_enabled, tm3_enabled = self.net.get_enable_t()
         tm2_enabled_set = set(tm2_enabled)
         tm3_enabled_set = set(tm3_enabled)
 
