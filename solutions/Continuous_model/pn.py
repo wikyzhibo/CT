@@ -716,8 +716,10 @@ class Petri:
             for tok in place.tokens:
                 tok.stay_time = int(current_time - tok.enter_time)
 
-    def calc_reward(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
-                          detailed: bool = False) -> float | Dict[str, float]:
+    def calc_reward(self,
+                    t1: int,
+                    t2: int,
+                    detailed: bool = False) -> float | Dict[str, float]:
         """
         计算从时间 t1 到 t2 的奖励和惩罚。
         
@@ -729,8 +731,6 @@ class Petri:
            - type=1: 超过 proc_time + P_Residual_time后每秒惩罚
            - type=2: 超过 5 + D_Residual_time后每秒惩罚
         5. 预警惩罚：slack < T_warn 时施加稠密惩罚
-        6. 错峰启动奖励：同一腔室内 token 进入时间差足够大
-        7. 下游空闲惩罚：下游空闲但上游有等待 token
         
         Args:
             t1: 起始时间
@@ -742,19 +742,8 @@ class Petri:
             如果 detailed=False: 返回总奖励 (float)
             如果 detailed=True: 返回奖励字典 Dict[str, float]
         """
-        if t2 <= t1:
-            if detailed:
-                return {"total": 0.0, "proc_reward": 0.0, "safe_reward": 0.0, 
-                        "penalty": 0.0, "warn_penalty": 0.0, "transport_penalty": 0.0,
-                        "time_cost": 0.0, "in_system_time_penalty": 0.0}
-            return 0.0
+        assert t2 >= t1, "结束时间必须大于或等于起始时间"
 
-        return self._calc_reward_original(t1, t2, moving_pre_places, detailed)
-    def _calc_reward_original(self, t1: int, t2: int, moving_pre_places: Optional[np.ndarray] = None,
-                              detailed: bool = False) -> float | Dict[str, float]:
-        """原始奖励计算实现（用于功能一致性验证）"""
-        moving_set = set(moving_pre_places.tolist()) if moving_pre_places is not None else set()
-        
         # 从配置读取惩罚/奖励系数
         transport_overtime_coef = self.config.transport_overtime_coef  # type=2 运输库所超时惩罚系数
         chamber_overtime_coef = self.config.chamber_overtime_coef      # type=1 加工腔室超时惩罚系数
@@ -1665,9 +1654,8 @@ class Petri:
         pre_places_indices = []
         for t_idx in transitions:
             pre_places_indices.extend(np.flatnonzero(self.pre[:, t_idx] > 0))
-        pre_places = np.array(pre_places_indices)
         
-        reward_result = self.calc_reward(t1, t2, moving_pre_places=pre_places, detailed=detailed_reward)
+        reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
         self._fire(t=transitions)
         
         # 添加单片完工奖励（在 _fire 中累积）
