@@ -17,8 +17,10 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from solutions.PPO.enviroment import Env_PN_Concurrent
+from solutions.Continuous_model.env_single import Env_PN_Single
 
 from .petri_adapter import PetriAdapter
+from .petri_single_adapter import PetriSingleAdapter
 from .viewmodel import PetriViewModel
 from .main_window import PetriMainWindow
 
@@ -50,9 +52,12 @@ def set_windows_app_id():
             pass  # 忽略错误
 
 
-def build_adapter(adapter_name: str) -> PetriAdapter:
+def build_adapter(adapter_name: str, device_mode: str = "cascade"):
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
+    if device_mode == "single":
+        env = Env_PN_Single(detailed_reward=True)
+        return PetriSingleAdapter(env)
     env = Env_PN_Concurrent(detailed_reward=True)
     return PetriAdapter(env)
 
@@ -113,8 +118,12 @@ def load_model(model_path: str, adapter: PetriAdapter):
             try:
                 # 获取观察和动作掩码
                 obs = adapter.env._build_obs()
-                tm2_enabled, tm3_enabled = adapter.net.get_enable_t()
-                action_mask_indices = tm2_enabled + tm3_enabled
+                enabled_raw = adapter.net.get_enable_t()
+                if isinstance(enabled_raw, tuple):
+                    tm2_enabled, tm3_enabled = enabled_raw
+                    action_mask_indices = tm2_enabled + tm3_enabled
+                else:
+                    action_mask_indices = list(enabled_raw)
                 
                 # [DEBUG] Check mask indices
                 # print(f"[DEBUG] Mask indices: {action_mask_indices}")
@@ -265,7 +274,7 @@ def main() -> int:
     # Windows 任务栏图标 fix
     set_windows_app_id()
 
-    adapter = build_adapter(args.adapter)
+    adapter = build_adapter(args.adapter, device_mode="cascade")
     viewmodel = PetriViewModel(adapter)
 
     app = QApplication(sys.argv)
@@ -274,6 +283,7 @@ def main() -> int:
     app_icon = set_app_icon(app)
     
     window = PetriMainWindow(viewmodel)
+    window.set_adapter_factory(lambda mode: build_adapter(args.adapter, device_mode=mode))
     
     # 窗口也设置图标
     if app_icon:

@@ -92,6 +92,7 @@ class PetriMainWindow(QMainWindow):
         self._wafer_count_route2: int | None = None
         self._model_path_override: Path | None = None
         self._action_sequence_path = Path("solutions/Td_petri/planB_sequence.json")
+        self._adapter_factory = None
         
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
@@ -221,9 +222,25 @@ class PetriMainWindow(QMainWindow):
     def _set_device_mode(self, mode: str) -> None:
         if mode not in {"cascade", "single"}:
             return
+        if mode == self._device_mode:
+            return
         self._device_mode = mode
         self.center_canvas.set_device_mode(mode)
+        # 运行时切换底层 env/adapter
+        if self._adapter_factory is not None:
+            try:
+                new_adapter = self._adapter_factory(mode)
+                self.viewmodel.replace_adapter(new_adapter, reset=True)
+                self._model_handler = None
+                self._concurrent_model_handler = None
+                self._update_model_buttons_state()
+            except Exception as e:
+                QMessageBox.warning(self, "设备切换失败", f"无法切换到 {mode}: {e}")
         self._refresh_status_message()
+
+    def set_adapter_factory(self, factory) -> None:
+        """注入设备模式 -> adapter 的构造函数。"""
+        self._adapter_factory = factory
 
     def _set_wafer_count(self) -> None:
         dialog = QDialog(self)
@@ -272,7 +289,7 @@ class PetriMainWindow(QMainWindow):
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
         seq_text = str(self._action_sequence_path)
         self.statusBar().showMessage(
-            f"设备: {mode_text}（仅UI占位） | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text}（仅UI占位） | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text}（仅UI占位） | 动作序列: {seq_text}"
         )
 
     def _connect_signals(self) -> None:
@@ -303,7 +320,12 @@ class PetriMainWindow(QMainWindow):
             self._refresh_status_message()
         self.center_canvas.update_state(state)
         self.left_panel.update_state(state, self.viewmodel.action_history, self.viewmodel.trend_data)
-        self.right_panel.update_actions(state.enabled_actions)
+        actions_for_panel = state.enabled_actions
+        if self._device_mode == "single":
+            # 单设备模式：展示“单设备全集变迁”，并通过 enabled 状态区分可点/禁用。
+            # 避免仅显示使能动作时在加工等待阶段出现“空白无按钮”。
+            actions_for_panel = [a for a in state.enabled_actions if a.action_id >= 0 and a.action_name != "WAIT"]
+        self.right_panel.update_actions(actions_for_panel)
 
     def _on_done_changed(self, done: bool) -> None:
         if done:

@@ -58,8 +58,13 @@ class ChamberItem(QGraphicsItem):
 
         is_idle = self.chamber.status == "idle"
         is_active = self.chamber.status == "active"
+        is_disabled = self.chamber.status == "disabled"
         
-        if is_idle:
+        if is_disabled:
+            bg = self.theme.bg_deepest
+            border = self.theme.border_muted
+            grid_alpha = 20
+        elif is_idle:
             bg = self.theme.bg_deep
             border = self.theme.border_muted
             grid_alpha = 40
@@ -152,6 +157,8 @@ class ChamberItem(QGraphicsItem):
             return self.theme.warning
         if self.chamber.status == "active":
             return self.theme.success
+        if self.chamber.status == "disabled":
+            return self.theme.text_muted
         return self.theme.text_muted
 
 

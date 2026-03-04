@@ -83,3 +83,29 @@ class BasedToken:
 - `optimize_state_update`
 - `cache_indices`
 - `optimize_data_structures`
+
+---
+
+### PetriSingleDevice
+
+来源：`solutions/Continuous_model/pn_single.py`
+
+**说明**：单设备 Petri 网实现（独立文件，不改原 `pn.py`），仅 1 个机械手，8 个腔体命名如下：
+- `LP`, `LP_done`, `PM1`~`PM6`
+- 其中 `PM2/PM6` 为展示腔体，不参与工艺流转
+
+**构网来源**
+- `solutions/Continuous_model/construct_single.py`
+- 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`
+
+**工艺路线**
+- `LP -> PM1(100s) -> PM3(300s) -> PM5(100s) -> LP_done`
+- `LP -> PM1(100s) -> PM4(300s) -> PM5(100s) -> LP_done`
+
+**主要接口**
+- `reset()`：重置网状态
+- `_get_enable_t() -> List[int]`：内部使能判定（单机械手）
+- `get_enable_t() -> List[int]`：外部使能接口
+- `step(t=None, wait=None, with_reward=False, detailed_reward=False, ...)`：执行单步（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> done）
+- `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
+- `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）

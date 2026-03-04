@@ -102,10 +102,7 @@ class CenterCanvas(QGraphicsView):
                 "PM5": (1, 3), "PM6": (2, 3),
                 "LP": (3, 1), "LP_done": (3, 2),
             }
-            display_to_state = {
-                "PM1": "PM1", "PM2": "PM2", "PM3": "PM3", "PM4": "PM4", "PM5": "PM5", "PM6": "PM6",
-                "LP": "LLA", "LP_done": "LLB",
-            }
+            display_to_state = {name: name for name in positions}
             robot_chambers = {
                 # 单设备仅保留一个机械手
                 "TM2": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],

@@ -75,6 +75,33 @@ flowchart TB
 
 ---
 
+## 2.1 单设备扩展（`pn_single.py`）
+
+为避免影响原并发双机械手模型，单设备实现采用独立文件：
+- `solutions/Continuous_model/pn_single.py`
+- `solutions/Continuous_model/construct_single.py`
+- `solutions/Continuous_model/env_single.py`
+- `solutions/Continuous_model/train_single.py`（训练入口占位）
+
+### What changed
+- 新增单设备 Petri 模型（1 机械手、单动作、8 腔体命名：`LP/LP_done/PM1-6`）。
+- 单设备在可视化菜单中可被真实切换，不再仅 UI 占位。
+
+### Why
+- 需要在不破坏现有 `pn.py`/并发训练流程的前提下，快速试验单设备工艺。
+
+### Behavior
+- 工艺路线：`LP -> PM1(100s) -> [PM3|PM4](300s) -> PM5(100s) -> LP_done`
+- `PM2/PM6` 仅用于界面占位展示，动作不可达。
+- 执行链：`construct_single` 构网 -> `_get_enable_t` -> `step` -> `calc_reward`
+- 使能动作接口：`List[int]`（单机械手语义）
+
+### Impact
+- 原双机械手并发训练和可视化入口保持兼容。
+- 单设备逻辑集中在 `Continuous_model` 新文件中，便于后续独立迭代。
+
+---
+
 ## 3. RL 环境层 (`solutions/Continuous_model/env.py`)
 
 `Env_PN_Concurrent` 类定义在 **`solutions/Continuous_model/env.py`**，将原始 Petri 网封装为兼容 TorchRL 的环境。为保持向后兼容，`solutions/PPO/enviroment` 会 re-export 此类，故现有代码中 `from solutions.PPO.enviroment import Env_PN_Concurrent` 仍可使用；新代码推荐直接使用 `from solutions.Continuous_model.env import Env_PN_Concurrent`。

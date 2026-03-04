@@ -141,6 +141,16 @@ class PetriViewModel(QObject):
         """设置自动模式下的智能体回调"""
         self.agent_callback = callback
 
+    def replace_adapter(self, adapter: AlgorithmAdapter, reset: bool = True) -> None:
+        """运行时替换算法适配器（设备切换时使用）。"""
+        if self.auto_mode:
+            self.set_auto_mode(False)
+        self.adapter = adapter
+        if hasattr(self, "agent_callback"):
+            self.agent_callback = None
+        if reset:
+            self.reset()
+
     @Slot()
     def _auto_step(self) -> None:
         # 优先使用智能体回调
