@@ -330,36 +330,6 @@ class Petri:
         """
         return [p for p in self.marks if p.type == place_type]
     
-    def _get_next_target(self, route_type: int, step: int) -> Optional[str]:
-        """
-        根据 (route_type, step) 获取下一个目标腔室名称。
-        
-        Args:
-            route_type: 路线类型 (1 或 2)
-            step: 当前工序步骤索引（0-based，表示已完成的步骤数）
-            
-        Returns:
-            目标腔室名称，如果步骤超出范围则返回 None
-        """
-        route = self.ROUTE_CONFIG.get(route_type, [])
-        if step < len(route):
-            return route[step]
-        return None
-    
-    def _can_enter_target(self, tok: BasedToken, target: str) -> bool:
-        """
-        检查 Token 是否可以进入指定目标腔室。
-        
-        Args:
-            tok: Token 对象
-            target: 目标腔室名称
-            
-        Returns:
-            True 如果 Token 的 (route_type, step) 允许进入该目标
-        """
-        expected_target = self._get_next_target(tok.route_type, tok.step)
-        return expected_target == target
-    
     def blame_release_violations(self) -> Dict[int, float]:
         """
         事后追责（链式前瞻）：利用 _chamber_timeline（_fire 中实时填充的占用时间线），
@@ -992,7 +962,7 @@ class Petri:
             if len(source_place.tokens) == 0:
                 continue
             head_tok = source_place.head()
-            if not self._can_enter_target(head_tok, target):
+            if not self.ROUTE_CONFIG[head_tok.route_type][head_tok.step] == target:
                 mask[t_idx] = False
 
         for p_name in self.id2p_name:
@@ -1004,7 +974,7 @@ class Petri:
                 head_tok = d_place.head()
                 if head_tok.route_type == 0:
                     continue
-                expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
+                expected_target = self.ROUTE_CONFIG[head_tok.route_type][head_tok.step]
                 consumers = np.where(self.pre[d_idx, :] > 0)[0]
                 for t_idx in consumers:
                     t_name = self.id2t_name[t_idx]
@@ -1582,7 +1552,7 @@ class Petri:
             if len(source_place.tokens) == 0:
                 continue
             head_tok = source_place.head()
-            if not self._can_enter_target(head_tok, target):
+            if not self.ROUTE_CONFIG[head_tok.route_type][head_tok.step] == target:
                 mask[t_idx] = False
 
         # ========== 运输库所 FIFO 约束 (t_变迁) ==========
@@ -1595,7 +1565,7 @@ class Petri:
                 head_tok = d_place.head()
                 if head_tok.route_type == 0:
                     continue
-                expected_target = self._get_next_target(head_tok.route_type, head_tok.step)
+                expected_target = self.ROUTE_CONFIG[head_tok.route_type][head_tok.step]
                 consumers = np.where(self.pre[d_idx, :] > 0)[0]
                 for t_idx in consumers:
                     t_name = self.id2t_name[t_idx]
