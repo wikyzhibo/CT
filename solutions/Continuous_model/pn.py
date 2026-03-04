@@ -555,146 +555,129 @@ class Petri:
 
     def calc_wafer_statistics(self) -> Dict[str, Any]:
         """
-        计算晶圆滞留时间统计数据。
-        
-        Returns:
-            Dict 包含以下键：
-            - system_avg: 平均系统滞留时间（从进入到离开）
-            - system_max: 最大系统滞留时间
-            - completed_count: 已完成晶圆数
-            - in_progress_count: 进行中晶圆数
-            - chambers: {chamber_name: {"avg": float, "max": int, "count": int}}
-            - transports: {"avg": float, "max": int, "count": int}  # 所有运输位合并
-            - transports_detail: {transport_name: {"avg": float, "max": int, "count": int}}
+        计算晶圆统计数据，用于可视化界面显示。
+
+        改进：结合历史记录 (self.wafer_stats) 和当前状态 (place.tokens)，
+        实现累计平均值和最大值，而非瞬时快照。
         """
-        result = {
-            "system_avg": 0.0,
-            "system_max": 0,
-            "system_diff": 0.0,
-            "completed_count": 0,
-            "in_progress_count": 0,
-            "chambers": {},
-            "transports": {"avg": 0.0, "max": 0, "count": 0},
-            "transports_detail": {},
-        }
-        
-        # 腔室名称映射到显示名称
-        chamber_display = {
-            "s1": "PM7/8",
-            "s2": "LLC",
-            "s3": "PM1/2/3/4",
-            "s4": "LLD",
-            "s5": "PM9/10",
-        }
-        
-        # 初始化腔室统计
-        for chamber in chamber_display.values():
-            result["chambers"][chamber] = {"avg": 0.0, "max": 0, "count": 0, "times": []}
-        
-        # 初始化运输位统计
-        transport_names = ["d_s1", "d_s2", "d_s3", "d_s4", "d_s5", "d_LP_done"]
-        for t_name in transport_names:
-            result["transports_detail"][t_name] = {"avg": 0.0, "max": 0, "count": 0, "times": []}
-        
-        system_times = []
-        all_transport_times = []
-        
+        if not self.enable_statistics:
+            return {}  # 训练模式下跳过统计计算
+
+        # 收集数据容器
+        chamber_stats = {}  # {place_name: [stay_times]}
+        transport_stats = {}  # {place_name: [stay_times]}
+        system_times = []  # 所有已完成晶圆的系统停留时间
+
+        # 1. 从历史记录中提取已完成的停留时间
         for wafer_id, stats in self.wafer_stats.items():
-            # 系统滞留时间
-            enter = stats.get("enter_system")
-            exit_time = stats.get("exit_system")
-            
-            if enter is not None:
-                if exit_time is not None:
-                    # 已完成的晶圆
-                    system_time = exit_time - enter
-                    system_times.append(system_time)
-                    result["completed_count"] += 1
-                else:
-                    # 进行中的晶圆，使用当前时间计算
-                    #system_time = self.time - enter
-                    #system_times.append(system_time)
-                    result["in_progress_count"] += 1
-            
-            # 腔室滞留时间
-            for chamber_name, times in stats.get("chambers", {}).items():
-                display_name = chamber_display.get(chamber_name, chamber_name)
-                enter_t = times.get("enter")
-                exit_t = times.get("exit")
-                
-                if enter_t is not None:
-                    stay_time = 0
-                    if exit_t is not None:
-                        stay_time = exit_t - enter_t
-                    #else:
-                        # 还在腔室中
-                    #    stay_time = self.time - enter_t
-                    
-                    if display_name in result["chambers"] and stay_time > 0:
-                        result["chambers"][display_name]["times"].append(stay_time)
-            
-            # 运输位滞留时间
-            for transport_name, times in stats.get("transports", {}).items():
-                enter_t = times.get("enter")
-                exit_t = times.get("exit")
+            # 系统级统计 (只统计已离开系统的)
+            if stats.get("enter_system") is not None and stats.get("exit_system") is not None:
+                system_times.append(stats["exit_system"] - stats["enter_system"])
 
-                stay_time = 0
-                if enter_t is not None:
-                    if exit_t is not None:
-                        stay_time = exit_t - enter_t
-                    #else:
-                        # 还在运输中
-                    #    stay_time = self.time - enter_t
-                    
-                    if stay_time > 0:
-                        all_transport_times.append(stay_time)
-                        if transport_name in result["transports_detail"]:
-                            result["transports_detail"][transport_name]["times"].append(stay_time)
-        
-        # 计算系统统计
+            # 腔室历史
+            for ch_name, timing in stats.get("chambers", {}).items():
+                if timing.get("exit") is not None:
+                    duration = timing["exit"] - timing.get("enter", 0)
+                    chamber_stats.setdefault(ch_name, []).append(duration)
+
+            # 运输历史
+            for tr_name, timing in stats.get("transports", {}).items():
+                if timing.get("exit") is not None:
+                    duration = timing["exit"] - timing.get("enter", 0)
+                    transport_stats.setdefault(tr_name, []).append(duration)
+
+        # 2. 从当前 token 补充进行中的停留时间 (可选：如果只想要“历史已完成”统计，可去掉这一步)
+
+        for place in self.marks:
+            if place.name.startswith("r_"): continue
+
+            # 获取容器引用
+            target_dict = None
+            if place.type == 1 or place.type == 5:
+                target_dict = chamber_stats
+            elif place.type == 2:
+                target_dict = transport_stats
+
+            if target_dict is not None:
+                for token in place.tokens:
+                    stay = float(getattr(token, "stay_time", 0))
+                    # 只有当 stay_time > 0 才计入，避免刚进入的 0 拉低平均
+                    if stay > 0:
+                        target_dict.setdefault(place.name, []).append(stay)
+
+
+        # 3. 计算聚合指标
+
+        # 系统级
         if system_times:
-            result["system_avg"] = sum(system_times) / len(system_times)
-            result["system_max"] = max(system_times)
-            result["system_diff"] = max(system_times) - min(system_times)
-        
-        # 计算腔室统计
-        for chamber_name, data in result["chambers"].items():
-            times = data["times"]
-            if times:
-                data["avg"] = sum(times) / len(times)
-                data["max"] = max(times)
-                data["count"] = len(times)
-            del data["times"]  # 清理临时数据
-        
-        # 计算运输位统计（合并）
-        if all_transport_times:
-            result["transports"]["avg"] = sum(all_transport_times) / len(all_transport_times)
-            result["transports"]["max"] = max(all_transport_times)
-            result["transports"]["count"] = len(all_transport_times)
-        
-        # 计算各运输位详细统计
-        for transport_name, data in result["transports_detail"].items():
-            times = data["times"]
-            if times:
-                data["avg"] = sum(times) / len(times)
-                data["max"] = max(times)
-                data["count"] = len(times)
-            del data["times"]  # 清理临时数据
-        
-        return result
+            sys_avg = float(np.mean(system_times))
+            sys_max = float(np.max(system_times))
+            sys_min = float(np.min(system_times))
+            sys_diff = sys_max - sys_min
+        else:
+            sys_avg = 0.0
+            sys_max = 0.0
+            sys_diff = 0.0
 
-    def _next_accept_time(self, place, t_now: int) -> float:
-        """计算某个 place 在 t_now 时刻之后，最早什么时候能接收一个新 token。"""
-        cap = max(1, place.capacity)
-        n = len(place.tokens)
+        # 辅助函数
+        def calc_metric(times):
+            if not times: return {"avg": 0.0, "max": 0.0}
+            return {
+                "avg": float(np.mean(times)),
+                "max": float(np.max(times))
+            }
 
-        # 有空位：立刻可接收
-        if n < cap:
-            return float(t_now)
+        # 腔室级
+        chambers_result = {}
+        # 确保所有腔室都有 key，即使没数据
+        all_chambers = ["s1", "s2", "s3", "s4", "s5"]  # 常用腔室
+        # 加上 map 中存在的
+        for p in self.marks:
+            if (p.type == 1 or p.type == 5) and p.name not in all_chambers:
+                all_chambers.append(p.name)
 
-        # 已满：等最早完成的那个释放
-        finishes = [tok.enter_time + place.processing_time for tok in place.tokens]
-        return float(min(finishes))
+        for name in all_chambers:
+            chambers_result[name] = calc_metric(chamber_stats.get(name, []))
+
+        # 运输级详细
+        transports_detail = {}
+        for name, times in transport_stats.items():
+            transports_detail[name] = calc_metric(times)
+
+        # 机械手聚合 (TM2/TM3)
+        tm2_places = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
+        tm3_places = ["d_s3", "d_s4"]
+
+        tm2_times = []
+        tm3_times = []
+
+        for k, v in transport_stats.items():
+            if k in tm2_places:
+                tm2_times.extend(v)
+            elif k in tm3_places:
+                tm3_times.extend(v)
+
+        transports_result = {
+            "TM2": calc_metric(tm2_times),
+            "TM3": calc_metric(tm3_times)
+        }
+
+        # 计数
+        completed_count = int(getattr(self, "done_count", 0))
+        in_progress_count = sum(len(p.tokens) for p in self.marks if not p.name.startswith("r_"))
+
+        return {
+            "system_avg": sys_avg,
+            "system_max": sys_max,
+            "system_diff": sys_diff,
+            "completed_count": completed_count,
+            "in_progress_count": in_progress_count,
+            "chambers": chambers_result,
+            "transports": transports_result,
+            "transports_detail": transports_detail,
+            "resident_violation_count": self.resident_violation_count,
+            "qtime_violation_count": self.qtime_violation_count,
+        }
 
     def reset(self):
         self.time = 0
@@ -897,98 +880,6 @@ class Petri:
             tok_enter += int(self.ptime[p])
             earliest = max(earliest, tok_enter)
         
-        return int(earliest)
-
-    def next_enable_time(self) -> int:
-        te = []
-        # 仅用于估计下一可使能时间，需复用使能逻辑但不做时间门槛过滤
-        # 这里与 get_enable_t 的 mask 计算保持一致（并发模型）
-        # 基本使能条件：前置库所有足够 token 且后置库所不超容量
-        cond_pre = (self.pre <= self.m[:, None]).all(axis=0)
-        cond_cap = ((self.m[:, None] + self.pst) <= self.k[:, None]).all(axis=0)
-        mask = cond_pre & cond_cap
-
-        capacity_constraints = [
-            ("s1", "u_LP1_s1"), ("s1", "u_LP2_s1"),
-            ("s3", "u_s2_s3"),
-            ("s5", "u_s4_s5"), ("s5", "u_s1_s5"),
-        ]
-        for place_name, u_trans_name in capacity_constraints:
-            if place_name in self.id2p_name and u_trans_name in self.id2t_name:
-                p_idx = self._get_place_index(place_name)
-                t_idx = self._get_transition_index(u_trans_name)
-                if self.m[p_idx] >= self.marks[p_idx].capacity:
-                    mask[t_idx] = False
-
-        if self.entered_wafer_count >= self.max_wafers_in_system:
-            if "u_LP1_s1" in self.id2t_name:
-                t_idx = self._get_transition_index("u_LP1_s1")
-                mask[t_idx] = False
-            if "u_LP2_s1" in self.id2t_name:
-                t_idx = self._get_transition_index("u_LP2_s1")
-                mask[t_idx] = False
-
-        u_trans_targets = {
-            "u_LP1_s1": "s1",
-            "u_LP2_s1": "s1",
-            "u_s1_s2": "s2",
-            "u_s1_s5": "s5",
-            "u_s2_s3": "s3",
-            "u_s3_s4": "s4",
-            "u_s4_s5": "s5",
-            "u_s5_LP_done": "LP_done",
-        }
-        u_trans_sources = {
-            "u_LP1_s1": "LP1",
-            "u_LP2_s1": "LP2",
-            "u_s1_s2": "s1",
-            "u_s1_s5": "s1",
-            "u_s2_s3": "s2",
-            "u_s3_s4": "s3",
-            "u_s4_s5": "s4",
-            "u_s5_LP_done": "s5",
-        }
-        for u_name, target in u_trans_targets.items():
-            if u_name not in self.id2t_name:
-                continue
-            t_idx = self._get_transition_index(u_name)
-            if not mask[t_idx]:
-                continue
-            source_name = u_trans_sources.get(u_name)
-            if source_name not in self.id2p_name:
-                continue
-            source_idx = self._get_place_index(source_name)
-            source_place = self.marks[source_idx]
-            if len(source_place.tokens) == 0:
-                continue
-            head_tok = source_place.head()
-            if not self.ROUTE_CONFIG[head_tok.route_type][head_tok.step] == target:
-                mask[t_idx] = False
-
-        for p_name in self.id2p_name:
-            if not p_name.startswith("d_"):
-                continue
-            d_idx = self._get_place_index(p_name)
-            d_place = self.marks[d_idx]
-            if len(d_place.tokens) > 0:
-                head_tok = d_place.head()
-                if head_tok.route_type == 0:
-                    continue
-                expected_target = self.ROUTE_CONFIG[head_tok.route_type][head_tok.step]
-                consumers = np.where(self.pre[d_idx, :] > 0)[0]
-                for t_idx in consumers:
-                    t_name = self.id2t_name[t_idx]
-                    if t_name.startswith("t_") and mask[t_idx]:
-                        target = t_name[2:]
-                        if target != expected_target:
-                            mask[t_idx] = False
-
-        te = np.flatnonzero(mask)
-        if len(te) == 0:
-            return self.time + 1
-        earliest = INF
-        for t in te:
-            earliest = min(earliest, self._earliest_enable_time(t))
         return int(earliest)
 
     def _fire(self, t: Union[int, List[int]]):
@@ -1687,10 +1578,6 @@ class Petri:
             enabled = tm2_enabled + tm3_enabled
 
             t2 = self.time + 5
-            #if len(enabled) > 0:
-            #    t2 = self.time + 5   # 有其他动作可用，小步等待 5
-            #else:
-                #t2 = self.next_enable_time()  # 没有任何动作，跳到下一可使能时间
 
             # 累计连续 WAIT 时间
             self._consecutive_wait_time += (t2 - t1)
@@ -1857,217 +1744,3 @@ class Petri:
         if with_reward:
             return finish, reward_result, False
         return finish, False
-
-    def _check_robot_conflict(self, a1: Optional[int], a2: Optional[int]) -> bool:
-        """
-        检查两个动作是否产生资源冲突（访问同一非资源库所）。
-        
-        Args:
-            a1: TM2 的变迁索引，None 表示等待
-            a2: TM3 的变迁索引，None 表示等待
-            
-        Returns:
-            True 表示无冲突，False 表示有冲突
-        """
-        if a1 is None or a2 is None:
-            return True  # 有一个等待，不冲突
-        
-        # 获取两个变迁的前置和后置库所
-        pre1 = set(np.flatnonzero(self.pre[:, a1] > 0))
-        pst1 = set(np.flatnonzero(self.pst[:, a1] > 0))
-        pre2 = set(np.flatnonzero(self.pre[:, a2] > 0))
-        pst2 = set(np.flatnonzero(self.pst[:, a2] > 0))
-        
-        # 获取资源类库所索引（若存在 r_ 前缀库所）
-        resource_indices = set()
-        for i, name in enumerate(self.id2p_name):
-            if name.startswith("r_"):
-                resource_indices.add(i)
-        
-        # 检查是否有重叠（排除资源库所）
-        affected1 = (pre1 | pst1) - resource_indices
-        affected2 = (pre2 | pst2) - resource_indices
-        
-        return len(affected1 & affected2) == 0
-
-
-    def calc_wafer_statistics(self) -> Dict[str, Any]:
-        """
-        计算晶圆统计数据，用于可视化界面显示。
-        
-        改进：结合历史记录 (self.wafer_stats) 和当前状态 (place.tokens)，
-        实现累计平均值和最大值，而非瞬时快照。
-        """
-        if not self.enable_statistics:
-            return {}  # 训练模式下跳过统计计算
-        
-        # 收集数据容器
-        chamber_stats = {}    # {place_name: [stay_times]}
-        transport_stats = {}  # {place_name: [stay_times]}
-        system_times = []     # 所有已完成晶圆的系统停留时间
-
-        # 1. 从历史记录中提取已完成的停留时间
-        for wafer_id, stats in self.wafer_stats.items():
-            # 系统级统计 (只统计已离开系统的)
-            if stats.get("enter_system") is not None and stats.get("exit_system") is not None:
-                system_times.append(stats["exit_system"] - stats["enter_system"])
-            
-            # 腔室历史
-            for ch_name, timing in stats.get("chambers", {}).items():
-                if timing.get("exit") is not None:
-                    duration = timing["exit"] - timing.get("enter", 0)
-                    chamber_stats.setdefault(ch_name, []).append(duration)
-            
-            # 运输历史
-            for tr_name, timing in stats.get("transports", {}).items():
-                if timing.get("exit") is not None:
-                    duration = timing["exit"] - timing.get("enter", 0)
-                    transport_stats.setdefault(tr_name, []).append(duration)
-
-        # 2. 从当前 token 补充进行中的停留时间 (可选：如果只想要“历史已完成”统计，可去掉这一步)
-        # 用户需求是“恒定记录”，通常意味着包含历史。包含正在进行中的可能会拉低平均值（因为还在增加），
-        # 但能反映实时状态。这里我们策略是：
-        # - 对于 Avg/Max 计算，通常只算“已完成的工序”比较准确。
-        # - 如果算上进行中的，会导致刚进入的 0s 数据拉低平均值。
-        # - 因此：只统计已完成的工序（history）+ 当前晶圆在当前位置如果已经停留了很久（比历史均值大）？
-        # - 简化策略：只统计已完成的工序记录 (Exit is not None)，这样数据稳步累积，不会跳变。
-        # 
-        # (稍等，如果只统计已完成，那刚开始没完成时是0。用户说“离开后归零”，说明之前是显示“进行中”的)
-        # 结合方案：列表包含 [历史完成时间] + [当前进行中时间]。
-        # 为防止 "刚进入" 的短时间拉低平均值，可以只取 max? 不，Avg 应该反映真实负载。
-        # 工业控制面板通常显示 "Last N Valid Runs" 或 "Accumulated Sinc Reset".
-        # 
-        # 决定：包含当前 tokens 的 stay_time，因为这反映了当前的拥堵情况。
-        # 只要 wafer 还在里面，它是 active 的。
-        
-        for place in self.marks:
-            if place.name.startswith("r_"): continue
-            
-            # 获取容器引用
-            target_dict = None
-            if place.type == 1 or place.type == 5:
-                target_dict = chamber_stats
-            elif place.type == 2:
-                target_dict = transport_stats
-                
-            if target_dict is not None:
-                for token in place.tokens:
-                    stay = float(getattr(token, "stay_time", 0))
-                    # 只有当 stay_time > 0 才计入，避免刚进入的 0 拉低平均
-                    if stay > 0:
-                        target_dict.setdefault(place.name, []).append(stay)
-            
-            # 系统级在线统计不易准确计算（因为还没结束），暂只统计已完成的系统时间
-            # 或者：对于进行中的 wafer，计算 (current_time - enter_system_time)
-            # 但 pn.py 里 token 没直接存 enter_system_time，得去 wafer_stats 查
-            # 暂时只统计已完成的系统周期
-        
-        # 3. 计算聚合指标
-        
-        # 系统级
-        if system_times:
-            sys_avg = float(np.mean(system_times))
-            sys_max = float(np.max(system_times))
-            sys_min = float(np.min(system_times))
-            sys_diff = sys_max - sys_min
-        else:
-            sys_avg = 0.0
-            sys_max = 0.0
-            sys_diff = 0.0
-            
-        # 辅助函数
-        def calc_metric(times):
-            if not times: return {"avg": 0.0, "max": 0.0}
-            return {
-                "avg": float(np.mean(times)),
-                "max": float(np.max(times))
-            }
-
-        # 腔室级
-        chambers_result = {}
-        # 确保所有腔室都有 key，即使没数据
-        all_chambers = ["s1", "s2", "s3", "s4", "s5"] # 常用腔室
-        # 加上 map 中存在的
-        for p in self.marks:
-            if (p.type==1 or p.type==5) and p.name not in all_chambers:
-                all_chambers.append(p.name)
-        
-        for name in all_chambers:
-            chambers_result[name] = calc_metric(chamber_stats.get(name, []))
-
-        # 运输级详细
-        transports_detail = {}
-        for name, times in transport_stats.items():
-            transports_detail[name] = calc_metric(times)
-            
-        # 机械手聚合 (TM2/TM3)
-        tm2_places = ["d_s1", "d_s2", "d_s5", "d_LP_done"]
-        tm3_places = ["d_s3", "d_s4"]
-        
-        tm2_times = []
-        tm3_times = []
-        
-        for k, v in transport_stats.items():
-            if k in tm2_places: tm2_times.extend(v)
-            elif k in tm3_places: tm3_times.extend(v)
-            
-        transports_result = {
-            "TM2": calc_metric(tm2_times),
-            "TM3": calc_metric(tm3_times)
-        }
-
-        # 计数
-        completed_count = int(getattr(self, "done_count", 0))
-        in_progress_count = sum(len(p.tokens) for p in self.marks if not p.name.startswith("r_"))
-
-        return {
-            "system_avg": sys_avg,
-            "system_max": sys_max,
-            "system_diff": sys_diff,
-            "completed_count": completed_count,
-            "in_progress_count": in_progress_count,
-            "chambers": chambers_result,
-            "transports": transports_result,
-            "transports_detail": transports_detail,
-            "resident_violation_count": self.resident_violation_count,
-            "qtime_violation_count": self.qtime_violation_count,
-        }
-
-
-
-def main():
-    #np.random.seed(0)  # 可删，保证复现
-    model = Petri()
-    model.reset()
-
-    wait_id = 10
-    print("Transitions:", model.id2t_name)
-    print("Places:", model.id2p_name)
-    print("-" * 70)
-
-    max_steps = 300
-    for step_i in range(max_steps):
-        tm2_enabled, tm3_enabled = model.get_enable_t()
-        enabled = tm2_enabled + tm3_enabled
-        enabled.append(wait_id)
-
-        t = int(np.random.choice(enabled))
-        if t==wait_id:
-           print(f"  -> fire t=wait  at time={model.time}")
-        else:
-            print(f"  -> fire t={t} ({model.id2t_name[t]})at time={model.time}")
-
-        if t == wait_id:
-            finish = model.step(wait=True)
-        else:
-            finish = model.step(t=t, wait=False)
-
-        if finish:
-            print(f"[DONE] Finished at time={model.time}, step={step_i}")
-            model.render_gantt()
-            break
-
-
-if __name__ == "__main__":
-    main()
-
