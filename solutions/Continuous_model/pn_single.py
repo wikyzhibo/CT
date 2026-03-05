@@ -53,6 +53,12 @@ class PetriSingleDevice:
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self.idle_idx: Dict[str, int] = info["idle_idx"]
+        self._u_targets: Dict[str, List[str]] = {
+            "LP": ["PM1"],
+            "PM1": ["PM3", "PM4"],
+            "PM3": ["LP_done"],
+            "PM4": ["LP_done"],
+        }
         self.P = self.pre.shape[0]
         self.T = self.pre.shape[1]
         self.ttime = int(np.max(info["ttime"])) if len(info["ttime"]) > 0 else 5
@@ -120,6 +126,18 @@ class PetriSingleDevice:
             return True
         return place.head().stay_time >= place.processing_time
 
+    def _select_target_for_source(self, source: str) -> Optional[str]:
+        """
+        为 u_<source> 选择一个可接收目标（确定性顺序）。
+        仅检查目标腔室容量，运输位停留时间约束仍由 t_* 侧控制。
+        """
+        candidates = self._u_targets.get(source, [])
+        for target in candidates:
+            target_place = self._get_place(target)
+            if len(target_place.tokens) < target_place.capacity:
+                return target
+        return None
+
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:
             if p.type != 1 or len(p.tokens) == 0:
@@ -165,7 +183,7 @@ class PetriSingleDevice:
 
         # 单设备 downstream chain（分支表示二选一路由）
         chain_map: Dict[str, List[List[str]]] = {
-            "u_LP_PM1": [["PM1", "PM3"], ["PM1", "PM4"]],
+            "u_LP": [["PM1", "PM3"], ["PM1", "PM4"]],
         }
 
         penalty_coeff = float(self.c_release_violation) * 100.0
@@ -215,12 +233,11 @@ class PetriSingleDevice:
 
             t_name = self.id2t_name[t]
             if t_name.startswith("u_"):
-                _, src, dst = t_name.split("_", 2)
+                src = t_name[2:]
                 if not self._is_process_ready(src):
                     continue
-                # 单机械手 u_* 需要保证目标腔室可接收，否则会把晶圆堵在 d_TM1 导致无使能动作
-                dst_place = self._get_place(dst)
-                if len(dst_place.tokens) >= dst_place.capacity:
+                # u_src 发射前要求至少一个目标可接收，避免堵在 d_TM1。
+                if self._select_target_for_source(src) is None:
                     continue
             elif t_name.startswith("t_"):
                 target = t_name[2:]
@@ -272,8 +289,10 @@ class PetriSingleDevice:
         tok.stay_time = 0
 
         if t_name.startswith("u_"):
-            _, src, dst = t_name.split("_", 2)
-            setattr(tok, "_target_place", dst)
+            src = t_name[2:]
+            dst = self._select_target_for_source(src)
+            if dst is not None:
+                setattr(tok, "_target_place", dst)
             if src in self._chamber_active and wafer_id in self._chamber_active[src]:
                 idx = self._chamber_active[src].pop(wafer_id)
                 e, _, wid = self._chamber_timeline[src][idx]

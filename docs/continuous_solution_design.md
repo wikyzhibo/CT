@@ -86,9 +86,11 @@ flowchart TB
 ### What changed
 - 新增单设备 Petri 模型（1 机械手、单动作、8 腔体命名：`LP/LP_done/PM1-6`）。
 - 单设备在可视化菜单中可被真实切换，不再仅 UI 占位。
+- 单设备 `u-d-t` 子网的卸载命名由 `u_src_dst` 简化为 `u_src`，例如 `u_PM1_PM3/u_PM1_PM4 -> u_PM1`。
 
 ### Why
 - 需要在不破坏现有 `pn.py`/并发训练流程的前提下，快速试验单设备工艺。
+- 对并行目标机台场景，多个 `t_dst` 共享单一 `u_src` 可减少动作空间冗余并降低策略学习难度。
 
 ### Behavior
 - 工艺路线：`LP -> PM1(100s) -> [PM3|PM4](300s) -> LP_done`
@@ -96,12 +98,14 @@ flowchart TB
 - 执行链：`construct_single` 构网 -> `_get_enable_t` -> `step` -> `calc_reward`
 - 使能动作接口：`List[int]`（单机械手语义）
 - 释放追责：支持 `blame_release_violations()`，利用单设备 `_chamber_timeline` 做 second-pass 回填
+- `u_src` 发射前会检查“至少一个候选目标可接收”，并在发射时确定 `_target_place`，随后由 `t_*` 消费该目标约束。
 
 ### Impact
 - 原双机械手并发训练和可视化入口保持兼容。
 - 单设备逻辑集中在 `Continuous_model` 新文件中，便于后续独立迭代。
 - 单设备训练已支持两阶段：阶段1收集轨迹（关闭在线 release 惩罚），阶段2执行 `blame_release_violations` 回填奖励。
 - 单设备训练权重保存格式与并发训练统一：保存 `policy_module.state_dict()`（不再仅保存 backbone）。
+- 单设备动作 ID 与旧版 `u_src_dst` 不再一一对应；历史动作序列与旧策略权重需重训或显式映射迁移。
 
 ---
 

@@ -40,10 +40,9 @@ def build_single_device_net(n_wafer: int, ttime: int = 5) -> Dict[str, object]:
 
     id2p_name = list(modules.keys())
     id2t_name = [
-        "u_LP_PM1", "t_PM1",
-        "u_PM1_PM3", "t_PM3",
-        "u_PM1_PM4", "t_PM4",
-        "u_PM3_LP_done", "u_PM4_LP_done", "t_LP_done",
+        "u_LP", "t_PM1",
+        "u_PM1", "t_PM3", "t_PM4",
+        "u_PM3", "u_PM4", "t_LP_done",
     ]
 
     p_idx = {name: i for i, name in enumerate(id2p_name)}
@@ -57,17 +56,16 @@ def build_single_device_net(n_wafer: int, ttime: int = 5) -> Dict[str, object]:
         pre[p_idx[src], t_idx[tr]] += 1
         pst[p_idx[dst], t_idx[tr]] += 1
 
-    add_arc("LP", "u_LP_PM1", "d_TM1")
+    add_arc("LP", "u_LP", "d_TM1")
     add_arc("d_TM1", "t_PM1", "PM1")
 
-    add_arc("PM1", "u_PM1_PM3", "d_TM1")
+    add_arc("PM1", "u_PM1", "d_TM1")
     add_arc("d_TM1", "t_PM3", "PM3")
 
-    add_arc("PM1", "u_PM1_PM4", "d_TM1")
     add_arc("d_TM1", "t_PM4", "PM4")
 
-    add_arc("PM3", "u_PM3_LP_done", "d_TM1")
-    add_arc("PM4", "u_PM4_LP_done", "d_TM1")
+    add_arc("PM3", "u_PM3", "d_TM1")
+    add_arc("PM4", "u_PM4", "d_TM1")
     add_arc("d_TM1", "t_LP_done", "LP_done")
 
     m0 = np.array([modules[name].tokens for name in id2p_name], dtype=int)

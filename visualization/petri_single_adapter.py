@@ -63,8 +63,21 @@ class PetriSingleAdapter(AlgorithmAdapter):
         if 0 <= action < len(self.net.id2t_name):
             name = self.net.id2t_name[action]
             if name.startswith("u_"):
-                _, src, dst = name.split("_", 2)
-                return f"{src}→{dst}"
+                parts = name.split("_")
+                # 兼容两种命名：
+                # 1) 旧格式 u_src_dst
+                # 2) 新格式 u_src（目标由后续 t_* 分流）
+                if len(parts) >= 3:
+                    _, src, dst = name.split("_", 2)
+                    return f"{src}→{dst}"
+                if len(parts) == 2:
+                    src = parts[1]
+                    targets = list(getattr(self.net, "_u_targets", {}).get(src, []))
+                    if len(targets) == 1:
+                        return f"{src}→{targets[0]}"
+                    if len(targets) > 1:
+                        return f"{src}→({'|'.join(targets)})"
+                    return f"{src}→?"
             if name.startswith("t_"):
                 return name[2:]
             return name
