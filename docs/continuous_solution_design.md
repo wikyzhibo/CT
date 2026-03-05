@@ -87,6 +87,7 @@ flowchart TB
 - 新增单设备 Petri 模型（1 机械手、单动作、8 腔体命名：`LP/LP_done/PM1-6`）。
 - 单设备在可视化菜单中可被真实切换，不再仅 UI 占位。
 - 单设备 `u-d-t` 子网的卸载命名由 `u_src_dst` 简化为 `u_src`，例如 `u_PM1_PM3/u_PM1_PM4 -> u_PM1`。
+- 单设备构网新增 `pre_color(place, transition, color)` 三维前置约束，`color` 由 token 的 `where` 驱动。
 
 ### Why
 - 需要在不破坏现有 `pn.py`/并发训练流程的前提下，快速试验单设备工艺。
@@ -98,7 +99,11 @@ flowchart TB
 - 执行链：`construct_single` 构网 -> `_get_enable_t` -> `step` -> `calc_reward`
 - 使能动作接口：`List[int]`（单机械手语义）
 - 释放追责：支持 `blame_release_violations()`，利用单设备 `_chamber_timeline` 做 second-pass 回填
-- `u_src` 发射前会检查“至少一个候选目标可接收”，并在发射时确定 `_target_place`，随后由 `t_*` 消费该目标约束。
+- 释放追责站点命名统一为 `s1/s2`：`s1=PM1`，`s2=PM3∪PM4`（并行机台池）；`u_LP` 只检查 `s1->s2`，`s2` 容量按 `cap(PM3)+cap(PM4)` 计算，避免跨分支误判。
+- `u_src` 发射前会检查“至少一个候选目标可接收”，并在发射时确定 `_target_place`。
+- `t_*` 使能在 `d_TM1` 侧额外受 `pre_color[:,:,where]` 限制：只有当前 `where` 对应颜色截面允许的目标才可放行。
+- 每次晶圆被变迁移动后执行 `where += 1`，用于推进 color 截面判定。
+- 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。
 
 ### Impact
 - 原双机械手并发训练和可视化入口保持兼容。

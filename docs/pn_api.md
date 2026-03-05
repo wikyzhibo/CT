@@ -105,6 +105,8 @@ class BasedToken:
 **工艺路线**
 - `LP -> PM1(100s) -> PM3(300s) -> LP_done`
 - `LP -> PM1(100s) -> PM4(300s) -> LP_done`
+- 双臂模式约束：`u_*` 仅在可解析到有效目标腔室时才允许发射；若下游层满导致目标不可解析，则该 `u_*` 必须禁用，避免出现 `LP -> d_TM1 -> LP_done` 的非法短路。
+- 上述约束同样适用于 `d_TM1` 为空时：双臂“可任意取片”不等于可忽略目标可达性，目标不可解析时必须禁用 `u_*`。
 
 **主要接口**
 - `reset()`：重置网状态
@@ -113,6 +115,8 @@ class BasedToken:
 - `step(t=None, wait=None, with_reward=False, detailed_reward=False, ...)`：执行单步（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> done）
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 的单设备事后追责，输出 `fire_log_index -> penalty`
+  - 追责站点统一命名：`s1=PM1`，`s2=PM3∪PM4`（合并时间线与容量池）
+  - `u_LP` 链路按 `s1 -> s2` 判定，`s2` 容量取 `cap(PM3)+cap(PM4)`，避免“实际走 PM4 却被 PM3 时间线误罚”
 - `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
 
 **两阶段训练相关字段**
@@ -126,6 +130,10 @@ class BasedToken:
 - 当 `d_TM1` 为空时：允许任意满足前置条件的 `u_*` 取片。
 - 当 `d_TM1` 非空且队首晶圆在“取片时”其 `dst` 层已满：仅允许继续取出该 `dst` 层中的晶圆，禁止取其它位置晶圆。
 - `t_*` 始终遵循 FIFO 队首目标约束（队首 `_target_place`）与 `d_TM1` dwell 时间约束。
+- 使能计算分为两阶段：
+  - Stage1：`pre/pst` + 容量 + 防死锁规则（用于死锁判定）
+  - Stage2：加工完成与 dwell 就绪过滤（`get_enable_t()` 最终返回）
+- 死锁定义：`LP_done` 未完成且 Stage1 无任何使能变迁。
 
 **运输位 token 的机械臂标识**
 - 每个 token 在进入 `d_TM1`（即 `u_*` 发射）时分配 `machine` 字段。
@@ -136,3 +144,8 @@ class BasedToken:
 **停滞惩罚（单设备已接入）**
 - 沿用 `pn.py` 思路：累计连续 WAIT 时间（`_consecutive_wait_time`）
 - 当累计时间达到 `idle_timeout = max(processing_time)+30` 且未触发过时，施加一次 `idle_timeout_penalty`
+
+**死锁终止语义（单设备）**
+- 发生死锁时，episode 终止，增加 `deadlock_count`。
+- 死锁惩罚量级与 `R_scrap` 等价（`deadlock_penalty = -abs(R_scrap)`）。
+- 死锁不计入 `scrap`。

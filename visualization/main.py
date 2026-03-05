@@ -314,6 +314,9 @@ def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWin
     """按设备模式加载模型并回填到窗口 handler。"""
     adapter = window.viewmodel.adapter
     if device_mode == "single":
+        if not isinstance(adapter, PetriSingleAdapter):
+            window.set_model_handler(None)
+            return False, "当前不是单设备适配器，请先切换到单设备后再加载单动作模型。"
         handler = load_model(model_path, adapter)
         if handler is None:
             window.set_model_handler(None)
@@ -321,6 +324,9 @@ def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWin
         window.set_model_handler(handler)
         return True, f"单设备模型加载成功: {model_path}"
 
+    if not isinstance(adapter, PetriAdapter):
+        window.set_concurrent_model_handler(None)
+        return False, "当前不是级联设备适配器，请先切换到级联设备后再加载并发模型。"
     handler = load_concurrent_model(model_path, adapter)
     if handler is None:
         window.set_model_handler(None)
@@ -374,6 +380,7 @@ def main() -> int:
             print(("✓ " if ok else "✗ ") + msg)
     else:
         print("已禁用模型加载")
+        print("提示: 即使不加载模型，也可在回放菜单选择 JSON 后使用 Model B 进行离线回放。")
     
     window.show()
 

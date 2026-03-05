@@ -69,6 +69,26 @@ def build_single_device_net(n_wafer: int, ttime: int = 5, robot_capacity: int = 
     add_arc("PM4", "u_PM4", "d_TM1")
     add_arc("d_TM1", "t_LP_done", "LP_done")
 
+    # color-aware 前置矩阵（color 维对应 token.where）
+    # 单片完整流转共 7 次发射，where 从 0 增长到 7；t_* 在 d_TM1 的合法 where 为 1/3/5。
+    max_where = 7
+    pre_color = np.zeros((P, T, max_where + 1), dtype=int)
+    for t_name, tid in t_idx.items():
+        if t_name.startswith("u_"):
+            # u_* 不做 where 路由限制：所有 color 截面与二维 pre 一致（通配）
+            pre_color[:, tid, :] = pre[:, tid][:, None]
+            continue
+        if t_name == "t_PM1":
+            allowed_where = (1,)
+        elif t_name in ("t_PM3", "t_PM4"):
+            allowed_where = (3,)
+        elif t_name == "t_LP_done":
+            allowed_where = (5,)
+        else:
+            allowed_where = ()
+        for c in allowed_where:
+            pre_color[:, tid, c] = pre[:, tid]
+
     m0 = np.array([modules[name].tokens for name in id2p_name], dtype=int)
     md = m0.copy()
     md[p_idx["LP"]] = 0
@@ -92,13 +112,14 @@ def build_single_device_net(n_wafer: int, ttime: int = 5, robot_capacity: int = 
         place = Place(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
         if name == "LP":
             for tok_id in range(n_wafer):
-                place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=1, step=0))
+                place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=1, step=0, where=0))
         marks.append(place)
 
     return {
         "m0": m0,
         "md": md,
         "pre": pre,
+        "pre_color": pre_color,
         "pst": pst,
         "ptime": ptime,
         "ttime": ttime_arr,

@@ -40,6 +40,7 @@ def _extract_step_result(td_next):
         terminated = td_next["next", "terminated"]
         finish = td_next["next", "finish"] if "finish" in td_next["next"].keys() else td_next["next", "terminated"]
         scrap = td_next["next", "scrap"] if "scrap" in td_next["next"].keys() else torch.tensor(False)
+        deadlock = td_next["next", "deadlock"] if "deadlock" in td_next["next"].keys() else torch.tensor(False)
         time_t = td_next["next", "time"]
         next_obs = td_next["next", "observation"]
     else:
@@ -47,9 +48,10 @@ def _extract_step_result(td_next):
         terminated = td_next["terminated"]
         finish = td_next.get("finish", td_next["terminated"])
         scrap = td_next.get("scrap", torch.tensor(False))
+        deadlock = td_next.get("deadlock", torch.tensor(False))
         time_t = td_next["time"]
         next_obs = td_next["observation"]
-    return reward, terminated, finish, scrap, time_t, next_obs
+    return reward, terminated, finish, scrap, deadlock, time_t, next_obs
 
 
 def _to_next_state(td_next):
@@ -72,6 +74,7 @@ def collect_rollout_single(env: Env_PN_Single, policy_backbone: MaskedPolicyHead
         "done": [],
         "finish": [],
         "scrap": [],
+        "deadlock": [],
         "time": [],
         "next_observation": [],
         "next_observation_f": [],
@@ -108,11 +111,12 @@ def collect_rollout_single(env: Env_PN_Single, policy_backbone: MaskedPolicyHead
         fire_end = len(env.net.fire_log)
         fire_log_ranges.append((fire_start, fire_end))
 
-        reward, terminated, finish, scrap, time_t, next_obs = _extract_step_result(td_next)
+        reward, terminated, finish, scrap, deadlock, time_t, next_obs = _extract_step_result(td_next)
         data["reward"].append(reward.cpu())
         data["done"].append(terminated.cpu())
         data["finish"].append(finish.cpu())
         data["scrap"].append(scrap.cpu())
+        data["deadlock"].append(deadlock.cpu())
         data["time"].append(time_t.cpu())
         data["next_observation"].append(next_obs.cpu())
         data["next_observation_f"].append(next_obs.float().cpu())
@@ -249,6 +253,7 @@ def train_single(
         ep_reward = rollout["reward"].sum().item()
         finish_count = rollout["finish"].sum().item()
         scrap_count = rollout["scrap"].sum().item()
+        deadlock_count = rollout["deadlock"].sum().item()
 
         finish_mask = rollout["finish"].squeeze(-1).bool()
         if finish_mask.any():
@@ -260,12 +265,14 @@ def train_single(
         log["reward"].append(ep_reward)
         log["finish"].append(finish_count)
         log["scrap"].append(scrap_count)
+        log["deadlock"].append(deadlock_count)
         log["makespan"].append(avg_makespan)
         log["second_pass_events"].append(second_pass_events)
 
         print(
             f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={int(finish_count)} "
-            f"| scrap={int(scrap_count)} | makespan={avg_makespan:.1f} | second_pass={second_pass_events}"
+            f"| scrap={int(scrap_count)} | deadlock={int(deadlock_count)} "
+            f"| makespan={avg_makespan:.1f} | second_pass={second_pass_events}"
         )
 
         if ep_reward > best_reward and finish_count > 0:

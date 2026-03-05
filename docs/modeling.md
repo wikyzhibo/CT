@@ -22,6 +22,10 @@
   - `single_robot_capacity=1`：`d_TM1.capacity=1`（Single Arm）
   - `single_robot_capacity=2`：`d_TM1.capacity=2`（Dual Arm）
 - `d_TM1` 使用 FIFO 队列；token 进入 `d_TM1` 时按机器轮换分配 `machine` 标识（单臂固定 1，双臂在 1/2 间交替）。
+- 单设备死锁判定采用两阶段使能：
+  - Stage1（结构使能）：`pre/pst` + 容量 + 防死锁规则
+  - Stage2（就绪使能）：在 Stage1 上追加加工完成与 dwell 条件
+- 仅当 Stage1 无使能且流程未完成时判定死锁；“仅因加工未完成导致 Stage2 为空”不算死锁。
 
 **示例**：路径 `LP → PM1` 展开为：
 

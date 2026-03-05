@@ -63,6 +63,7 @@ class Env_PN_Single(EnvBase):
             terminated=Unbounded(shape=(1,), dtype=torch.bool),
             finish=Unbounded(shape=(1,), dtype=torch.bool),
             scrap=Unbounded(shape=(1,), dtype=torch.bool),
+            deadlock=Unbounded(shape=(1,), dtype=torch.bool),
         )
 
     def _build_state_td(self, obs, action_mask, time):
@@ -118,14 +119,16 @@ class Env_PN_Single(EnvBase):
             done, reward_result, scrap = self.net.step(wait=True, with_reward=True, detailed_reward=self.detailed_reward)
         else:
             done, reward_result, scrap = self.net.step(t=action, with_reward=True, detailed_reward=self.detailed_reward)
+        deadlock = bool(getattr(self.net, "_last_deadlock", False))
         reward = reward_result.get("total", 0.0) if isinstance(reward_result, dict) else float(reward_result)
         return TensorDict(
             {
                 "observation": torch.as_tensor(self._build_obs(), dtype=torch.int64),
                 "action_mask": torch.as_tensor(self._mask(), dtype=torch.bool),
                 "time": torch.tensor([self.net.time], dtype=torch.int64),
-                "finish": torch.tensor(bool(done and not scrap), dtype=torch.bool),
+                "finish": torch.tensor(bool(done and not scrap and not deadlock), dtype=torch.bool),
                 "scrap": torch.tensor(bool(scrap), dtype=torch.bool),
+                "deadlock": torch.tensor(bool(deadlock), dtype=torch.bool),
                 "reward": torch.tensor([float(reward)], dtype=torch.float32),
                 "terminated": torch.tensor(bool(done), dtype=torch.bool),
             },

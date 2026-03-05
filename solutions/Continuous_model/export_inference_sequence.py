@@ -16,10 +16,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torchrl.modules import MaskedCategorical
 
 from solutions.PPO.enviroment import Env_PN_Concurrent
 from solutions.PPO.network.models import DualHeadPolicyNet
+from solutions.PPO.network.models import MaskedPolicyHead
 from solutions.Continuous_model.train_concurrent import DualActionPolicyModule
+from solutions.Continuous_model.env_single import Env_PN_Single
+from solutions.Continuous_model.train_single import SingleActionPolicyModule
 
 
 def _to_step_state(td_next: Any) -> Any:
@@ -87,17 +91,120 @@ def _build_policy(env: Env_PN_Concurrent, model_path: Path, device: torch.device
     return policy
 
 
-def rollout_and_export(
+def _decode_single_action_name(env: Env_PN_Single, action_idx: int) -> str:
+    if action_idx == env.net.T:
+        return "WAIT"
+    return env.net.id2t_name[action_idx]
+
+
+def _iter_single_candidate_state_dicts(state_dict: dict[str, torch.Tensor]) -> list[dict[str, torch.Tensor]]:
+    candidates: list[dict[str, torch.Tensor]] = [state_dict]
+    candidates.append(
+        {k[len("backbone."):]: v for k, v in state_dict.items() if k.startswith("backbone.")}
+    )
+    candidates.append(
+        {k[len("module.0.module."):]: v for k, v in state_dict.items() if k.startswith("module.0.module.")}
+    )
+    candidates.append(
+        {
+            k[len("backbone.module.0.module."):]: v
+            for k, v in state_dict.items()
+            if k.startswith("backbone.module.0.module.")
+        }
+    )
+    return [c for c in candidates if c]
+
+
+def _infer_single_model_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int]:
+    first_linear = state_dict.get("net.0.weight")
+    if first_linear is None:
+        raise KeyError("权重缺少 net.0.weight，无法推断单设备策略网络结构")
+    hidden = int(first_linear.shape[0])
+    linear_key_pattern = re.compile(r"^net\.(\d+)\.weight$")
+    linear_count = sum(1 for k in state_dict.keys() if linear_key_pattern.match(k))
+    if linear_count <= 1:
+        raise ValueError("单设备策略网络线性层数量异常，无法推断 n_layers")
+    n_layers = linear_count - 1
+    return hidden, n_layers
+
+
+def _build_single_policy(env: Env_PN_Single, model_path: Path, device: torch.device) -> SingleActionPolicyModule:
+    n_obs = int(env.observation_spec["observation"].shape[0])
+    raw_state_dict = torch.load(str(model_path), map_location=device, weights_only=True)
+    load_error: Exception | None = None
+
+    for candidate in _iter_single_candidate_state_dicts(raw_state_dict):
+        try:
+            hidden, n_layers = _infer_single_model_shape(candidate)
+            backbone = MaskedPolicyHead(
+                hidden=hidden,
+                n_obs=n_obs,
+                n_actions=env.n_actions,
+                n_layers=n_layers,
+            ).to(device)
+            policy = SingleActionPolicyModule(backbone).to(device)
+            policy.backbone.load_state_dict(candidate)
+            policy.eval()
+            return policy
+        except Exception as e:
+            load_error = e
+            continue
+
+    raise RuntimeError(f"无法识别的单设备模型权重格式: {model_path}. 原始错误: {load_error}")
+
+
+def _rollout_single_sequence(
     model_path: Path,
     max_steps: int,
     seed: int,
-    out_name: str,
     training_phase: int,
-    force_overwrite_planb: bool,
-) -> dict[str, Path]:
-    if not model_path.exists():
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
+    robot_capacity: int,
+) -> list[dict[str, Any]]:
+    device = torch.device("cpu")
+    torch.manual_seed(seed)
+    env = Env_PN_Single(seed=seed, training_phase=training_phase, robot_capacity=robot_capacity)
+    policy = _build_single_policy(env, model_path=model_path, device=device)
 
+    td = env.reset()
+    sequence: list[dict[str, Any]] = []
+
+    with torch.no_grad():
+        for step in range(1, max_steps + 1):
+            obs_f = td["observation"].unsqueeze(0).float().to(device)
+            action_mask = td["action_mask"].unsqueeze(0).bool().to(device)
+            logits = policy.backbone(obs_f)
+            dist = MaskedCategorical(logits=logits, mask=action_mask)
+            action_idx = int(dist.mode.squeeze(0).item())
+
+            step_td = td.clone()
+            step_td["action"] = torch.tensor(action_idx, dtype=torch.int64)
+            td_next = env.step(step_td)
+
+            td_after = _to_step_state(td_next)
+            current_time = _to_time(td_after)
+            action_name = _decode_single_action_name(env, action_idx)
+            sequence.append(
+                {
+                    "step": step,
+                    "time": current_time,
+                    "action": action_name,
+                    "actions": [action_name],
+                }
+            )
+
+            if _to_terminated(td_next):
+                break
+            td = td_after
+
+    return sequence
+
+
+def _rollout_concurrent_sequence(
+    model_path: Path,
+    max_steps: int,
+    seed: int,
+    training_phase: int,
+) -> list[dict[str, Any]]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
 
@@ -139,6 +246,38 @@ def rollout_and_export(
                 break
 
             td = td_after
+    return sequence
+
+
+def rollout_and_export(
+    model_path: Path,
+    max_steps: int,
+    seed: int,
+    out_name: str,
+    training_phase: int,
+    force_overwrite_planb: bool,
+    device_mode: str,
+    robot_capacity: int,
+) -> dict[str, Path]:
+    if not model_path.exists():
+        raise FileNotFoundError(f"模型文件不存在: {model_path}")
+    if device_mode == "single":
+        sequence = _rollout_single_sequence(
+            model_path=model_path,
+            max_steps=max_steps,
+            seed=seed,
+            training_phase=training_phase,
+            robot_capacity=robot_capacity,
+        )
+    elif device_mode == "cascade":
+        sequence = _rollout_concurrent_sequence(
+            model_path=model_path,
+            max_steps=max_steps,
+            seed=seed,
+            training_phase=training_phase,
+        )
+    else:
+        raise ValueError(f"不支持的 device_mode: {device_mode}")
 
     project_root = Path(__file__).resolve().parents[2]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -168,26 +307,45 @@ def rollout_and_export(
 
 def main() -> None:
     default_model = Path(__file__).resolve().parent / "saved_models" / "CT_concurrent_phase2_best.pt"
-    parser = argparse.ArgumentParser(description="导出并发模型推理动作序列")
-    parser.add_argument("--model", type=Path, default=default_model, help="并发模型权重路径")
+    parser = argparse.ArgumentParser(description="导出推理动作序列（级联/单设备）")
+    parser.add_argument("--model", type=Path, default=default_model, help="模型权重路径")
     parser.add_argument("--max-steps", type=int, default=500, help="最大推理步数")
     parser.add_argument("--seed", type=int, default=0, help="随机种子")
     parser.add_argument("--out-name", type=str, default="concurrent_infer_seq", help="action_series 输出文件前缀")
     parser.add_argument("--phase", type=int, default=2, help="环境训练阶段(1/2)")
+    parser.add_argument(
+        "--device-mode",
+        type=str,
+        default="cascade",
+        choices=["cascade", "single"],
+        help="设备模式：cascade=级联双机械手，single=单设备单动作",
+    )
+    parser.add_argument(
+        "--robot-capacity",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="单设备机械手容量（仅 single 模式生效）",
+    )
     parser.add_argument(
         "--force-overwrite-planb",
         action="store_true",
         help="允许覆盖 solutions/Td_petri/planB_sequence.json",
     )
     args = parser.parse_args()
+    out_name = args.out_name
+    if out_name == "concurrent_infer_seq" and args.device_mode == "single":
+        out_name = "single_infer_seq"
 
     out = rollout_and_export(
         model_path=args.model,
         max_steps=args.max_steps,
         seed=args.seed,
-        out_name=args.out_name,
+        out_name=out_name,
         training_phase=args.phase,
         force_overwrite_planb=args.force_overwrite_planb,
+        device_mode=args.device_mode,
+        robot_capacity=args.robot_capacity,
     )
 
     print(f"[INFO] 已导出 action_series: {out['action_series_path']}")

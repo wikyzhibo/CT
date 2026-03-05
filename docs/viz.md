@@ -140,12 +140,15 @@ python -c "from visualization.debug_tools import DebugTools; import sys; from Py
 python -c "from visualization.export_tools import ExportTools; import sys; from PySide6.QtWidgets import QApplication; app=QApplication(sys.argv); from visualization.petri_adapter import PetriAdapter; from solutions.PPO.enviroment import Env_PN; from visualization.viewmodel import PetriViewModel; vm=PetriViewModel(PetriAdapter(Env_PN(detailed_reward=True))); w=ExportTools(vm); w.show(); vm.reset(); sys.exit(app.exec())"
 ```
 
-### 并发模型推理序列自动生成
+### 推理序列自动生成（级联/单设备）
 
-如果需要给 Model B 回放准备动作序列，不必手工编写，可直接使用并发模型导出：
+如果需要给 Model B 回放准备动作序列，不必手工编写，可直接使用导出脚本生成。
+
+#### 级联设备（双动作）
 
 ```bash
 python -m solutions.Continuous_model.export_inference_sequence \
+  --device-mode cascade \
   --model solutions/Continuous_model/saved_models/CT_concurrent_phase2_best.pt \
   --max-steps 500 \
   --seed 0 \
@@ -154,10 +157,52 @@ python -m solutions.Continuous_model.export_inference_sequence \
   --force-overwrite-planb
 ```
 
-该命令会同时输出：
+级联 JSON 单步示例：
 
-- `solutions/Continuous_model/action_series/concurrent_infer_seq_<timestamp>.json`（留档）
+```json
+{
+  "step": 12,
+  "time": 385,
+  "actions": ["u_s1_s2", "WAIT"]
+}
+```
+
+#### 单设备（单动作）
+
+```bash
+python -m solutions.Continuous_model.export_inference_sequence \
+  --device-mode single \
+  --model solutions/Continuous_model/saved_models/CT_single_phase2_best.pt \
+  --max-steps 500 \
+  --seed 0 \
+  --phase 2 \
+  --robot-capacity 1 \
+  --out-name single_infer_seq \
+  --force-overwrite-planb
+```
+
+单设备 JSON 单步示例（主字段是 `action`，`actions` 为兼容字段）：
+
+```json
+{
+  "step": 8,
+  "time": 190,
+  "action": "u_PM1",
+  "actions": ["u_PM1"]
+}
+```
+
+上述命令都会同时输出：
+
+- `solutions/Continuous_model/action_series/<out_name>_<timestamp>.json`（留档）
 - `solutions/Td_petri/planB_sequence.json`（`main_window.py` 的 Model B 默认读取文件）
+
+#### 事后追责离线验证流程
+
+1. 用已知模型导出一份固定 JSON 序列（级联用双动作，单设备用单动作）。
+2. 打开可视化并切换到与序列一致的设备模式。
+3. 在 `回放 -> 选择动作序列 JSON` 载入文件后，使用 `Model B Step (V)` 或 Model B Auto 回放。
+4. 对照回放结果与追责统计（包括 release 相关处罚）验证“事后追责机制”是否符合预期。
 
 ### 命令行参数
 

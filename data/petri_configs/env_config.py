@@ -40,7 +40,6 @@ class PetriEnvConfig:
     """
 
     n_wafer: int = 12
-    c_time: int = 1
     R_done: int = 10
     R_finish: int = 800
     R_scrap: int = -500
@@ -48,15 +47,14 @@ class PetriEnvConfig:
     a_warn: float = 0.1
     T_safe: int = 60
     b_safe: float = 0.05
-    MAX_WAIT_STEP: int = 100
+
     c_congest: float = 1.0
     D_Residual_time: int = 10
     P_Residual_time: int = 15
-    c_release_violation: float = 0.1
+
     T_transport: int = 5
     T_load: int = 5
-    T_pm1_to_pm2: int = 5
-    idle_timeout: int = 300  # 仅默认值；pn.py 实际使用 最大腔室处理时间+30
+
     idle_penalty: int = 10
     stop_on_scrap: bool = True
     training_phase: int = 2
@@ -67,7 +65,9 @@ class PetriEnvConfig:
     chamber_overtime_coef: float = 0.2      # 加工腔室超时惩罚系数 (原 Q2_p)
     processing_reward_coef: float = 3.0     # 加工奖励系数 (原 r)
     in_system_time_penalty_coef: float = 0.0  # 系统内停留惩罚系数（温和，避免掩盖加工奖励）
-    
+    time_coef : float = 1.0  # 时间成本系数
+    release_penalty_coef: float = 0.1 # 释放违规惩罚系数
+
     reward_config: Optional[Dict[str, int]] = None
 
     # 性能优化

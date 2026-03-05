@@ -24,7 +24,6 @@ class PetriSingleDevice:
         self.config = config
 
         self.n_wafer = int(config.n_wafer)
-        self.c_time = int(getattr(config, "c_time", 1))
         self.R_done = int(getattr(config, "R_done", 800))
         self.R_finish = int(getattr(config, "R_finish", 800))
         self.R_scrap = int(getattr(config, "R_scrap", 1000))
@@ -38,9 +37,14 @@ class PetriSingleDevice:
         self.T_load = int(getattr(config, "T_load", 5))
         self.idle_penalty = float(getattr(config, "idle_penalty", 500))
         self.stop_on_scrap = bool(getattr(config, "stop_on_scrap", True))
-        self.c_release_violation = float(getattr(config, "c_release_violation", 5))
+        self.release_penalty_coef = float(getattr(config, "release_penalty_coef", 5))
         self.reward_config = dict(getattr(config, "reward_config", {}))
         self.robot_capacity = 2 if int(getattr(config, "single_robot_capacity", 1)) == 2 else 1
+        
+        # 奖励计算系数
+        self.processing_reward_coef = float(getattr(config, "processing_reward_coef", 3.0))
+        self.transport_overtime_coef = float(getattr(config, "transport_overtime_coef", 1.0))
+        self.time_coef = int(getattr(config, "time_coef", 1))
 
         info = build_single_device_net(
             n_wafer=self.n_wafer,
@@ -48,6 +52,7 @@ class PetriSingleDevice:
             robot_capacity=self.robot_capacity,
         )
         self.pre: np.ndarray = info["pre"]
+        self.pre_color: np.ndarray = info.get("pre_color", self.pre[:, :, None])
         self.pst: np.ndarray = info["pst"]
         self.net: np.ndarray = self.pst - self.pre
         self.m0: np.ndarray = info["m0"]
@@ -75,6 +80,7 @@ class PetriSingleDevice:
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         self.done_count = 0
         self.scrap_count = 0
+        self.deadlock_count = 0
         self.resident_violation_count = 0
         self.qtime_violation_count = 0
         self.fire_log: List[Dict[str, Any]] = []
@@ -84,6 +90,7 @@ class PetriSingleDevice:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
+        self._last_deadlock = False
         self.no_release_penalty = False
         self._chamber_timeline: Dict[str, list] = {"PM1": [], "PM3": [], "PM4": []}
         self._chamber_active: Dict[str, Dict[int, int]] = {"PM1": {}, "PM3": {}, "PM4": {}}
@@ -188,22 +195,40 @@ class PetriSingleDevice:
     def blame_release_violations(self) -> Dict[int, float]:
         """
         事后追责：基于当前 fire_log 与 _chamber_timeline，回溯可能导致下游容量冲突的 u_* 动作。
+        单设备中将 PM1 统一视为 s1，PM3/PM4 合并视为 s2（并行机台池）。
         返回 fire_log_index -> penalty。
         """
         blame: Dict[int, float] = {}
-        if not self.fire_log:
-            return blame
+        assert len(self.fire_log) > 0, "fire_log is empty"
 
+        # 1) 预处理：构建占用时间线（enter, leave, wafer_id），leave 可能为 None 表示仍在加工中。
         proc_times = {p.name: p.processing_time for p in self.marks}
         capacities = {p.name: p.capacity for p in self.marks}
-        intervals_by_chamber: Dict[str, list] = {}
-        for ch in ("PM1", "PM3", "PM4"):
-            intervals = []
-            for (enter, leave, wid) in self._chamber_timeline.get(ch, []):
-                l = leave if leave is not None else enter + proc_times.get(ch, 0)
+
+        def build_intervals(chamber_name: str) -> List[tuple]:
+            intervals: List[tuple] = []
+            for (enter, leave, wid) in self._chamber_timeline.get(chamber_name, []):
+                l = leave if leave is not None else enter + proc_times.get(chamber_name, 0)
                 intervals.append((enter, l, wid))
             intervals.sort(key=lambda x: x[0])
-            intervals_by_chamber[ch] = intervals
+            return intervals
+
+        # 站点别名：PM1 -> s1，PM3/PM4 -> s2（并行机台池）
+        intervals_s1 = build_intervals("PM1")
+        intervals_s2 = build_intervals("PM3") + build_intervals("PM4")
+        intervals_s2.sort(key=lambda x: x[0])
+        intervals_by_station: Dict[str, List[tuple]] = {
+            "s1": intervals_s1,
+            "s2": intervals_s2,
+        }
+        capacity_by_station: Dict[str, int] = {
+            "s1": capacities.get("PM1", 1),
+            "s2": capacities.get("PM3", 0) + capacities.get("PM4", 0),
+        }
+        proc_time_by_station: Dict[str, int] = {
+            "s1": proc_times.get("PM1", 0),
+            "s2": max(proc_times.get("PM3", 0), proc_times.get("PM4", 0)),
+        }
 
         edge_transfer = self.T_transport + self.T_load
 
@@ -211,56 +236,68 @@ class PetriSingleDevice:
             occupied = sum(1 for (e, l, wid0) in intervals if e <= at_time < l and wid0 < current_wid)
             return occupied + 1 > cap
 
-        # 单设备 downstream chain（分支表示二选一路由）
-        chain_map: Dict[str, List[List[str]]] = {
-            "u_LP": [["PM1", "PM3"], ["PM1", "PM4"]],
-        }
+        # 单设备 downstream chain：统一为 s1 -> s2（s2 是 PM3/PM4 合并池）
+        chain_map: Dict[str, List[str]] = {"u_LP": ["s1", "s2"]}
 
-        penalty_coeff = float(self.c_release_violation) * 100.0
+        # 2) 回溯 fire_log，针对每个 u_* 动作检查其 downstream chain 是否存在容量冲突。
+        penalty_coeff = float(self.release_penalty_coef) * 100.0
         for i, log in enumerate(self.fire_log):
             t_name = log.get("t_name", "")
             wid = int(log.get("token_id", -1))
+            # 仅追责 u_* 动作，且必须有合法的 wafer_id
             if wid < 0 or not t_name.startswith("u_"):
                 continue
-            chains = chain_map.get(t_name, [])
-            if not chains:
+            chain = chain_map.get(t_name, [])
+            # 不在追责名单上不进行追责，避免误伤其他动作
+            if not chain:
                 continue
 
             t_leave = int(log.get("t1", 0))
-            violated_any_branch = False
-            for chain in chains:
-                arrival = t_leave + edge_transfer
-                violated_this_branch = False
-                for idx, station in enumerate(chain):
-                    intervals = intervals_by_chamber.get(station, [])
-                    cap = capacities.get(station, 1)
-                    if will_exceed_capacity(intervals, arrival, cap, wid):
-                        violated_this_branch = True
-                        break
-                    if idx < len(chain) - 1:
-                        arrival = arrival + proc_times.get(station, 0) + edge_transfer
-                if violated_this_branch:
-                    violated_any_branch = True
+            arrival = t_leave + edge_transfer
+            violated = False
+            for idx, station in enumerate(chain):
+                intervals = intervals_by_station.get(station, [])
+                cap = capacity_by_station.get(station, 1)
+                if will_exceed_capacity(intervals, arrival, cap, wid):
+                    violated = True
                     break
+                if idx < len(chain) - 1:
+                    arrival = arrival + proc_time_by_station.get(station, 0) + edge_transfer
 
-            if violated_any_branch:
+            if violated:
                 blame[i] = penalty_coeff
         return blame
 
-    def _get_enable_t(self) -> List[int]:
+    def _get_enable_t_stage1(self) -> List[int]:
+        """
+        Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
+        """
+
+        # =====
         enabled: List[int] = []
         d_tm = self._get_place("d_TM1")
+        d_tm_idx = self._get_place_index("d_TM1")
         head_tok = d_tm.head() if len(d_tm.tokens) > 0 else None
         head_target = getattr(head_tok, "_target_place", None) if head_tok is not None else None
+        head_where = int(getattr(head_tok, "where", 0)) if head_tok is not None else 0
+        color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
         locked_sources: set[str] = set()
-        if self.robot_capacity == 2 and head_tok is not None and bool(getattr(head_tok, "_dst_level_full_on_pick", False)):
+        if self.robot_capacity == 2 and head_tok is not None:
             locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
 
+        # =====self.m >= self.pre[:, t]=======
+        # =====self.m + self.pst[:, t] <= self.k=======
         for t in range(self.T):
-            pre_idx = np.flatnonzero(self.pre[:, t] > 0)
-            if pre_idx.size == 0:
+            base_pre = self.pre[:, t]
+            base_pre_idx = np.flatnonzero(base_pre > 0)
+            if base_pre_idx.size == 0:
                 continue
-            if np.any(self.m[pre_idx] < self.pre[pre_idx, t]):
+            color_pre = base_pre
+            if base_pre[d_tm_idx] > 0:
+                color_pre = self.pre_color[:, t, color_idx]
+            if np.any((base_pre > 0) & (color_pre <= 0)):
+                continue
+            if np.any(self.m[base_pre_idx] < color_pre[base_pre_idx]):
                 continue
             if np.any(self.m + self.net[:, t] > self.k):
                 continue
@@ -268,19 +305,14 @@ class PetriSingleDevice:
             t_name = self.id2t_name[t]
             if t_name.startswith("u_"):
                 src = t_name[2:]
-                if not self._is_process_ready(src):
-                    continue
                 if self.robot_capacity == 2:
-                    # 双臂规则1：双臂空（d_TM1 空）时，允许任意取片上机械手，不看下游是否满。
-                    if len(d_tm.tokens) == 0:
-                        pass
-                    else:
-                        # 双臂规则2：若队首晶圆在取片时其 dst 层已满，则后续只能取该 dst 层中的晶圆。
-                        if locked_sources and src not in locked_sources:
-                            continue
-                        # 未触发锁定时保持原拥堵保护，避免无意义堆积。
-                        if not locked_sources and self._select_target_for_source(src) is None:
-                            continue
+                    # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
+                    if len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
+                        continue
+                    # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
+                    # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
+                    if self._select_target_for_source(src) is None:
+                        continue
                 else:
                     # 单臂保持原规则：下游可接收才允许取片。
                     if self._select_target_for_source(src) is None:
@@ -289,13 +321,39 @@ class PetriSingleDevice:
                 target = t_name[2:]
                 if head_target is not None and head_target != target:
                     continue
-                # 与级联设备一致：晶圆在 d_TM1 中需停留一个运输周期后，t_* 才允许发射
-                d_place = self._get_place("d_TM1")
-                dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
+            enabled.append(t)
+        return enabled
+
+    def _apply_enable_stage2(self, stage1_enabled: List[int]) -> List[int]:
+        """
+        Stage2: 在 Stage1 基础上做就绪过滤（加工完成 + 运输位 dwell）。
+        """
+        enabled: List[int] = []
+        d_place = self._get_place("d_TM1")
+        dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
+        for t in stage1_enabled:
+            t_name = self.id2t_name[t]
+            if t_name.startswith("u_"):
+                src = t_name[2:]
+                if not self._is_process_ready(src):
+                    continue
+            elif t_name.startswith("t_"):
                 if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
                     continue
             enabled.append(t)
         return enabled
+
+    def _get_enable_t(self) -> List[int]:
+        stage1_enabled = self._get_enable_t_stage1()
+        return self._apply_enable_stage2(stage1_enabled)
+
+    def _is_deadlock_state(self, stage1_enabled: Optional[List[int]] = None) -> bool:
+        if len(self._get_place("LP_done").tokens) >= self.n_wafer:
+            return False
+        if stage1_enabled is None:
+            self._update_marking_vector()
+            stage1_enabled = self._get_enable_t_stage1()
+        return len(stage1_enabled) == 0
 
     def get_enable_t(self) -> List[int]:
         self._update_marking_vector()
@@ -366,6 +424,7 @@ class PetriSingleDevice:
                 self._chamber_timeline[target].append((end_time, None, wafer_id))
                 self._chamber_active[target][wafer_id] = idx
 
+        tok.where = int(getattr(tok, "where", 0)) + 1
         pst_place.append(tok)
         self._update_marking_vector()
         return {
@@ -387,17 +446,19 @@ class PetriSingleDevice:
             "finish_bonus": 0.0,
             "scrap_penalty": 0.0,
         }
-
+        
+        # 时间惩罚：每步按 dt 线性惩罚，鼓励更快完成
         if self.reward_config.get("time_cost", 1):
-            parts["time_cost"] = -float(dt * self.c_time)
-
+            parts["time_cost"] = -float(dt * self.time_coef)
+        
+        # 加工奖励：每个加工位上每个晶圆根据加工进度给予奖励
         if self.reward_config.get("proc_reward", 1):
             for p in self.marks:
                 if p.type != 1 or len(p.tokens) == 0 or p.processing_time <= 0:
                     continue
                 remain = max(0, p.processing_time - int(p.head().stay_time))
                 progress = min(dt, remain)
-                parts["proc_reward"] += 0.2 * float(progress)
+                parts["proc_reward"] += self.processing_reward_coef * float(progress)
 
         for p in self.marks:
             if p.type != 1 or len(p.tokens) == 0:
@@ -419,6 +480,7 @@ class PetriSingleDevice:
         self.time = 0
         self.done_count = 0
         self.scrap_count = 0
+        self.deadlock_count = 0
         self.resident_violation_count = 0
         self.qtime_violation_count = 0
         self.fire_log.clear()
@@ -427,6 +489,7 @@ class PetriSingleDevice:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
+        self._last_deadlock = False
         self._chamber_timeline = {"PM1": [], "PM3": [], "PM4": []}
         self._chamber_active = {"PM1": {}, "PM3": {}, "PM4": {}}
         self._update_marking_vector()
@@ -443,6 +506,7 @@ class PetriSingleDevice:
         t: Optional[int] = None,
         wait: Optional[bool] = None,
     ):
+        self._last_deadlock = False
         if self.time >= MAX_TIME:
             timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
             return True, timeout_reward, True
@@ -521,6 +585,18 @@ class PetriSingleDevice:
             if self.stop_on_scrap:
                 return True, reward_result, True
 
+        stage1_enabled = self._get_enable_t_stage1()
+        if not finish and self._is_deadlock_state(stage1_enabled):
+            self.deadlock_count += 1
+            self._last_deadlock = True
+            deadlock_penalty = float(abs(self.R_scrap))
+            if detailed_reward:
+                reward_result["deadlock_penalty"] = -deadlock_penalty
+                reward_result["total"] -= deadlock_penalty
+            else:
+                reward_result -= deadlock_penalty
+            return True, reward_result, False
+
         if finish:
             if detailed_reward:
                 reward_result["finish_bonus"] += float(self.R_finish)
@@ -561,6 +637,7 @@ class PetriSingleDevice:
             "transports_detail": {},
             "resident_violation_count": self.resident_violation_count,
             "qtime_violation_count": self.qtime_violation_count,
+            "deadlock_count": self.deadlock_count,
         }
 
     def render_gantt(self, out_path: str) -> None:

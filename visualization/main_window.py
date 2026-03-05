@@ -661,27 +661,47 @@ class PetriMainWindow(QMainWindow):
              self.viewmodel.set_auto_mode(False) # Stop auto if running
              return None
              
-        item = self._verification_sequence[self._verification_index]
-        actions = item.get("actions", [None, None])
-        tm2_name, tm3_name = actions
-        
         try:
             all_transitions = self.viewmodel.adapter.net.id2t_name
-            
+            item = self._verification_sequence[self._verification_index]
+
+            if self._device_mode == "single":
+                action_name = item.get("action", None)
+                if action_name is None:
+                    actions = item.get("actions", [])
+                    if isinstance(actions, list) and actions:
+                        action_name = actions[0]
+                if action_name is None:
+                    raise ValueError("当前为单设备模式，序列缺少 action（或 actions[0]）字段")
+
+                if action_name == "WAIT":
+                    action_id = int(self.viewmodel.adapter.action_space_size)
+                else:
+                    action_id = all_transitions.index(action_name)
+
+                self._verification_index += 1
+                return action_id
+
+            actions = item.get("actions", None)
+            if not isinstance(actions, list) or len(actions) < 2:
+                raise ValueError("当前为级联设备模式，序列需提供 actions=[tm2, tm3]")
+
+            tm2_name, tm3_name = actions[:2]
             if tm2_name and tm2_name != "WAIT":
                 a1 = all_transitions.index(tm2_name)
             else:
                 a1 = -1
-                
+
             if tm3_name and tm3_name != "WAIT":
                 a2 = all_transitions.index(tm3_name)
             else:
                 a2 = -1
-            
+
             self._verification_index += 1
             return (a1, a2)
-            
+
         except ValueError as e:
+            QMessageBox.warning(self, "回放序列不匹配", str(e))
             print(f"Error mapping transition: {e}")
             self.viewmodel.set_auto_mode(False)
             return None
@@ -693,9 +713,13 @@ class PetriMainWindow(QMainWindow):
              self.viewmodel.set_auto_mode(False)
              return
 
-        action_pair = self._get_verification_step_action()
-        if action_pair:
-             self.viewmodel.execute_concurrent_action(*action_pair)
+        replay_action = self._get_verification_step_action()
+        if replay_action is None:
+            return
+        if self._device_mode == "single":
+            self.viewmodel.execute_action(int(replay_action))
+        else:
+            self.viewmodel.execute_concurrent_action(*replay_action)
 
     def _on_model_b_auto_toggled(self, enabled: bool) -> None:
         """Handle Auto Model B toggle"""
@@ -704,10 +728,14 @@ class PetriMainWindow(QMainWindow):
             self._current_auto_mode = 'B'
             
             # Use a lambda wrapper to call our verification provider
-            # The provider returns (a1, a2) or None
+            # The provider returns action(int) / (a1, a2) / None
             def b_auto_cb():
                 res = self._get_verification_step_action()
-                if res:
+                if res is None:
+                    return None
+                if self._device_mode == "single":
+                    self.viewmodel.execute_action(int(res))
+                else:
                     self.viewmodel.execute_concurrent_action(*res)
                 return None # Wrapper executed action, return None to main loop
             

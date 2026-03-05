@@ -16,11 +16,12 @@ class BasedToken:
     machine: int = -1   # 分配的机器编号，-1 表示未分配
     route_type: int = 0 # 路线类型：0=未分配, 1=路线1, 2=路线2
     step: int = 0       # 当前工序步骤索引（0-based）
+    where: int = 0      # 单设备颜色/阶段索引
 
     def clone(self):
         return BasedToken(enter_time=self.enter_time, stay_time=self.stay_time, 
                           token_id=self.token_id, machine=self.machine, 
-                          route_type=self.route_type, step=self.step)
+                          route_type=self.route_type, step=self.step, where=self.where)
 
 @dataclass
 class RobotSpec:
