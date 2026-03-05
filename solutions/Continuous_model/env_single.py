@@ -27,6 +27,7 @@ class Env_PN_Single(EnvBase):
         detailed_reward: bool = False,
         training_phase: int = 2,
         reward_config: Optional[Dict[str, int]] = None,
+        robot_capacity: int = 1,
     ):
         super().__init__(device=device)
         self.training_phase = training_phase
@@ -37,6 +38,7 @@ class Env_PN_Single(EnvBase):
         config = PetriEnvConfig().load(path=path)
         if reward_config:
             config.reward_config.update(reward_config)
+        config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
 
         self.net = PetriSingleDevice(config=config)
         self.n_actions = self.net.T + 1  # 最后一个是 WAIT

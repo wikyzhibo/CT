@@ -18,6 +18,10 @@
 - 简化后结构为：`u_A -> d_TM1 -> t_B`，同一源库所可由多个 `t_B` 共享一个上游卸载动作。
 - 对于并行目标机台（例如 `PM1 -> [PM3|PM4]`），仅保留一个 `u_PM1`，由后续 `t_PM3`/`t_PM4` 完成分流。
 - 该简化不会改变 `d_TM1` 停留时间约束；运输位 dwell 仍在 `t_*` 发射前检查。
+- 单设备支持通过 `PetriEnvConfig.single_robot_capacity` 在网络层切换机械手模式：
+  - `single_robot_capacity=1`：`d_TM1.capacity=1`（Single Arm）
+  - `single_robot_capacity=2`：`d_TM1.capacity=2`（Dual Arm）
+- `d_TM1` 使用 FIFO 队列；token 进入 `d_TM1` 时按机器轮换分配 `machine` 标识（单臂固定 1，双臂在 1/2 间交替）。
 
 **示例**：路径 `LP → PM1` 展开为：
 

@@ -63,7 +63,9 @@ class CenterCanvas(QGraphicsView):
             item.update_state(self._clone_chamber_state(display_name, source))
 
         for name, item in self.robots.items():
-            robot = state.robot_states.get(name, RobotState(name=name, busy=False, wafers=[]))
+            source_name = self._robot_display_to_state.get(name, name)
+            source_robot = state.robot_states.get(source_name, RobotState(name=source_name, busy=False, wafers=[]))
+            robot = RobotState(name=name, busy=source_robot.busy, wafers=source_robot.wafers)
             item.update_state(robot)
 
     def _build_layout(self, state: StateInfo) -> None:

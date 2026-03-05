@@ -40,8 +40,13 @@ class PetriSingleDevice:
         self.stop_on_scrap = bool(getattr(config, "stop_on_scrap", True))
         self.c_release_violation = float(getattr(config, "c_release_violation", 5))
         self.reward_config = dict(getattr(config, "reward_config", {}))
+        self.robot_capacity = 2 if int(getattr(config, "single_robot_capacity", 1)) == 2 else 1
 
-        info = build_single_device_net(n_wafer=self.n_wafer, ttime=max(1, self.T_transport))
+        info = build_single_device_net(
+            n_wafer=self.n_wafer,
+            ttime=max(1, self.T_transport),
+            robot_capacity=self.robot_capacity,
+        )
         self.pre: np.ndarray = info["pre"]
         self.pst: np.ndarray = info["pst"]
         self.net: np.ndarray = self.pst - self.pre
@@ -78,6 +83,7 @@ class PetriSingleDevice:
         self._token_stats: Dict[int, Dict[str, Any]] = {}
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
+        self._next_machine_id = 1
         self.no_release_penalty = False
         self._chamber_timeline: Dict[str, list] = {"PM1": [], "PM3": [], "PM4": []}
         self._chamber_active: Dict[str, Dict[int, int]] = {"PM1": {}, "PM3": {}, "PM4": {}}
@@ -126,17 +132,41 @@ class PetriSingleDevice:
             return True
         return place.head().stay_time >= place.processing_time
 
-    def _select_target_for_source(self, source: str) -> Optional[str]:
+    def _select_target_for_source(self, source: str, preferred_target: Optional[str] = None) -> Optional[str]:
         """
         为 u_<source> 选择一个可接收目标（确定性顺序）。
         仅检查目标腔室容量，运输位停留时间约束仍由 t_* 侧控制。
         """
         candidates = self._u_targets.get(source, [])
+        if preferred_target is not None:
+            if preferred_target not in candidates:
+                return None
+            target_place = self._get_place(preferred_target)
+            if len(target_place.tokens) < target_place.capacity:
+                return preferred_target
+            return None
         for target in candidates:
             target_place = self._get_place(target)
             if len(target_place.tokens) < target_place.capacity:
                 return target
         return None
+
+    def _next_robot_machine(self) -> int:
+        if self.robot_capacity <= 1:
+            return 1
+        machine_id = self._next_machine_id
+        self._next_machine_id = 2 if machine_id == 1 else 1
+        return machine_id
+
+    def _is_dst_level_full(self, source: str) -> bool:
+        targets = self._u_targets.get(source, [])
+        if not targets:
+            return False
+        for target in targets:
+            p = self._get_place(target)
+            if len(p.tokens) < p.capacity:
+                return False
+        return True
 
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:
@@ -220,7 +250,11 @@ class PetriSingleDevice:
     def _get_enable_t(self) -> List[int]:
         enabled: List[int] = []
         d_tm = self._get_place("d_TM1")
-        head_target = getattr(d_tm.head(), "_target_place", None) if len(d_tm.tokens) > 0 else None
+        head_tok = d_tm.head() if len(d_tm.tokens) > 0 else None
+        head_target = getattr(head_tok, "_target_place", None) if head_tok is not None else None
+        locked_sources: set[str] = set()
+        if self.robot_capacity == 2 and head_tok is not None and bool(getattr(head_tok, "_dst_level_full_on_pick", False)):
+            locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
 
         for t in range(self.T):
             pre_idx = np.flatnonzero(self.pre[:, t] > 0)
@@ -236,9 +270,21 @@ class PetriSingleDevice:
                 src = t_name[2:]
                 if not self._is_process_ready(src):
                     continue
-                # u_src 发射前要求至少一个目标可接收，避免堵在 d_TM1。
-                if self._select_target_for_source(src) is None:
-                    continue
+                if self.robot_capacity == 2:
+                    # 双臂规则1：双臂空（d_TM1 空）时，允许任意取片上机械手，不看下游是否满。
+                    if len(d_tm.tokens) == 0:
+                        pass
+                    else:
+                        # 双臂规则2：若队首晶圆在取片时其 dst 层已满，则后续只能取该 dst 层中的晶圆。
+                        if locked_sources and src not in locked_sources:
+                            continue
+                        # 未触发锁定时保持原拥堵保护，避免无意义堆积。
+                        if not locked_sources and self._select_target_for_source(src) is None:
+                            continue
+                else:
+                    # 单臂保持原规则：下游可接收才允许取片。
+                    if self._select_target_for_source(src) is None:
+                        continue
             elif t_name.startswith("t_"):
                 target = t_name[2:]
                 if head_target is not None and head_target != target:
@@ -290,9 +336,13 @@ class PetriSingleDevice:
 
         if t_name.startswith("u_"):
             src = t_name[2:]
+            dst_level_targets = tuple(self._u_targets.get(src, []))
+            setattr(tok, "_dst_level_targets", dst_level_targets)
+            setattr(tok, "_dst_level_full_on_pick", self._is_dst_level_full(src))
             dst = self._select_target_for_source(src)
             if dst is not None:
                 setattr(tok, "_target_place", dst)
+            tok.machine = int(self._next_robot_machine())
             if src in self._chamber_active and wafer_id in self._chamber_active[src]:
                 idx = self._chamber_active[src].pop(wafer_id)
                 e, _, wid = self._chamber_timeline[src][idx]
@@ -301,6 +351,10 @@ class PetriSingleDevice:
             target = t_name[2:]
             if hasattr(tok, "_target_place"):
                 delattr(tok, "_target_place")
+            if hasattr(tok, "_dst_level_targets"):
+                delattr(tok, "_dst_level_targets")
+            if hasattr(tok, "_dst_level_full_on_pick"):
+                delattr(tok, "_dst_level_full_on_pick")
             step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "LP_done": 3}
             tok.step = max(int(getattr(tok, "step", 0)), step_map.get(target, 0))
             self._track_enter(tok, target)
@@ -372,6 +426,7 @@ class PetriSingleDevice:
         self._token_stats = {}
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
+        self._next_machine_id = 1
         self._chamber_timeline = {"PM1": [], "PM3": [], "PM4": []}
         self._chamber_active = {"PM1": {}, "PM3": {}, "PM4": {}}
         self._update_marking_vector()

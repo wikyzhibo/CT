@@ -98,6 +98,9 @@ class BasedToken:
 - `solutions/Continuous_model/construct_single.py`
 - 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`
 - `d_TM1` 在构网中设置 `processing_time=5s`（默认），用于约束“运输位停留后才能 `t_*` 进入腔室”
+- 通过 `PetriEnvConfig.single_robot_capacity` 控制 `d_TM1` 容量：
+  - `1`：Single Arm（单臂）
+  - `2`：Dual Arm（双臂）
 
 **工艺路线**
 - `LP -> PM1(100s) -> PM3(300s) -> LP_done`
@@ -118,6 +121,17 @@ class BasedToken:
 
 **驻留时间更新规则（单设备）**
 - `LP`（type=3）中的 token 不更新 `stay_time`，与 `pn.py` 保持一致
+
+**双臂防死锁规则（`_get_enable_t`）**
+- 当 `d_TM1` 为空时：允许任意满足前置条件的 `u_*` 取片。
+- 当 `d_TM1` 非空且队首晶圆在“取片时”其 `dst` 层已满：仅允许继续取出该 `dst` 层中的晶圆，禁止取其它位置晶圆。
+- `t_*` 始终遵循 FIFO 队首目标约束（队首 `_target_place`）与 `d_TM1` dwell 时间约束。
+
+**运输位 token 的机械臂标识**
+- 每个 token 在进入 `d_TM1`（即 `u_*` 发射）时分配 `machine` 字段。
+- 分配策略为轮换（round-robin）：
+  - 单臂模式固定为 `1`
+  - 双臂模式在 `1/2` 间交替
 
 **停滞惩罚（单设备已接入）**
 - 沿用 `pn.py` 思路：累计连续 WAIT 时间（`_consecutive_wait_time`）

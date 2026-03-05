@@ -167,7 +167,23 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 )
             )
 
-        robot_wafers = transports[0].wafers if transports else []
+        robot_wafers_tm2: List[WaferState] = []
+        robot_wafers_tm3: List[WaferState] = []
+        if transports:
+            robot_wafers = transports[0].wafers
+            machine_by_token: Dict[int, int] = {}
+            d_tm_place = next((p for p in self.net.marks if p.name == "d_TM1"), None)
+            if d_tm_place is not None:
+                for tok in d_tm_place.tokens:
+                    tid = int(getattr(tok, "token_id", -1))
+                    if tid >= 0:
+                        machine_by_token[tid] = int(getattr(tok, "machine", 1))
+            for wafer in robot_wafers:
+                machine_id = machine_by_token.get(int(wafer.token_id), 1)
+                if machine_id == 2:
+                    robot_wafers_tm3.append(wafer)
+                else:
+                    robot_wafers_tm2.append(wafer)
         stats = self.net.calc_wafer_statistics() if hasattr(self.net, "calc_wafer_statistics") else {}
         return StateInfo(
             time=float(getattr(self.net, "time", 0)),
@@ -175,7 +191,10 @@ class PetriSingleAdapter(AlgorithmAdapter):
             transport_buffers=transports,
             start_buffers=[c for c in chambers if c.name == "LP"],
             end_buffers=[c for c in chambers if c.name == "LP_done"],
-            robot_states={"TM2": RobotState(name="TM2", busy=bool(robot_wafers), wafers=robot_wafers)},
+            robot_states={
+                "TM2": RobotState(name="TM2", busy=bool(robot_wafers_tm2), wafers=robot_wafers_tm2),
+                "TM3": RobotState(name="TM3", busy=bool(robot_wafers_tm3), wafers=robot_wafers_tm3),
+            },
             enabled_actions=self.get_enabled_actions(),
             done_count=int(getattr(self.net, "done_count", 0)),
             total_wafers=int(getattr(self.net, "n_wafer", 0)),

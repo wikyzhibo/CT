@@ -20,12 +20,13 @@ class SingleModuleSpec:
     capacity: int = 1
 
 
-def build_single_device_net(n_wafer: int, ttime: int = 5) -> Dict[str, object]:
+def build_single_device_net(n_wafer: int, ttime: int = 5, robot_capacity: int = 1) -> Dict[str, object]:
     """
     构建单设备 Petri 网结构：
     LP -> PM1 -> [PM3, PM4] -> LP_done
     并保留 PM2/PM6（无工艺边，仅展示）。
     """
+    robot_capacity = 2 if int(robot_capacity) == 2 else 1
     modules: Dict[str, SingleModuleSpec] = {
         "LP": SingleModuleSpec(tokens=n_wafer, ptime=0, capacity=max(1, n_wafer)),
         "PM1": SingleModuleSpec(tokens=0, ptime=100, capacity=1),
@@ -35,7 +36,7 @@ def build_single_device_net(n_wafer: int, ttime: int = 5) -> Dict[str, object]:
         "PM6": SingleModuleSpec(tokens=0, ptime=0, capacity=1),   # 展示腔体
         "LP_done": SingleModuleSpec(tokens=0, ptime=0, capacity=max(1, n_wafer)),
         # 关键约束：在 d_TM1 中停留 ttime 秒后，才允许进入目标腔室
-        "d_TM1": SingleModuleSpec(tokens=0, ptime=ttime, capacity=1),
+        "d_TM1": SingleModuleSpec(tokens=0, ptime=ttime, capacity=robot_capacity),
     }
 
     id2p_name = list(modules.keys())

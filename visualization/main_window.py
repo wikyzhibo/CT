@@ -246,7 +246,7 @@ class PetriMainWindow(QMainWindow):
         # 运行时切换底层 env/adapter
         if self._adapter_factory is not None:
             try:
-                new_adapter = self._adapter_factory(mode)
+                new_adapter = self._adapter_factory(mode, self._robot_capacity)
                 self.viewmodel.replace_adapter(new_adapter, reset=True)
                 self._model_handler = None
                 self._concurrent_model_handler = None
@@ -299,6 +299,20 @@ class PetriMainWindow(QMainWindow):
     def _set_robot_capacity(self, capacity: int) -> None:
         self._robot_capacity = 2 if int(capacity) == 2 else 1
         self.center_canvas.set_robot_capacity(self._robot_capacity)
+        if self._device_mode == "single" and self._adapter_factory is not None:
+            try:
+                new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity)
+                self.viewmodel.replace_adapter(new_adapter, reset=True)
+                self._model_handler = None
+                self._concurrent_model_handler = None
+                self._update_model_buttons_state()
+                if self._model_path_override is not None and self._model_apply_callback is not None:
+                    ok, msg = self._model_apply_callback(str(self._model_path_override), self._device_mode)
+                    if not ok:
+                        self.set_model_handler(None)
+                        QMessageBox.warning(self, "模型与机械手模式不兼容", msg)
+            except Exception as e:
+                QMessageBox.warning(self, "机械手模式切换失败", f"无法切换到容量 {self._robot_capacity}: {e}")
         self._refresh_status_message()
 
     def _pick_action_sequence_json(self) -> None:
@@ -322,7 +336,7 @@ class PetriMainWindow(QMainWindow):
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
         seq_text = str(self._action_sequence_path)
         self.statusBar().showMessage(
-            f"设备: {mode_text} | 机械手模式: {arm_mode_text}（仅UI占位） | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text} | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 机械手模式: {arm_mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text} | 动作序列: {seq_text}"
         )
 
     def _connect_signals(self) -> None:

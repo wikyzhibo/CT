@@ -77,6 +77,7 @@ class PetriEnvConfig:
     cache_indices: bool = False
     optimize_data_structures: bool = False
     turbo_mode: bool = False
+    single_robot_capacity: int = 1
 
     # 路线与晶圆分配（可选；无则用默认双路线）
     n_wafer_route1: Optional[int] = None
@@ -131,6 +132,7 @@ class PetriEnvConfig:
         
         if self.n_wafer_route1 is not None or self.n_wafer_route2 is not None:
             lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
+        lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
         
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -235,6 +237,7 @@ class PetriEnvConfig:
         lines.append(f"  cache_indices: {self.cache_indices}")
         lines.append(f"  optimize_data_structures: {self.optimize_data_structures}")
         lines.append(f"  turbo_mode: {self.turbo_mode}")
+        lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")
