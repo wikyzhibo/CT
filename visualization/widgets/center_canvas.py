@@ -32,14 +32,22 @@ class CenterCanvas(QGraphicsView):
         self.robots: Dict[str, RobotItem] = {}
         self._display_to_state: Dict[str, str] = {}
         self._robot_chambers: Dict[str, list[str]] = {}
+        self._robot_display_to_state: Dict[str, str] = {}
         self._latest_state: StateInfo | None = None
         self._device_mode = "cascade"
+        self._robot_capacity = 1
 
     def set_device_mode(self, mode: str) -> None:
         """切换设备布局（仅 UI 占位）。"""
         if mode not in {"cascade", "single"}:
             return
         self._device_mode = mode
+        if self._latest_state is not None:
+            self._build_layout(self._latest_state)
+
+    def set_robot_capacity(self, capacity: int) -> None:
+        """设置机械手容量（1/2），用于 UI 布局展示。"""
+        self._robot_capacity = 2 if int(capacity) == 2 else 1
         if self._latest_state is not None:
             self._build_layout(self._latest_state)
 
@@ -71,6 +79,11 @@ class CenterCanvas(QGraphicsView):
         positions, self._display_to_state, self._robot_chambers = self._layout_config_by_mode()
         state_chambers = {c.name: c for c in state.chambers}
 
+        min_x = float("inf")
+        min_y = float("inf")
+        max_x = 0.0
+        max_y = 0.0
+
         for display_name, (row, col) in positions.items():
             source_name = self._display_to_state.get(display_name, display_name)
             source = state_chambers.get(source_name)
@@ -78,20 +91,32 @@ class CenterCanvas(QGraphicsView):
             item = ChamberItem(chamber_state, self.theme)
             self.chambers[display_name] = item
             self.scene.addItem(item)
-            item.setPos(col * cw + (cw - ch_item.w) / 2, row * ch + (ch - ch_item.h) / 2)
+            x, y = self._position_for_cell(row, col, cw, ch, ch_item.w, ch_item.h)
+            item.setPos(x, y)
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x + ch_item.w)
+            max_y = max(max_y, y + ch_item.h)
 
+        robot_centers = self._robot_centers(positions, cw, ch)
         for name, chamber_names in self._robot_chambers.items():
-            robot = state.robot_states.get(name, RobotState(name=name, busy=False, wafers=[]))
+            source_name = self._robot_display_to_state.get(name, name)
+            source_robot = state.robot_states.get(source_name, RobotState(name=source_name, busy=False, wafers=[]))
+            robot = RobotState(name=name, busy=source_robot.busy, wafers=source_robot.wafers)
             item = RobotItem(robot, self.theme)
             self.robots[name] = item
             self.scene.addItem(item)
-            if chamber_names:
-                cx, cy = self._center_of_chambers(positions, chamber_names, cw, ch)
+            if chamber_names and name in robot_centers:
+                cx, cy = robot_centers[name]
                 item.setPos(cx - r_item.w / 2, cy - r_item.h / 2)
-
-        row_count = max(pos[0] for pos in positions.values()) + 1 if positions else 1
-        col_count = max(pos[1] for pos in positions.values()) + 1 if positions else 1
-        self.scene.setSceneRect(0, 0, col_count * cw, row_count * ch)
+                min_x = min(min_x, cx - r_item.w / 2)
+                min_y = min(min_y, cy - r_item.h / 2)
+                max_x = max(max_x, cx + r_item.w / 2)
+                max_y = max(max_y, cy + r_item.h / 2)
+        padding = 24.0
+        if min_x == float("inf"):
+            min_x, min_y, max_x, max_y = 0.0, 0.0, float(cw), float(ch)
+        self.scene.setSceneRect(min_x - padding, min_y - padding, (max_x - min_x) + padding * 2, (max_y - min_y) + padding * 2)
 
     def _layout_config_by_mode(self) -> tuple[dict, dict, dict]:
         if self._device_mode == "single":
@@ -103,10 +128,18 @@ class CenterCanvas(QGraphicsView):
                 "LP": (3, 1), "LP_done": (3, 2),
             }
             display_to_state = {name: name for name in positions}
-            robot_chambers = {
-                # 单设备仅保留一个机械手
-                "TM2": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],
-            }
+            if self._robot_capacity == 2:
+                robot_chambers = {
+                    "ARM1": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],
+                    "ARM2": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],
+                }
+                self._robot_display_to_state = {"ARM1": "TM2", "ARM2": "TM3"}
+            else:
+                robot_chambers = {"ARM": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"]}
+                self._robot_display_to_state = {"ARM": "TM2"}
+            # 容量=2 时在中心横向展示双机械手，ARM2 当前可能为 UI 占位
+            if self._robot_capacity == 2:
+                return positions, display_to_state, robot_chambers
             return positions, display_to_state, robot_chambers
 
         positions = {
@@ -119,10 +152,15 @@ class CenterCanvas(QGraphicsView):
             "LLA": (6, 1), "LLB": (6, 2),
         }
         display_to_state = {name: name for name in positions}
-        robot_chambers = {
-            "TM2": ["LLA", "LLB", "PM7", "PM8", "PM9", "PM10", "LLC", "LLD"],
-            "TM3": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
-        }
+        if self._robot_capacity == 2:
+            robot_chambers = {
+                "ARM1": ["LLA", "LLB", "PM7", "PM8", "PM9", "PM10", "LLC", "LLD"],
+                "ARM2": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
+            }
+            self._robot_display_to_state = {"ARM1": "TM2", "ARM2": "TM3"}
+        else:
+            robot_chambers = {"ARM": ["LLA", "LLB", "PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"]}
+            self._robot_display_to_state = {"ARM": "TM2"}
         return positions, display_to_state, robot_chambers
 
     @staticmethod
@@ -156,3 +194,33 @@ class CenterCanvas(QGraphicsView):
             xs.append((col + 0.5) * cw)
             ys.append((row + 0.5) * ch)
         return sum(xs) / len(xs), sum(ys) / len(ys)
+
+    def _position_for_cell(self, row: int, col: int, cw: float, ch: float, item_w: float, item_h: float) -> tuple[float, float]:
+        x = col * cw + (cw - item_w) / 2
+        y = row * ch + (ch - item_h) / 2
+        if self._device_mode == "single" and self._robot_capacity == 2:
+            # 双机械手时轻微外扩四周腔室，避免中心拥挤
+            x_shift_map = {0: -28.0, 1: -12.0, 2: 12.0, 3: 28.0}
+            y_shift_map = {0: -8.0, 1: -2.0, 2: 2.0, 3: 8.0}
+            x += x_shift_map.get(col, 0.0)
+            y += y_shift_map.get(row, 0.0)
+        return x, y
+
+    def _robot_centers(self, positions: dict, cw: float, ch: float) -> dict[str, tuple[float, float]]:
+        centers: dict[str, tuple[float, float]] = {}
+        if not self._robot_chambers:
+            return centers
+
+        if self._device_mode == "single" and self._robot_capacity == 2 and {"ARM1", "ARM2"}.issubset(self._robot_chambers.keys()):
+            center_names = self._robot_chambers["ARM1"]
+            cx, cy = self._center_of_chambers(positions, center_names, cw, ch)
+            gap = 148.0
+            centers["ARM1"] = (cx - gap / 2, cy)
+            centers["ARM2"] = (cx + gap / 2, cy)
+            return centers
+
+        for name, chamber_names in self._robot_chambers.items():
+            if not chamber_names:
+                continue
+            centers[name] = self._center_of_chambers(positions, chamber_names, cw, ch)
+        return centers

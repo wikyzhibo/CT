@@ -339,7 +339,7 @@ def main() -> int:
     # Windows 任务栏图标 fix
     set_windows_app_id()
 
-    adapter = build_adapter(args.adapter, device_mode="cascade")
+    adapter = build_adapter(args.adapter, device_mode="single")
     viewmodel = PetriViewModel(adapter)
 
     app = QApplication(sys.argv)
@@ -370,7 +370,7 @@ def main() -> int:
                 print("未找到默认模型，将以手动模式运行")
         
         if model_path:
-            ok, msg = apply_model_for_mode(model_path, "cascade", window)
+            ok, msg = apply_model_for_mode(model_path, "single", window)
             print(("✓ " if ok else "✗ ") + msg)
     else:
         print("已禁用模型加载")

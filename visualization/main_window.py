@@ -87,7 +87,8 @@ class PetriMainWindow(QMainWindow):
         
         # Auto Mode State Tracking ('A' or 'B' or None)
         self._current_auto_mode = None
-        self._device_mode = "cascade"
+        self._device_mode = "single"
+        self._robot_capacity = 1
         self._wafer_count_route1: int | None = None
         self._wafer_count_route2: int | None = None
         self._model_path_override: Path | None = None
@@ -116,6 +117,8 @@ class PetriMainWindow(QMainWindow):
         content_layout.addWidget(self.left_panel)
 
         self.center_canvas = CenterCanvas(self.theme)
+        self.center_canvas.set_device_mode(self._device_mode)
+        self.center_canvas.set_robot_capacity(self._robot_capacity)
         content_layout.addWidget(self.center_canvas, stretch=1)
 
         self.right_panel = ControlPanel(self.theme)
@@ -174,7 +177,7 @@ class PetriMainWindow(QMainWindow):
         device_group.setExclusive(True)
         self._action_device_cascade = QAction("级联设备", self, checkable=True)
         self._action_device_single = QAction("单设备", self, checkable=True)
-        self._action_device_cascade.setChecked(True)
+        self._action_device_single.setChecked(True)
         device_group.addAction(self._action_device_cascade)
         device_group.addAction(self._action_device_single)
         device_menu.addAction(self._action_device_cascade)
@@ -185,8 +188,20 @@ class PetriMainWindow(QMainWindow):
         # 配置菜单
         config_menu = menu_bar.addMenu("配置")
         self._action_config_wafer = QAction("设置晶圆数量", self)
+        arm_mode_menu = config_menu.addMenu("机械手模式")
+        arm_mode_group = QActionGroup(self)
+        arm_mode_group.setExclusive(True)
+        self._action_arm_single = QAction("Single Arm", self, checkable=True)
+        self._action_arm_dual = QAction("Dual Arm", self, checkable=True)
+        self._action_arm_single.setChecked(True)
+        arm_mode_group.addAction(self._action_arm_single)
+        arm_mode_group.addAction(self._action_arm_dual)
+        arm_mode_menu.addAction(self._action_arm_single)
+        arm_mode_menu.addAction(self._action_arm_dual)
         config_menu.addAction(self._action_config_wafer)
         self._action_config_wafer.triggered.connect(self._set_wafer_count)
+        self._action_arm_single.triggered.connect(lambda: self._set_robot_capacity(1))
+        self._action_arm_dual.triggered.connect(lambda: self._set_robot_capacity(2))
 
         # 回放菜单（动作序列 JSON）
         replay_menu = menu_bar.addMenu("回放")
@@ -281,6 +296,11 @@ class PetriMainWindow(QMainWindow):
         self._wafer_count_route2 = int(route2_spin.value())
         self._refresh_status_message()
 
+    def _set_robot_capacity(self, capacity: int) -> None:
+        self._robot_capacity = 2 if int(capacity) == 2 else 1
+        self.center_canvas.set_robot_capacity(self._robot_capacity)
+        self._refresh_status_message()
+
     def _pick_action_sequence_json(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择动作序列 JSON", str(self._action_sequence_path.parent), "JSON Files (*.json)")
         if not path:
@@ -298,10 +318,11 @@ class PetriMainWindow(QMainWindow):
             wafers_text = "未设置"
         else:
             wafers_text = f"R1={self._wafer_count_route1}, R2={self._wafer_count_route2}"
+        arm_mode_text = "Dual Arm" if self._robot_capacity == 2 else "Single Arm"
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
         seq_text = str(self._action_sequence_path)
         self.statusBar().showMessage(
-            f"设备: {mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text} | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 机械手模式: {arm_mode_text}（仅UI占位） | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text} | 动作序列: {seq_text}"
         )
 
     def _connect_signals(self) -> None:
