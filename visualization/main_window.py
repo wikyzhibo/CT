@@ -91,6 +91,7 @@ class PetriMainWindow(QMainWindow):
         self._wafer_count_route1: int | None = None
         self._wafer_count_route2: int | None = None
         self._model_path_override: Path | None = None
+        self._model_apply_callback = None
         self._action_sequence_path = Path("solutions/Td_petri/planB_sequence.json")
         self._adapter_factory = None
         
@@ -190,16 +191,12 @@ class PetriMainWindow(QMainWindow):
         # 回放菜单（动作序列 JSON）
         replay_menu = menu_bar.addMenu("回放")
         self._action_pick_model = QAction("选择模型文件", self)
-        self._action_clear_model = QAction("清除模型文件选择", self)
         self._action_pick_sequence = QAction("选择动作序列 JSON", self)
         self._action_reset_sequence = QAction("恢复默认序列路径", self)
         replay_menu.addAction(self._action_pick_model)
-        replay_menu.addAction(self._action_clear_model)
-        replay_menu.addSeparator()
         replay_menu.addAction(self._action_pick_sequence)
         replay_menu.addAction(self._action_reset_sequence)
         self._action_pick_model.triggered.connect(self._pick_model_file)
-        self._action_clear_model.triggered.connect(self._clear_model_file)
         self._action_pick_sequence.triggered.connect(self._pick_action_sequence_json)
         self._action_reset_sequence.triggered.connect(self._reset_default_action_sequence)
 
@@ -213,6 +210,11 @@ class PetriMainWindow(QMainWindow):
         if not path:
             return
         self._model_path_override = Path(path)
+        # 立即按当前设备模式尝试加载模型
+        if self._model_apply_callback is not None:
+            ok, msg = self._model_apply_callback(str(self._model_path_override), self._device_mode)
+            if not ok:
+                QMessageBox.warning(self, "模型加载失败", msg)
         self._refresh_status_message()
 
     def _clear_model_file(self) -> None:
@@ -234,6 +236,12 @@ class PetriMainWindow(QMainWindow):
                 self._model_handler = None
                 self._concurrent_model_handler = None
                 self._update_model_buttons_state()
+                # 兼容策略：若已选择模型，则按新模式重载；成功保留，失败提示并失效
+                if self._model_path_override is not None and self._model_apply_callback is not None:
+                    ok, msg = self._model_apply_callback(str(self._model_path_override), mode)
+                    if not ok:
+                        self.set_model_handler(None)
+                        QMessageBox.warning(self, "模型与设备模式不兼容", msg)
             except Exception as e:
                 QMessageBox.warning(self, "设备切换失败", f"无法切换到 {mode}: {e}")
         self._refresh_status_message()
@@ -241,6 +249,10 @@ class PetriMainWindow(QMainWindow):
     def set_adapter_factory(self, factory) -> None:
         """注入设备模式 -> adapter 的构造函数。"""
         self._adapter_factory = factory
+
+    def set_model_apply_callback(self, callback) -> None:
+        """注入模型应用器：callback(model_path, device_mode) -> (ok, message)。"""
+        self._model_apply_callback = callback
 
     def _set_wafer_count(self) -> None:
         dialog = QDialog(self)
@@ -289,7 +301,7 @@ class PetriMainWindow(QMainWindow):
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
         seq_text = str(self._action_sequence_path)
         self.statusBar().showMessage(
-            f"设备: {mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text}（仅UI占位） | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 模型: {model_text} | 动作序列: {seq_text}"
         )
 
     def _connect_signals(self) -> None:

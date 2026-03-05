@@ -20,6 +20,20 @@ from solutions.PPO.network.models import MaskedPolicyHead
 from pathlib import Path
 
 
+class SingleActionPolicyModule(nn.Module):
+    """
+    单动作策略模块包装器。
+    与并发训练的保存风格保持一致：保存 policy_module.state_dict()。
+    """
+
+    def __init__(self, backbone: MaskedPolicyHead):
+        super().__init__()
+        self.backbone = backbone
+
+    def forward(self, observation_f):
+        return self.backbone(observation_f)
+
+
 def _extract_step_result(td_next):
     if "next" in td_next.keys():
         reward = td_next["next", "reward"]
@@ -147,11 +161,17 @@ def train_single(
         n_actions=n_actions,
         n_layers=config.n_layer,
     ).to(device)
+    policy_module = SingleActionPolicyModule(policy_backbone).to(device)
 
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
         print(f"从 checkpoint 加载: {checkpoint_path}")
         state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
-        policy_backbone.load_state_dict(state_dict)
+        try:
+            # 新格式：与并发训练一致，保存 policy_module.state_dict()
+            policy_module.load_state_dict(state_dict)
+        except RuntimeError:
+            # 兼容旧格式：仅 backbone.state_dict()
+            policy_backbone.load_state_dict(state_dict)
 
     value_net = nn.Sequential(
         nn.Linear(n_obs, config.n_hidden), nn.ReLU(),
@@ -250,14 +270,14 @@ def train_single(
 
         if ep_reward > best_reward and finish_count > 0:
             best_reward = ep_reward
-            torch.save(policy_backbone.state_dict(), best_model_path)
+            torch.save(policy_module.state_dict(), best_model_path)
             backup_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
-            torch.save(policy_backbone.state_dict(), backup_path)
+            torch.save(policy_module.state_dict(), backup_path)
             print(f"  -> New best model! reward={ep_reward:.2f}")
 
     print(f"\nTraining done. Best reward: {best_reward:.2f}")
     final_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")
-    torch.save(policy_backbone.state_dict(), final_path)
+    torch.save(policy_module.state_dict(), final_path)
     print(f"Final model: {final_path}")
     print(f"Best model: {best_model_path}")
     return log, policy_backbone

@@ -101,6 +101,7 @@ flowchart TB
 - 原双机械手并发训练和可视化入口保持兼容。
 - 单设备逻辑集中在 `Continuous_model` 新文件中，便于后续独立迭代。
 - 单设备训练已支持两阶段：阶段1收集轨迹（关闭在线 release 惩罚），阶段2执行 `blame_release_violations` 回填奖励。
+- 单设备训练权重保存格式与并发训练统一：保存 `policy_module.state_dict()`（不再仅保存 backbone）。
 
 ---
 

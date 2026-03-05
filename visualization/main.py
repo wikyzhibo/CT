@@ -105,9 +105,59 @@ def load_model(model_path: str, adapter: PetriAdapter):
             return_log_prob=True,
         )
         
-        # 加载 state_dict
+        # 加载 state_dict（兼容多种历史保存格式）
         state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
-        policy.load_state_dict(state_dict)
+        loaded = False
+        actor_error: Exception | None = None
+        try:
+            # 格式1：直接保存 ProbabilisticActor.state_dict()
+            policy.load_state_dict(state_dict)
+            loaded = True
+        except Exception as e:
+            actor_error = e
+
+        if not loaded:
+            # 格式2/3：保存 policy_module.state_dict() 或 policy_backbone.state_dict()
+            # 需要把 key 归一到 MaskedPolicyHead 的参数命名。
+            candidate_state_dicts = []
+
+            # identity
+            candidate_state_dicts.append(state_dict)
+
+            # strip "backbone." 前缀（train_single 中 policy_module 保存）
+            candidate_state_dicts.append(
+                {k[len("backbone."):]: v for k, v in state_dict.items() if k.startswith("backbone.")}
+            )
+
+            # strip "module.0.module." 前缀（部分旧可视化封装保存）
+            candidate_state_dicts.append(
+                {k[len("module.0.module."):]: v for k, v in state_dict.items() if k.startswith("module.0.module.")}
+            )
+
+            # strip "backbone.module.0.module." 前缀（双重封装的极端情况）
+            candidate_state_dicts.append(
+                {
+                    k[len("backbone.module.0.module."):]: v
+                    for k, v in state_dict.items()
+                    if k.startswith("backbone.module.0.module.")
+                }
+            )
+
+            for cand in candidate_state_dicts:
+                if not cand:
+                    continue
+                try:
+                    policy_backbone.load_state_dict(cand)
+                    loaded = True
+                    break
+                except Exception:
+                    continue
+
+        if not loaded:
+            raise RuntimeError(
+                f"无法识别的单设备模型权重格式: {model_path}. "
+                f"原始加载错误: {actor_error}"
+            )
         policy.eval()
         
         print(f"✓ 模型加载成功: {model_path}")
@@ -158,8 +208,6 @@ def load_model(model_path: str, adapter: PetriAdapter):
         
     except Exception as e:
         print(f"✗ 加载模型失败: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
 
@@ -259,9 +307,26 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
         
     except Exception as e:
         print(f"✗ 加载并发模型失败: {e}")
-        import traceback
-        traceback.print_exc()
         return None
+
+
+def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWindow) -> tuple[bool, str]:
+    """按设备模式加载模型并回填到窗口 handler。"""
+    adapter = window.viewmodel.adapter
+    if device_mode == "single":
+        handler = load_model(model_path, adapter)
+        if handler is None:
+            window.set_model_handler(None)
+            return False, f"单设备模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
+        window.set_model_handler(handler)
+        return True, f"单设备模型加载成功: {model_path}"
+
+    handler = load_concurrent_model(model_path, adapter)
+    if handler is None:
+        window.set_model_handler(None)
+        return False, f"级联并发模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
+    window.set_concurrent_model_handler(handler)
+    return True, f"级联并发模型加载成功: {model_path}"
 
 
 def main() -> int:
@@ -284,6 +349,7 @@ def main() -> int:
     
     window = PetriMainWindow(viewmodel)
     window.set_adapter_factory(lambda mode: build_adapter(args.adapter, device_mode=mode))
+    window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     
     # 窗口也设置图标
     if app_icon:
@@ -304,10 +370,8 @@ def main() -> int:
                 print("未找到默认模型，将以手动模式运行")
         
         if model_path:
-            # 默认加载并发模型
-            model_handler = load_concurrent_model(model_path, adapter)
-            if model_handler:
-                window.set_concurrent_model_handler(model_handler)
+            ok, msg = apply_model_for_mode(model_path, "cascade", window)
+            print(("✓ " if ok else "✗ ") + msg)
     else:
         print("已禁用模型加载")
     

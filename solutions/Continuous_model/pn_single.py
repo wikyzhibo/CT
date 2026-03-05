@@ -15,7 +15,7 @@ from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.construct_single import build_single_device_net
 from solutions.Continuous_model.pn import Place
 
-MAX_TIME = 1000
+MAX_TIME = 1500
 
 
 class PetriSingleDevice:
