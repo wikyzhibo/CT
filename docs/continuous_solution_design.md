@@ -105,6 +105,8 @@ flowchart TB
 - 每次晶圆被变迁移动后执行 `where += 1`，用于推进 color 截面判定。
 - 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。
 - 单设备清洗（训练简化版）默认仅作用于 `PM3/PM4`：单腔累计处理 2 片后进入 150s 清洗态；清洗期间目标 `t_*` 在 Stage2 禁用（不参与 Stage1 死锁判定），并记录 `fire_log` 清洗事件（`cleaning_start/cleaning_end`）。
+- 单设备 `u_LP` 在 Stage2 新增“反推开工边界”：基于 `PM1` 最早可接收/可释放时间，结合 `PM3/PM4` 最早可接收时间反推当前是否应放行；`PM3/PM4` 取较小可接收时刻（`min(PM3, PM4)`）。
+- 当 `PM3/PM4` 处于清洗态时，反推会将 `cleaning_remaining` 纳入最早可接收时间估计；该约束仅影响 Stage2，不改变 Stage1 死锁判定语义。
 - 单设备观测向量在原 `7*6` wafer 特征后追加 3 维（`PM1/PM3/PM4` 的 `processed_wafer_count`），用于策略感知清洗触发临界。
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
 

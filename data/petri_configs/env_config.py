@@ -83,6 +83,7 @@ class PetriEnvConfig:
     single_cleaning_targets: List[str] = field(default_factory=lambda: ["PM3", "PM4"])
     single_cleaning_trigger_wafers: int = 2
     single_cleaning_duration: int = 150
+    single_u_lp_boundary_enabled: bool = True
 
     # 路线与晶圆分配（可选；无则用默认双路线）
     n_wafer_route1: Optional[int] = None
