@@ -43,6 +43,7 @@ class ChamberState:
     chamber_type: str = "processing"  # "processing", "transport", "start", "end"
     cleaning_remaining: float = 0.0  # 清洁剩余秒数（仅可视化层）
     inbound_blocked: bool = False    # 清洁期间禁入提示（仅可视化层）
+    cleaning_wafer_countdown: int = -1  # 距清洗晶圆倒数，-1 表示不显示（非清洗目标腔室）
 
 
 @dataclass

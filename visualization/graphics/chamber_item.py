@@ -63,7 +63,7 @@ class ChamberItem(QGraphicsItem):
         
         if is_cleaning:
             bg = self.theme.bg_surface
-            border = self.theme.warning
+            border = self.theme.text_primary
             grid_alpha = 70
         elif is_disabled:
             bg = self.theme.bg_deepest
@@ -144,7 +144,7 @@ class ChamberItem(QGraphicsItem):
             main_font = QFont(p.font_family, p.wafer_font_pt + 2, QFont.Weight.Bold)
             sub_font = QFont(p.font_family, p.wafer_id_font_pt, QFont.Weight.DemiBold)
 
-            painter.setPen(self.theme.qcolor(self.theme.warning))
+            painter.setPen(self.theme.qcolor(self.theme.text_primary))
             painter.setFont(main_font)
             painter.drawText(
                 rect.adjusted(0, 8, 0, -20),
@@ -171,6 +171,22 @@ class ChamberItem(QGraphicsItem):
                                f"+{len(self.chamber.wafers) - 1}")
         else:
             self.wafer_item.setVisible(False)
+
+        # 距清洗晶圆倒数（仅清洗目标腔室，非清洗态时显示，白色数字）
+        countdown = int(getattr(self.chamber, "cleaning_wafer_countdown", -1))
+        if countdown >= 0:
+            painter.setPen(self.theme.qcolor(self.theme.text_primary))
+            countdown_font = QFont(p.font_family, p.wafer_font_pt + 2, QFont.Weight.Bold)
+            painter.setFont(countdown_font)
+            # 留足垂直空间避免加粗字体上端被裁剪（AlignBottom 时文字向上延伸）
+            countdown_h = 24
+            countdown_rect = QRectF(
+                rect.left() + p.text_margin,
+                rect.bottom() - p.text_margin - countdown_h,
+                rect.width() - p.text_margin * 2,
+                countdown_h,
+            )
+            painter.drawText(countdown_rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, str(countdown))
 
     def _status_color(self):
         if self.chamber.status == "danger":

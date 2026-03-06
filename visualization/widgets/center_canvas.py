@@ -178,6 +178,7 @@ class CenterCanvas(QGraphicsView):
                 proc_time=0.0,
                 status="disabled" if is_disabled_placeholder else "idle",
                 chamber_type="disabled" if is_disabled_placeholder else "processing",
+                cleaning_wafer_countdown=-1,
             )
         return ChamberState(
             name=display_name,
@@ -189,6 +190,7 @@ class CenterCanvas(QGraphicsView):
             chamber_type=source.chamber_type,
             cleaning_remaining=source.cleaning_remaining,
             inbound_blocked=source.inbound_blocked,
+            cleaning_wafer_countdown=getattr(source, "cleaning_wafer_countdown", -1),
         )
 
     def _center_of_chambers(self, positions: dict, names: list, cw: float, ch: float) -> tuple[float, float]:
