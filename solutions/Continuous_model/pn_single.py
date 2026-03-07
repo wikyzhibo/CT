@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import deque
 import json
 import time
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -270,29 +270,56 @@ class PetriSingleDevice:
             return True
         return place.head().stay_time >= place.processing_time
 
-    def _estimate_place_accept_time(self, place_name: str, include_cleaning: bool = True) -> int:
+    def _estimate_place_accept_time_with_meta(
+        self, place_name: str, include_cleaning: bool = True
+    ) -> Tuple[int, int]:
         """
         估计 place 最早可接收新 wafer 的时间点（绝对时间）。
         - 若未满：当前时刻（若清洗中则考虑 cleaning_remaining）
         - 若已满：至少等待一个在制 wafer 可被卸载释放
+        返回值：(accept_time, predicted_cleaning_delay)
         """
         place = self._get_place(place_name)
         base_time = int(self.time)
+        predicted_cleaning_delay = 0
         if include_cleaning and bool(getattr(place, "is_cleaning", False)):
             base_time = max(base_time, int(self.time) + int(getattr(place, "cleaning_remaining", 0)))
 
         occupancy = len(place.tokens)
         if occupancy < int(place.capacity):
-            return base_time
+            return base_time, predicted_cleaning_delay
 
         if place.processing_time <= 0:
-            return base_time
+            return base_time, predicted_cleaning_delay
 
         earliest_release = min(
             int(self.time) + max(0, int(place.processing_time) - int(getattr(tok, "stay_time", 0)))
             for tok in place.tokens
         )
-        return max(base_time, earliest_release)
+        accept_time = max(base_time, earliest_release)
+
+        # 预测“下一次卸载触发清洗”带来的额外延迟，避免 u_LP 在清洗窗口前过早放行。
+        can_predict_cleaning = (
+            include_cleaning
+            and self.single_cleaning_enabled
+            and place_name in self.single_cleaning_targets
+            and not bool(getattr(place, "is_cleaning", False))
+            and int(self.single_cleaning_duration) > 0
+        )
+        if can_predict_cleaning:
+            processed_cnt = int(getattr(place, "processed_wafer_count", 0))
+            if processed_cnt + 1 >= int(self.single_cleaning_trigger_wafers):
+                predicted_cleaning_delay = int(self.single_cleaning_duration)
+                accept_time += predicted_cleaning_delay
+
+        return accept_time, predicted_cleaning_delay
+
+    def _estimate_place_accept_time(self, place_name: str, include_cleaning: bool = True) -> int:
+        accept_time, _ = self._estimate_place_accept_time_with_meta(
+            place_name=place_name,
+            include_cleaning=include_cleaning,
+        )
+        return accept_time
 
     def _allow_u_lp_by_reverse_boundary(self) -> bool:
         """
@@ -306,8 +333,12 @@ class PetriSingleDevice:
         pm1_proc_time = max(0, int(self._get_place("PM1").processing_time))
         pm1_ready_to_unload_time = pm1_enter_time + pm1_proc_time
 
-        pm3_accept_time = self._estimate_place_accept_time("PM3", include_cleaning=True)
-        pm4_accept_time = self._estimate_place_accept_time("PM4", include_cleaning=True)
+        pm3_accept_time, pm3_predicted_cleaning_delay = self._estimate_place_accept_time_with_meta(
+            "PM3", include_cleaning=True
+        )
+        pm4_accept_time, pm4_predicted_cleaning_delay = self._estimate_place_accept_time_with_meta(
+            "PM4", include_cleaning=True
+        )
         pm2_stage_accept_time = min(pm3_accept_time, pm4_accept_time)
 
         predicted_pm2_stage_enter_time = pm1_ready_to_unload_time + edge_transfer
@@ -326,6 +357,8 @@ class PetriSingleDevice:
                     "pm4_accept_time": int(pm4_accept_time),
                     "pm3_cleaning": bool(getattr(self._get_place("PM3"), "is_cleaning", False)),
                     "pm4_cleaning": bool(getattr(self._get_place("PM4"), "is_cleaning", False)),
+                    "pm3_predicted_cleaning_delay": int(pm3_predicted_cleaning_delay),
+                    "pm4_predicted_cleaning_delay": int(pm4_predicted_cleaning_delay),
                 },
             )
         return allow

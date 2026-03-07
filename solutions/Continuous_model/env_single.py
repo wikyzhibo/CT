@@ -79,8 +79,8 @@ class Env_PN_Single(EnvBase):
         return valid_pairs
 
     def _make_spec(self):
-        chamber_count_dim = 3  # PM1, PM3, PM4 的已处理晶圆计数
-        obs_dim = int(self.MAX_WAFERS) * int(self.wafer_feat_dim) + int(chamber_count_dim)
+        cleaning_feat_dim = 6  # PM1, PM3, PM4 各 3 维：is_cleaning / clean_remaining_time_norm / remaining_runs_before_clean_norm
+        obs_dim = int(self.MAX_WAFERS) * int(self.wafer_feat_dim) + int(cleaning_feat_dim)
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -184,11 +184,19 @@ class Env_PN_Single(EnvBase):
                 )
             else:
                 obs.extend([0.0] * wafer_feat_dim)
-        chamber_counts = []
-        for chamber_name in ("PM1", "PM3", "PM4"):
+        clean_duration = 150.0
+        clean_trigger_runs = 2.0
+        for chamber_name in ("PM3", "PM4"):
             place = self.net._get_place(chamber_name)
-            chamber_counts.append(float(getattr(place, "processed_wafer_count", 0)))
-        obs.extend(chamber_counts)
+            is_cleaning = 1.0 if bool(getattr(place, "is_cleaning", False)) else 0.0
+            clean_remaining_time = max(0.0, float(getattr(place, "cleaning_remaining", 0)))
+            clean_remaining_time_norm = float(np.clip(clean_remaining_time / max(50,clean_duration), 0.0, 1.0))
+
+            processed_count = max(0.0, float(getattr(place, "processed_wafer_count", 0)))
+            remaining_runs = clean_trigger_runs - processed_count
+            remaining_runs_before_clean_norm = float(np.clip(remaining_runs / clean_trigger_runs, 0.0, 1.0))
+
+            obs.extend([float(is_cleaning), clean_remaining_time_norm, remaining_runs_before_clean_norm])
         return np.array(obs, dtype=np.float32)
 
     def _mask(self):
