@@ -13,12 +13,11 @@ import torch.nn as nn
 from torch.optim import Adam
 from torchrl.modules import MaskedCategorical
 from tensordict import TensorDict
-
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 from data.ppo_configs.training_config import PPOTrainingConfig
 from solutions.Continuous_model.env_single import Env_PN_Single
 from solutions.PPO.network.models import MaskedPolicyHead
 from pathlib import Path
-
 
 class SingleActionPolicyModule(nn.Module):
     """
@@ -197,90 +196,91 @@ def train_single(
     best_reward = float("-inf")
     log = defaultdict(list)
 
-    for batch_idx in range(config.total_batch):
-        rollout, second_pass_events = collect_rollout_single(env, policy_backbone, config.frames_per_batch, device=device)
-        rollout = rollout.to(device)
+    with set_exploration_type(ExplorationType.RANDOM):
+        for batch_idx in range(config.total_batch):
+            rollout, second_pass_events = collect_rollout_single(env, policy_backbone, config.frames_per_batch, device=device)
+            rollout = rollout.to(device)
 
-        with torch.no_grad():
-            values = value_net(rollout["observation_f"]).squeeze(-1)
-            next_values = value_net(rollout["next_observation_f"]).squeeze(-1)
-            rewards = rollout["reward"].squeeze(-1)
-            dones = rollout["done"].float().squeeze(-1)
-            delta = rewards + config.gamma * next_values * (1 - dones) - values
-            advantages = torch.zeros_like(rewards)
-            gae = 0.0
-            for t in reversed(range(len(rewards))):
-                gae = delta[t] + config.gamma * config.gae_lambda * (1 - dones[t]) * gae
-                advantages[t] = gae
-            returns = advantages + values
+            with torch.no_grad():
+                values = value_net(rollout["observation_f"]).squeeze(-1)
+                next_values = value_net(rollout["next_observation_f"]).squeeze(-1)
+                rewards = rollout["reward"].squeeze(-1)
+                dones = rollout["done"].float().squeeze(-1)
+                delta = rewards + config.gamma * next_values * (1 - dones) - values
+                advantages = torch.zeros_like(rewards)
+                gae = 0.0
+                for t in reversed(range(len(rewards))):
+                    gae = delta[t] + config.gamma * config.gae_lambda * (1 - dones[t]) * gae
+                    advantages[t] = gae
+                returns = advantages + values
 
-        rollout["advantage"] = advantages
-        rollout["value_target"] = returns
+            rollout["advantage"] = advantages
+            rollout["value_target"] = returns
 
-        for _ in range(config.num_epochs):
-            indices = torch.randperm(len(rollout))
-            for start in range(0, len(rollout), config.sub_batch_size):
-                end = start + config.sub_batch_size
-                batch = rollout[indices[start:end]]
+            for _ in range(config.num_epochs):
+                indices = torch.randperm(len(rollout))
+                for start in range(0, len(rollout), config.sub_batch_size):
+                    end = start + config.sub_batch_size
+                    batch = rollout[indices[start:end]]
 
-                obs_f = batch["observation_f"]
-                mask = batch["action_mask"].bool()
-                old_action = batch["action"]
-                old_log_prob = batch["log_prob"]
-                adv = batch["advantage"]
-                ret = batch["value_target"]
+                    obs_f = batch["observation_f"]
+                    mask = batch["action_mask"].bool()
+                    old_action = batch["action"]
+                    old_log_prob = batch["log_prob"]
+                    adv = batch["advantage"]
+                    ret = batch["value_target"]
 
-                logits = policy_backbone(obs_f)
-                dist = MaskedCategorical(logits=logits, mask=mask)
-                new_log_prob = dist.log_prob(old_action)
+                    logits = policy_backbone(obs_f)
+                    dist = MaskedCategorical(logits=logits, mask=mask)
+                    new_log_prob = dist.log_prob(old_action)
 
-                ratio = torch.exp(new_log_prob - old_log_prob)
-                adv_norm = (adv - adv.mean()) / (adv.std() + 1e-8)
-                surr1 = ratio * adv_norm
-                surr2 = torch.clamp(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * adv_norm
-                policy_loss = -torch.min(surr1, surr2).mean()
+                    ratio = torch.exp(new_log_prob - old_log_prob)
+                    adv_norm = (adv - adv.mean()) / (adv.std() + 1e-8)
+                    surr1 = ratio * adv_norm
+                    surr2 = torch.clamp(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * adv_norm
+                    policy_loss = -torch.min(surr1, surr2).mean()
 
-                value_pred = value_net(obs_f).squeeze(-1)
-                value_loss = 0.5 * (value_pred - ret).pow(2).mean()
-                entropy_loss = -config.entropy_start * dist.entropy().mean()
-                loss = policy_loss + value_loss + entropy_loss
+                    value_pred = value_net(obs_f).squeeze(-1)
+                    value_loss = 0.5 * (value_pred - ret).pow(2).mean()
+                    entropy_loss = -config.entropy_start * dist.entropy().mean()
+                    loss = policy_loss + value_loss + entropy_loss
 
-                optim.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(list(policy_backbone.parameters()) + list(value_net.parameters()), max_norm=1.0)
-                optim.step()
+                    optim.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(list(policy_backbone.parameters()) + list(value_net.parameters()), max_norm=1.0)
+                    optim.step()
 
-        ep_reward = rollout["reward"].sum().item()
-        finish_count = rollout["finish"].sum().item()
-        scrap_count = rollout["scrap"].sum().item()
-        deadlock_count = rollout["deadlock"].sum().item()
+            ep_reward = rollout["reward"].sum().item()
+            finish_count = rollout["finish"].sum().item()
+            scrap_count = rollout["scrap"].sum().item()
+            deadlock_count = rollout["deadlock"].sum().item()
 
-        finish_mask = rollout["finish"].squeeze(-1).bool()
-        if finish_mask.any():
-            finish_times = rollout["time"][finish_mask].squeeze(-1).float()
-            avg_makespan = finish_times.mean().item()
-        else:
-            avg_makespan = 0.0
+            finish_mask = rollout["finish"].squeeze(-1).bool()
+            if finish_mask.any():
+                finish_times = rollout["time"][finish_mask].squeeze(-1).float()
+                avg_makespan = finish_times.mean().item()
+            else:
+                avg_makespan = 0.0
 
-        log["reward"].append(ep_reward)
-        log["finish"].append(finish_count)
-        log["scrap"].append(scrap_count)
-        log["deadlock"].append(deadlock_count)
-        log["makespan"].append(avg_makespan)
-        log["second_pass_events"].append(second_pass_events)
+            log["reward"].append(ep_reward)
+            log["finish"].append(finish_count)
+            log["scrap"].append(scrap_count)
+            log["deadlock"].append(deadlock_count)
+            log["makespan"].append(avg_makespan)
+            log["second_pass_events"].append(second_pass_events)
 
-        print(
-            f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={int(finish_count)} "
-            f"| scrap={int(scrap_count)} | deadlock={int(deadlock_count)} "
-            f"| makespan={avg_makespan:.1f} | second_pass={second_pass_events}"
-        )
+            print(
+                f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={int(finish_count)} "
+                f"| scrap={int(scrap_count)} | deadlock={int(deadlock_count)} "
+                f"| makespan={avg_makespan:.1f} | second_pass={second_pass_events}"
+            )
 
-        if ep_reward > best_reward and finish_count > 0:
-            best_reward = ep_reward
-            torch.save(policy_module.state_dict(), best_model_path)
-            backup_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
-            torch.save(policy_module.state_dict(), backup_path)
-            print(f"  -> New best model! reward={ep_reward:.2f}")
+            if ep_reward > best_reward and finish_count > 0:
+                best_reward = ep_reward
+                torch.save(policy_module.state_dict(), best_model_path)
+                backup_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
+                torch.save(policy_module.state_dict(), backup_path)
+                print(f"  -> New best model! reward={ep_reward:.2f}")
 
     print(f"\nTraining done. Best reward: {best_reward:.2f}")
     final_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")

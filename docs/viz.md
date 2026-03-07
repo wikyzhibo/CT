@@ -184,6 +184,7 @@ python -m solutions.Continuous_model.export_inference_sequence \
   --seed 0 \
   --phase 2 \
   --robot-capacity 1 \
+  --single-retries 10 \
   --out-name single_infer_seq \
   --force-overwrite-planb
 ```
@@ -198,6 +199,12 @@ python -m solutions.Continuous_model.export_inference_sequence \
   "actions": ["u_PM1"]
 }
 ```
+
+单设备导出脚本与 `visualization/main.py` 的单设备模型推理保持一致：
+
+- 动作选择使用随机采样语义（`ExplorationType.RANDOM`），而非 ArgMax。
+- 推理输入统一使用 `observation_f + action_mask` 的 TensorDict 路径，避免“导出序列”和“可视化回放”在策略取样方式上出现偏差。
+- 单设备推理若一次未达到 `finish`，会自动重试；默认最多重试 `10` 次（可通过 `--single-retries` 调整）。若重试后仍未 `finish`，则导出最后一次序列。
 
 上述命令都会同时输出：
 

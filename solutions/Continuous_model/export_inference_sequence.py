@@ -16,14 +16,16 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torchrl.modules import MaskedCategorical
+from tensordict import TensorDict
+from tensordict.nn import TensorDictModule
+from torchrl.envs.utils import ExplorationType, set_exploration_type
+from torchrl.modules import MaskedCategorical, ProbabilisticActor
 
 from solutions.PPO.enviroment import Env_PN_Concurrent
 from solutions.PPO.network.models import DualHeadPolicyNet
 from solutions.PPO.network.models import MaskedPolicyHead
 from solutions.Continuous_model.train_concurrent import DualActionPolicyModule
 from solutions.Continuous_model.env_single import Env_PN_Single
-from solutions.Continuous_model.train_single import SingleActionPolicyModule
 
 
 def _to_step_state(td_next: Any) -> Any:
@@ -38,6 +40,14 @@ def _to_terminated(td_next: Any) -> bool:
     else:
         t = td_next["terminated"]
     return bool(t.item() if hasattr(t, "item") else t)
+
+
+def _to_finish(td_next: Any) -> bool:
+    if "next" in td_next.keys() and "finish" in td_next["next"].keys():
+        f = td_next["next", "finish"]
+    else:
+        f = td_next.get("finish", False)
+    return bool(f.item() if hasattr(f, "item") else f)
 
 
 def _to_time(td_state: Any) -> int:
@@ -128,7 +138,7 @@ def _infer_single_model_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int,
     return hidden, n_layers
 
 
-def _build_single_policy(env: Env_PN_Single, model_path: Path, device: torch.device) -> SingleActionPolicyModule:
+def _build_single_policy(env: Env_PN_Single, model_path: Path, device: torch.device) -> ProbabilisticActor:
     n_obs = int(env.observation_spec["observation"].shape[0])
     raw_state_dict = torch.load(str(model_path), map_location=device, weights_only=True)
     load_error: Exception | None = None
@@ -136,14 +146,35 @@ def _build_single_policy(env: Env_PN_Single, model_path: Path, device: torch.dev
     for candidate in _iter_single_candidate_state_dicts(raw_state_dict):
         try:
             hidden, n_layers = _infer_single_model_shape(candidate)
-            backbone = MaskedPolicyHead(
+            policy_backbone = MaskedPolicyHead(
                 hidden=hidden,
                 n_obs=n_obs,
                 n_actions=env.n_actions,
                 n_layers=n_layers,
             ).to(device)
-            policy = SingleActionPolicyModule(backbone).to(device)
-            policy.backbone.load_state_dict(candidate)
+            td_module = TensorDictModule(
+                policy_backbone,
+                in_keys=["observation_f"],
+                out_keys=["logits"],
+            )
+            policy = ProbabilisticActor(
+                module=td_module,
+                in_keys={"logits": "logits", "mask": "action_mask"},
+                out_keys=["action"],
+                distribution_class=MaskedCategorical,
+                return_log_prob=True,
+            ).to(device)
+
+            # 兼容直接保存 actor.state_dict() 的格式
+            try:
+                policy.load_state_dict(raw_state_dict)
+                policy.eval()
+                return policy
+            except Exception:
+                pass
+
+            # 兼容保存 backbone/policy_module.state_dict() 的格式
+            policy_backbone.load_state_dict(candidate)
             policy.eval()
             return policy
         except Exception as e:
@@ -159,7 +190,7 @@ def _rollout_single_sequence(
     seed: int,
     training_phase: int,
     robot_capacity: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
     env = Env_PN_Single(seed=seed, training_phase=training_phase, robot_capacity=robot_capacity)
@@ -167,14 +198,23 @@ def _rollout_single_sequence(
 
     td = env.reset()
     sequence: list[dict[str, Any]] = []
+    finished = False
 
     with torch.no_grad():
         for step in range(1, max_steps + 1):
-            obs_f = td["observation"].unsqueeze(0).float().to(device)
-            action_mask = td["action_mask"].unsqueeze(0).bool().to(device)
-            logits = policy.backbone(obs_f)
-            dist = MaskedCategorical(logits=logits, mask=action_mask)
-            action_idx = int(dist.mode.squeeze(0).item())
+            obs = td["observation"]
+            td_model = TensorDict(
+                {
+                    "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0).to(device),
+                    "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device),
+                    "action_mask": td["action_mask"].unsqueeze(0).bool().to(device),
+                },
+                batch_size=[1],
+            )
+
+            with set_exploration_type(ExplorationType.RANDOM):
+                td_out = policy(td_model)
+            action_idx = int(td_out["action"].squeeze(0).item())
 
             step_td = td.clone()
             step_td["action"] = torch.tensor(action_idx, dtype=torch.int64)
@@ -183,6 +223,8 @@ def _rollout_single_sequence(
             td_after = _to_step_state(td_next)
             current_time = _to_time(td_after)
             action_name = _decode_single_action_name(env, action_idx)
+            terminated = _to_terminated(td_next)
+            finished = _to_finish(td_next)
             sequence.append(
                 {
                     "step": step,
@@ -192,11 +234,42 @@ def _rollout_single_sequence(
                 }
             )
 
-            if _to_terminated(td_next):
+            if terminated:
                 break
             td = td_after
 
-    return sequence
+    return sequence, finished
+
+
+def _rollout_single_sequence_with_retry(
+    model_path: Path,
+    max_steps: int,
+    seed: int,
+    training_phase: int,
+    robot_capacity: int,
+    max_retries: int = 10,
+) -> list[dict[str, Any]]:
+    if max_retries < 1:
+        raise ValueError("max_retries 必须 >= 1")
+
+    last_sequence: list[dict[str, Any]] = []
+    for attempt in range(max_retries):
+        attempt_seed = seed + attempt
+        sequence, finished = _rollout_single_sequence(
+            model_path=model_path,
+            max_steps=max_steps,
+            seed=attempt_seed,
+            training_phase=training_phase,
+            robot_capacity=robot_capacity,
+        )
+        last_sequence = sequence
+        if finished:
+            if attempt > 0:
+                print(f"[INFO] single 模式第 {attempt + 1} 次推理达到 finish。")
+            return sequence
+
+    print(f"[WARN] single 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
+    return last_sequence
 
 
 def _rollout_concurrent_sequence(
@@ -258,16 +331,18 @@ def rollout_and_export(
     force_overwrite_planb: bool,
     device_mode: str,
     robot_capacity: int,
+    single_retries: int,
 ) -> dict[str, Path]:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     if device_mode == "single":
-        sequence = _rollout_single_sequence(
+        sequence = _rollout_single_sequence_with_retry(
             model_path=model_path,
             max_steps=max_steps,
             seed=seed,
             training_phase=training_phase,
             robot_capacity=robot_capacity,
+            max_retries=single_retries,
         )
     elif device_mode == "cascade":
         sequence = _rollout_concurrent_sequence(
@@ -332,6 +407,12 @@ def main() -> None:
         action="store_true",
         help="允许覆盖 solutions/Td_petri/planB_sequence.json",
     )
+    parser.add_argument(
+        "--single-retries",
+        type=int,
+        default=10,
+        help="single 模式未 finish 时的最大重试次数",
+    )
     args = parser.parse_args()
     out_name = args.out_name
     if out_name == "concurrent_infer_seq" and args.device_mode == "single":
@@ -346,6 +427,7 @@ def main() -> None:
         force_overwrite_planb=args.force_overwrite_planb,
         device_mode=args.device_mode,
         robot_capacity=args.robot_capacity,
+        single_retries=args.single_retries,
     )
 
     print(f"[INFO] 已导出 action_series: {out['action_series_path']}")
