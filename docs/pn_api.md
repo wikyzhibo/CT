@@ -144,8 +144,7 @@ class BasedToken:
 - WAIT 掩码规则（单设备）：
   - 默认启用所有 wait 档位；
   - 若 `PM1/PM3/PM4` 任一腔室存在 token 满足 `stay_time >= processing_time`（加工完成待取片），禁用 `WAIT>5s`，仅保留 `WAIT_5s`。
-- `u_LP` 在 Stage2 增加“反推开工边界”：按 `PM1 -> min(PM3,PM4)` 的最早可接收窗口反推当前是否可取片；`PM3/PM4` 清洗态会将 `cleaning_remaining` 计入反推。
-- 该反推约束由 `single_u_lp_boundary_enabled` 控制（默认开启），且仅作用 Stage2，不影响 Stage1 死锁判定语义。
+- `u_LP` 不再使用 Stage2 额外边界拦截；当前仅遵循通用使能规则（加工完成、目标可达、清洗过滤与运输位 dwell 约束）。
 - 当 `t_*` 的目标腔室处于 `is_cleaning=True` 时，Stage2 才禁用该变迁（死锁判定仍基于未清洗过滤的 Stage1）。
 - 死锁定义：`LP_done` 未完成且 Stage1 无任何使能变迁。
 

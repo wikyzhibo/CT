@@ -103,7 +103,6 @@ class PetriEnvConfig:
     single_cleaning_targets: List[str] = field(default_factory=lambda: ["PM3", "PM4"])
     single_cleaning_trigger_wafers: int = 2
     single_cleaning_duration: int = 150
-    single_u_lp_boundary_enabled: bool = True
     # 单设备工序时间配置（秒）
     single_process_time_map: Dict[str, int] = field(default_factory=_default_single_process_time_map)
     # 单设备工序时间随机扰动（按 episode 固定）

@@ -107,8 +107,7 @@ flowchart TB
 - 每次晶圆被变迁移动后执行 `where += 1`，用于推进 color 截面判定。
 - 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。
 - 单设备清洗（训练简化版）默认仅作用于 `PM3/PM4`：单腔累计处理 2 片后进入 150s 清洗态；清洗期间目标 `t_*` 在 Stage2 禁用（不参与 Stage1 死锁判定），并记录 `fire_log` 清洗事件（`cleaning_start/cleaning_end`）。
-- 单设备 `u_LP` 在 Stage2 新增“反推开工边界”：基于 `PM1` 最早可接收/可释放时间，结合 `PM3/PM4` 最早可接收时间反推当前是否应放行；`PM3/PM4` 取较小可接收时刻（`min(PM3, PM4)`）。
-- 当 `PM3/PM4` 处于清洗态时，反推会将 `cleaning_remaining` 纳入最早可接收时间估计；此外，当腔室满载且“下一次卸载会触发清洗”时，还会预估叠加一次 `single_cleaning_duration` 延迟。`PM3/PM4` 仍按较小可接收时刻（`min(PM3, PM4)`）计算边界；该约束仅影响 Stage2，不改变 Stage1 死锁判定语义。
+- 单设备 `u_LP` 不再使用 Stage2 反推边界拦截，改为仅遵循通用使能条件（加工完成、目标可达、清洗过滤与运输位停留约束）。该变更用于减少特例裁剪，统一单设备动作语义。
 - 单设备观测向量更新为 float32，并按“合法 `(place_idx, where)` 对全集 one-hot”编码位置（静态规则枚举，不是 `P×W` 笛卡尔积）。单片晶圆特征改为 `present + one_hot(valid_pair_idx) + status_one_hot + remaining_processing_norm + time_to_scrap_norm`：`status_one_hot` 顺序为 `processing/done_waiting_pick/moving/waiting`；其中 `waiting` 定义为“位于运输位且 `stay_time > D_Residual_time`”。`remaining_processing_norm` 用剩余加工量归一化（`0` 表示可取）；`time_to_scrap_norm` 先按阈值 30 裁剪再归一化，且运输位晶圆固定为 `1`。不足 `MAX_WAFERS` 时按单片特征长度补零；末尾追加 9 维清洗状态特征（`PM1/PM3/PM4` 各 `is_cleaning + clean_remaining_time_norm + remaining_runs_before_clean_norm`），不再追加腔室处理计数。
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
 

@@ -53,7 +53,6 @@ class PetriSingleDevice:
         self.single_cleaning_targets = set(getattr(config, "single_cleaning_targets", ["PM3", "PM4"]))
         self.single_cleaning_trigger_wafers = max(1, int(getattr(config, "single_cleaning_trigger_wafers", 2)))
         self.single_cleaning_duration = max(0, int(getattr(config, "single_cleaning_duration", 150)))
-        self.single_u_lp_boundary_enabled = bool(getattr(config, "single_u_lp_boundary_enabled", True))
         self.wait_durations = self._normalize_wait_durations(
             getattr(config, "single_wait_durations", [5, 10, 20, 50, 100])
         )
@@ -372,82 +371,6 @@ class PetriSingleDevice:
             return True
         return place.head().stay_time >= place.processing_time
 
-    def _estimate_place_accept_time_with_meta(
-        self, place_name: str, include_cleaning: bool = True
-    ) -> Tuple[int, int]:
-        """
-        估计 place 最早可接收新 wafer 的时间点（绝对时间）。
-        - 若未满：当前时刻（若清洗中则考虑 cleaning_remaining）
-        - 若已满：至少等待一个在制 wafer 可被卸载释放
-        返回值：(accept_time, predicted_cleaning_delay)
-        """
-        place = self._get_place(place_name)
-        base_time = int(self.time)
-        predicted_cleaning_delay = 0
-        if include_cleaning and bool(getattr(place, "is_cleaning", False)):
-            base_time = max(base_time, int(self.time) + int(getattr(place, "cleaning_remaining", 0)))
-
-        occupancy = len(place.tokens)
-        if occupancy < int(place.capacity):
-            return base_time, predicted_cleaning_delay
-
-        if place.processing_time <= 0:
-            return base_time, predicted_cleaning_delay
-
-        earliest_release = min(
-            int(self.time) + max(0, int(place.processing_time) - int(getattr(tok, "stay_time", 0)))
-            for tok in place.tokens
-        )
-        accept_time = max(base_time, earliest_release)
-
-        # 预测“下一次卸载触发清洗”带来的额外延迟，避免 u_LP 在清洗窗口前过早放行。
-        can_predict_cleaning = (
-            include_cleaning
-            and self.single_cleaning_enabled
-            and place_name in self.single_cleaning_targets
-            and not bool(getattr(place, "is_cleaning", False))
-            and int(self.single_cleaning_duration) > 0
-        )
-        if can_predict_cleaning:
-            processed_cnt = int(getattr(place, "processed_wafer_count", 0))
-            if processed_cnt + 1 >= int(self.single_cleaning_trigger_wafers):
-                predicted_cleaning_delay = int(self.single_cleaning_duration)
-                accept_time += predicted_cleaning_delay
-
-        return accept_time, predicted_cleaning_delay
-
-    def _estimate_place_accept_time(self, place_name: str, include_cleaning: bool = True) -> int:
-        accept_time, _ = self._estimate_place_accept_time_with_meta(
-            place_name=place_name,
-            include_cleaning=include_cleaning,
-        )
-        return accept_time
-
-    def _allow_u_lp_by_reverse_boundary(self) -> bool:
-        """
-        基于 PM1 与 PM3/PM4 的最早可接收时间反推 u_LP 是否应放行。
-        仅用于 Stage2 动作裁剪，不影响 Stage1 死锁判定口径。
-        """
-        edge_transfer = int(self.T_transport) + int(self.T_load)
-
-        pm1_accept_time = self._estimate_place_accept_time("PM1", include_cleaning=False)
-        pm1_enter_time = max(int(self.time) + edge_transfer, pm1_accept_time)
-        pm1_proc_time = max(0, int(self._get_place("PM1").processing_time))
-        pm1_ready_to_unload_time = pm1_enter_time + pm1_proc_time
-
-        pm3_accept_time, pm3_predicted_cleaning_delay = self._estimate_place_accept_time_with_meta(
-            "PM3", include_cleaning=True
-        )
-        pm4_accept_time, pm4_predicted_cleaning_delay = self._estimate_place_accept_time_with_meta(
-            "PM4", include_cleaning=True
-        )
-        pm2_stage_accept_time = min(pm3_accept_time, pm4_accept_time)
-
-        predicted_pm2_stage_enter_time = pm1_ready_to_unload_time + edge_transfer
-        allow = predicted_pm2_stage_enter_time >= pm2_stage_accept_time
-
-        return allow
-
     def _select_target_for_source(
         self,
         source: str,
@@ -657,12 +580,6 @@ class PetriSingleDevice:
                 if not self._is_process_ready(src):
                     continue
                 if self._select_target_for_source(src) is None:
-                    continue
-                if (
-                    src == "LP"
-                    and self.single_u_lp_boundary_enabled
-                    and not self._allow_u_lp_by_reverse_boundary()
-                ):
                     continue
             elif t_name.startswith("t_"):
                 target = t_name[2:]
