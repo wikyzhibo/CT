@@ -9,6 +9,13 @@ from collections import deque
 import json
 import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
+from solutions.Continuous_model.helper_function import (
+    _normalize_wait_durations,
+    _preprocess_process_time_map,
+    _round_to_nearest_five,
+    _sanitize_default_random_scales,
+    _sanitize_scale_pair,
+)
 
 import numpy as np
 
@@ -53,7 +60,7 @@ class PetriSingleDevice:
         self.single_cleaning_targets = set(getattr(config, "single_cleaning_targets", ["PM3", "PM4"]))
         self.single_cleaning_trigger_wafers = max(1, int(getattr(config, "single_cleaning_trigger_wafers", 2)))
         self.single_cleaning_duration = max(0, int(getattr(config, "single_cleaning_duration", 150)))
-        self.wait_durations = self._normalize_wait_durations(
+        self.wait_durations = _normalize_wait_durations(
             getattr(config, "single_wait_durations", [5, 10, 20, 50, 100])
         )
         self._single_process_chambers: Tuple[str, ...] = ("PM1", "PM3", "PM4")
@@ -121,48 +128,391 @@ class PetriSingleDevice:
         self._chamber_active: Dict[str, Dict[int, int]] = {"PM1": {}, "PM3": {}, "PM4": {}}
         self._init_single_cleaning_state()
 
-    @staticmethod
-    def _round_to_nearest_five(value: float) -> int:
-        rounded = int(round(float(value) / 5.0) * 5)
-        return max(5, rounded)
+    def step(self, a1=None, detailed_reward: bool = False, wait_duration: Optional[int] = None):
+        """
+        单设备一步推进入口。
+        - 非 wait：按既有 ttime 发射变迁
+        - wait：支持多档等待，并用关键事件截断，避免一次跨越多个决策点
+        """
+        DONE = False
+        SCRAPE = False
 
-    @staticmethod
-    def _normalize_wait_durations(durations) -> List[int]:
-        """将输入的等待时间列表规范化为正整数列表，默认值为 [5]"""
-        values: List[int] = []
-        for raw in list(durations or []):
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
+        self._last_deadlock = False
+        # ======超出最大运行时间直接判定为超时结束，避免“原地等待”导致的无效步骤======
+        if self.time >= MAX_TIME:
+            timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
+            DONE = True
+            SCRAPE = True
+            return DONE, timeout_reward, SCRAPE
+
+        action = a1
+        do_wait = (wait_duration is not None) or action is None
+
+        t1 = self.time
+
+        # wait 动作逻辑
+        if do_wait:
+            requested_wait = int(wait_duration)
+            assert requested_wait > 0, "wait_duration should be non-positive"
+            wait_requested_raw = int(requested_wait)
+            if self._has_completed_wafers() and requested_wait > 5:
+                # 完工后只允许最小 wait 粒度，避免长时间空等。
+                requested_wait = 5
+                wait_reason = "completed_wafer_cap_5s"
+                actual_dt = requested_wait
+            elif requested_wait == 5:
+                # 最小 wait 固定推进 5s，不做事件截断。
+                wait_reason = "fixed_5s"
+                actual_dt = requested_wait
+            else:
+                next_event_delta = self.get_next_event_delta()
+                if next_event_delta is None:
+                    # 没有可预见关键事件时，按请求时长推进，避免“原地空转”。
+                    actual_dt = requested_wait
+                    wait_reason = "no_future_event"
+                else:
+                    # 关键规则：wait 只推进到“下一个事件或请求时长”中更早者。
+                    actual_dt = min(requested_wait, next_event_delta)
+                    wait_reason = "next_event_capped" if int(next_event_delta) < requested_wait else "requested_duration"
+
+            assert  actual_dt > 0, f"actual_dt ({actual_dt}) should be positive"
+
+            t2 = t1 + actual_dt
+            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
+            self.advance_time(actual_dt, event_reason=wait_reason)
+            self._consecutive_wait_time += (t2 - t1)
+
+            # 停滞惩罚
+            if self._consecutive_wait_time >= self.idle_timeout and not self._idle_penalty_applied:
+                self._idle_penalty_applied = True
+                if detailed_reward:
+                    reward_result["idle_timeout_penalty"] = -float(self.idle_penalty)
+                    reward_result["total"] -= float(self.idle_penalty)
+                else:
+                    reward_result -= float(self.idle_penalty)
+        else:
+            self._consecutive_wait_time = 0
+
+            t2 = t1 + self.ttime
+            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
+            self.advance_time(self.ttime, event_reason="fire_transition")
+            log_entry = self._fire(int(action), start_time=t1, end_time=t2)
+            self.fire_log.append(log_entry)
+
+            # 在线 release 惩罚通道（两阶段训练第一阶段会关闭 no_release_penalty）
+            if not self.no_release_penalty and self.reward_config.get("release_violation_penalty", 1):
+                latest_idx = len(self.fire_log) - 1
+                blame = self.blame_release_violations()
+                if latest_idx in blame:
+                    pen = float(blame[latest_idx])
+                    if detailed_reward:
+                        reward_result["release_violation_penalty"] = -pen
+                        reward_result["total"] -= pen
+                    else:
+                        reward_result -= pen
+
+            if self._per_wafer_reward > 0:
+                if detailed_reward:
+                    reward_result["wafer_done_bonus"] += self._per_wafer_reward
+                    reward_result["total"] += self._per_wafer_reward
+                else:
+                    reward_result += self._per_wafer_reward
+                self._per_wafer_reward = 0.0
+
+        finish = len(self._get_place("LP_done").tokens) >= self.n_wafer
+        # ====== 违反驻留时间约束 ======
+        is_scrap, scrap_info = self._check_scrap()
+        if is_scrap:
+            self.scrap_count += 1
+            self.resident_violation_count += 1
+            if detailed_reward:
+                reward_result["scrap_penalty"] -= float(self.R_scrap)
+                reward_result["total"] -= float(self.R_scrap)
+                reward_result["scrap_info"] = scrap_info
+            else:
+                reward_result -= float(self.R_scrap)
+            if self.stop_on_scrap:
+                DONE = True
+                SCRAPE = True
+                return DONE, reward_result, SCRAPE
+
+        # ===== 任务完成奖励 ======
+        if finish:
+            if detailed_reward:
+                reward_result["finish_bonus"] += float(self.R_finish)
+                reward_result["total"] += float(self.R_finish)
+            else:
+                reward_result += float(self.R_finish)
+            SCRAPE = False
+        return bool(finish), reward_result, SCRAPE
+
+    def reset(self):
+        self.marks = self._clone_marks(self.ori_marks)
+        self._episode_process_time_map = self._build_episode_process_time_map()
+        self._apply_episode_process_time_map()
+        self.time = 0
+        self.done_count = 0
+        self.scrap_count = 0
+        self.deadlock_count = 0
+        self.resident_violation_count = 0
+        self.qtime_violation_count = 0
+        self.fire_log.clear()
+        self._per_wafer_reward = 0.0
+        self._token_stats = {}
+        self._idle_penalty_applied = False
+        self._consecutive_wait_time = 0
+        self._next_machine_id = 1
+        self._last_deadlock = False
+        self._chamber_timeline = {"PM1": [], "PM3": [], "PM4": []}
+        self._chamber_active = {"PM1": {}, "PM3": {}, "PM4": {}}
+        self._init_single_cleaning_state()
+        self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
+        self._update_marking_vector()
+        return None, self.get_enable_t()
+
+    def calc_reward(self, t1: int, t2: int, detailed: bool = False):
+        dt = max(0, t2 - t1)
+        parts = {
+            "time_cost": 0.0,
+            "proc_reward": 0.0,
+            "safe_reward": 0.0,
+            "warn_penalty": 0.0,
+            "penalty": 0.0,
+            "wafer_done_bonus": 0.0,
+            "finish_bonus": 0.0,
+            "scrap_penalty": 0.0,
+        }
+
+        # 时间惩罚：每步按 dt 线性惩罚，鼓励更快完成
+        if self.reward_config.get("time_cost", 1):
+            parts["time_cost"] = -float(dt * self.time_coef)
+
+        # 加工奖励：每个加工位上每个晶圆根据加工进度给予奖励
+        if self.reward_config.get("proc_reward", 1):
+            for p in self.marks:
+                if p.type != CHAMBER or len(p.tokens) == 0 or p.processing_time <= 0:
+                    continue
+                remain = max(0, p.processing_time - int(p.head().stay_time))
+                progress = min(dt, remain)
+                parts["proc_reward"] += self.processing_reward_coef * float(progress)
+
+        # 与 pn.py 对齐：运输位(type=2, 单设备主要是 d_TM1)超过 D_Residual_time 后按超时秒数惩罚
+        if self.reward_config.get("transport_penalty", 1):
+            for p in self.marks:
+                if p.type != DELIVERY_ROBOT or len(p.tokens) == 0:
+                    continue
+                for tok in p.tokens:
+                    deadline = int(tok.enter_time) + int(self.D_Residual_time)
+                    over_start = max(int(t1), deadline)
+                    if int(t2) > over_start:
+                        parts["penalty"] -= float(int(t2) - over_start) * float(self.transport_overtime_coef)
+
+        for p in self.marks:
+            if p.type != CHAMBER or len(p.tokens) == 0:
                 continue
-            if value > 0:
-                values.append(value)
-        if not values:
-            values = [5]
-        return sorted(set(values))
+            left = p.processing_time + self.P_Residual_time - p.head().stay_time
+            if self.reward_config.get("warn_penalty", 1) and left <= self.T_warn:
+                parts["warn_penalty"] -= float(self.a_warn)
+            if self.reward_config.get("safe_reward", 1) and left > self.T_safe:
+                parts["safe_reward"] += float(self.b_safe)
+
+        total = sum(parts.values())
+        if detailed:
+            parts["total"] = float(total)
+            return parts
+        return float(total)
+
+    def _fire(self, t_idx: int, start_time: int, end_time: int) -> Dict[str, Any]:
+        t_name = self.id2t_name[t_idx]
+        pre_places = np.flatnonzero(self.pre[:, t_idx] > 0)
+        pst_places = np.flatnonzero(self.pst[:, t_idx] > 0)
+        if pre_places.size == 0 or pst_places.size == 0:
+            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+        pre_place = self.marks[int(pre_places[0])]
+        pst_place = self.marks[int(pst_places[0])]
+        if len(pre_place.tokens) == 0:
+            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+
+        tok = pre_place.pop_head()
+        wafer_id = int(getattr(tok, "token_id", -1))
+        self._track_leave(tok, pre_place.name)
+        tok.enter_time = self.time
+        tok.stay_time = 0
+
+        if t_name.startswith("u_"):
+            src = t_name[2:]
+            dst_level_targets = tuple(self._u_targets.get(src, []))
+            setattr(tok, "_dst_level_targets", dst_level_targets)
+            setattr(tok, "_dst_level_full_on_pick", self._is_dst_level_full(src))
+            dst = self._select_target_for_source(src)
+            if dst is not None:
+                setattr(tok, "_target_place", dst)
+            tok.machine = int(self._next_robot_machine())
+            if src in self._chamber_active and wafer_id in self._chamber_active[src]:
+                idx = self._chamber_active[src].pop(wafer_id)
+                e, _, wid = self._chamber_timeline[src][idx]
+                self._chamber_timeline[src][idx] = (e, start_time, wid)
+            self._on_processing_unload(src)
+        elif t_name.startswith("t_"):
+            target = t_name[2:]
+            if hasattr(tok, "_target_place"):
+                delattr(tok, "_target_place")
+            if hasattr(tok, "_dst_level_targets"):
+                delattr(tok, "_dst_level_targets")
+            if hasattr(tok, "_dst_level_full_on_pick"):
+                delattr(tok, "_dst_level_full_on_pick")
+            step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "LP_done": 3}
+            tok.step = max(int(getattr(tok, "step", 0)), step_map.get(target, 0))
+            self._track_enter(tok, target)
+            if target == "LP_done":
+                self.done_count += 1
+                self._per_wafer_reward += float(self.R_done)
+            elif target in self._chamber_timeline and wafer_id >= 0:
+                idx = len(self._chamber_timeline[target])
+                self._chamber_timeline[target].append((end_time, None, wafer_id))
+                self._chamber_active[target][wafer_id] = idx
+
+        tok.where = int(getattr(tok, "where", 0)) + 1
+        pst_place.append(tok)
+        self._update_marking_vector()
+        return {
+            "t_name": t_name,
+            "t1": int(start_time),
+            "t2": int(end_time),
+            "token_id": wafer_id,
+        }
+
+    def get_enable_t(self) -> List[int]:
+        self._update_marking_vector()
+
+        """
+        Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
+        """
+
+        # =====
+        stage1_enabled: List[int] = []
+        d_tm = self._get_place("d_TM1")
+        d_tm_idx = self._get_place_index("d_TM1")
+        head_tok = d_tm.head() if len(d_tm.tokens) > 0 else None
+        head_target = getattr(head_tok, "_target_place", None) if head_tok is not None else None
+        head_where = int(getattr(head_tok, "where", 0)) if head_tok is not None else 0
+        color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
+        locked_sources: set[str] = set()
+        if self.robot_capacity == 2 and head_tok is not None:
+            locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
+
+        # =====self.m >= self.pre[:, t]=======
+        # =====self.m + self.pst[:, t] <= self.k=======
+        for t in range(self.T):
+            base_pre = self.pre[:, t]
+            base_pre_idx = np.flatnonzero(base_pre > 0)
+            if base_pre_idx.size == 0:
+                continue
+            color_pre = base_pre
+            if base_pre[d_tm_idx] > 0:
+                color_pre = self.pre_color[:, t, color_idx]
+            if np.any((base_pre > 0) & (color_pre <= 0)):
+                continue
+            if np.any(self.m[base_pre_idx] < color_pre[base_pre_idx]):
+                continue
+            if np.any(self.m + self.net[:, t] > self.k):
+                continue
+
+            t_name = self.id2t_name[t]
+            if t_name.startswith("u_"):
+                src = t_name[2:]
+                if self.robot_capacity == 2:
+                    # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
+                    if len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
+                        continue
+                    # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
+                    # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
+                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
+                        continue
+                else:
+                    # 单臂保持原规则：下游可接收才允许取片。
+                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
+                        continue
+            elif t_name.startswith("t_"):
+                target = t_name[2:]
+                if head_target is not None and head_target != target:
+                    continue
+            stage1_enabled.append(t)
+
+
+        """
+        Stage2: 在 Stage1 基础上做就绪过滤（加工完成 + 运输位 dwell）。
+        """
+        stage2_enabled: List[int] = []
+        d_place = self._get_place("d_TM1")
+        dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
+        blocked_by_cleaning: List[str] = []
+        for t in stage1_enabled:
+            t_name = self.id2t_name[t]
+            if t_name.startswith("u_"):
+                src = t_name[2:]
+                if not self._is_process_ready(src):
+                    continue
+                if self._select_target_for_source(src) is None:
+                    continue
+            elif t_name.startswith("t_"):
+                target = t_name[2:]
+                target_place = self._get_place(target)
+                if bool(getattr(target_place, "is_cleaning", False)):
+                    blocked_by_cleaning.append(target)
+                    continue
+                if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
+                    continue
+            stage2_enabled.append(t)
+        return stage2_enabled
+
+    def calc_wafer_statistics(self) -> Dict[str, Any]:
+        system_times: List[float] = []
+        chamber_stats: Dict[str, List[float]] = {}
+        completed = 0
+        for _, s in self._token_stats.items():
+            enter = s.get("enter_system")
+            leave = s.get("exit_system")
+            if enter is not None and leave is not None:
+                completed += 1
+                system_times.append(float(leave - enter))
+            for c_name, c_stat in s.get("chambers", {}).items():
+                c_enter = c_stat.get("enter")
+                c_leave = c_stat.get("exit")
+                if c_enter is not None and c_leave is not None:
+                    chamber_stats.setdefault(c_name, []).append(float(c_leave - c_enter))
+
+        chamber_summary: Dict[str, Dict[str, float]] = {}
+        for name, vals in chamber_stats.items():
+            if vals:
+                chamber_summary[name] = {"avg": sum(vals) / len(vals), "max": max(vals), "count": len(vals)}
+
+        return {
+            "system_avg": (sum(system_times) / len(system_times)) if system_times else 0.0,
+            "system_max": max(system_times) if system_times else 0.0,
+            "system_diff": 0.0,
+            "completed_count": completed,
+            "in_progress_count": max(0, self.n_wafer - completed),
+            "chambers": chamber_summary,
+            "transports": {},
+            "transports_detail": {},
+            "resident_violation_count": self.resident_violation_count,
+            "qtime_violation_count": self.qtime_violation_count,
+            "deadlock_count": self.deadlock_count,
+            "chamber_processed_counts": {
+                p.name: int(getattr(p, "processed_wafer_count", 0))
+                for p in self.marks
+                if p.name.startswith("PM")
+            },
+        }
 
     def _sanitize_default_random_scales(self) -> None:
-        min_scale = float(self.single_proc_time_rand_min_scale)
-        max_scale = float(self.single_proc_time_rand_max_scale)
-        if min_scale <= 0:
-            min_scale = 1.0
-        if max_scale <= 0:
-            max_scale = 1.0
-        if min_scale > max_scale:
-            min_scale, max_scale = max_scale, min_scale
+        min_scale, max_scale = _sanitize_default_random_scales(
+            self.single_proc_time_rand_min_scale,
+            self.single_proc_time_rand_max_scale,
+        )
         self.single_proc_time_rand_min_scale = min_scale
         self.single_proc_time_rand_max_scale = max_scale
-
-    def _sanitize_scale_pair(self, min_scale: float, max_scale: float) -> Tuple[float, float]:
-        low = float(min_scale)
-        high = float(max_scale)
-        if low <= 0:
-            low = 1.0
-        if high <= 0:
-            high = 1.0
-        if low > high:
-            low, high = high, low
-        return low, high
 
     def _build_chamber_random_scale_map(self) -> Dict[str, Tuple[float, float]]:
         chamber_map: Dict[str, Tuple[float, float]] = {}
@@ -174,16 +524,16 @@ class PetriSingleDevice:
                 raw = {}
             low = raw.get("min", default_low)
             high = raw.get("max", default_high)
-            chamber_map[chamber] = self._sanitize_scale_pair(low, high)
+            chamber_map[chamber] = _sanitize_scale_pair(low, high)
         return chamber_map
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
         defaults = {"PM1": 100, "PM3": 300, "PM4": 300}
-        processed: Dict[str, int] = {}
-        for chamber in self._single_process_chambers:
-            raw_value = process_time_map.get(chamber, defaults[chamber])
-            processed[chamber] = self._round_to_nearest_five(raw_value)
-        return processed
+        return _preprocess_process_time_map(
+            process_time_map=process_time_map,
+            chambers=self._single_process_chambers,
+            defaults=defaults,
+        )
 
     def _build_episode_process_time_map(self) -> Dict[str, int]:
         if not self.single_proc_time_rand_enabled:
@@ -193,7 +543,7 @@ class PetriSingleDevice:
             low, high = self._single_proc_time_rand_scale_map[chamber]
             base_time = float(self._base_process_time_map[chamber])
             sampled_time = base_time * float(np.random.uniform(low, high))
-            sampled[chamber] = self._round_to_nearest_five(sampled_time)
+            sampled[chamber] = _round_to_nearest_five(sampled_time)
         return sampled
 
     def _apply_episode_process_time_map(self) -> None:
@@ -509,105 +859,6 @@ class PetriSingleDevice:
                 blame[i] = penalty_coeff
         return blame
 
-    def _get_enable_t_stage1(self) -> List[int]:
-        """
-        Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
-        """
-
-        # =====
-        enabled: List[int] = []
-        d_tm = self._get_place("d_TM1")
-        d_tm_idx = self._get_place_index("d_TM1")
-        head_tok = d_tm.head() if len(d_tm.tokens) > 0 else None
-        head_target = getattr(head_tok, "_target_place", None) if head_tok is not None else None
-        head_where = int(getattr(head_tok, "where", 0)) if head_tok is not None else 0
-        color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
-        locked_sources: set[str] = set()
-        if self.robot_capacity == 2 and head_tok is not None:
-            locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
-
-        # =====self.m >= self.pre[:, t]=======
-        # =====self.m + self.pst[:, t] <= self.k=======
-        for t in range(self.T):
-            base_pre = self.pre[:, t]
-            base_pre_idx = np.flatnonzero(base_pre > 0)
-            if base_pre_idx.size == 0:
-                continue
-            color_pre = base_pre
-            if base_pre[d_tm_idx] > 0:
-                color_pre = self.pre_color[:, t, color_idx]
-            if np.any((base_pre > 0) & (color_pre <= 0)):
-                continue
-            if np.any(self.m[base_pre_idx] < color_pre[base_pre_idx]):
-                continue
-            if np.any(self.m + self.net[:, t] > self.k):
-                continue
-
-            t_name = self.id2t_name[t]
-            if t_name.startswith("u_"):
-                src = t_name[2:]
-                if self.robot_capacity == 2:
-                    # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
-                    if len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
-                        continue
-                    # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
-                    # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
-                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
-                        continue
-                else:
-                    # 单臂保持原规则：下游可接收才允许取片。
-                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
-                        continue
-            elif t_name.startswith("t_"):
-                target = t_name[2:]
-                if head_target is not None and head_target != target:
-                    continue
-            enabled.append(t)
-        return enabled
-
-    def _apply_enable_stage2(self, stage1_enabled: List[int]) -> List[int]:
-        """
-        Stage2: 在 Stage1 基础上做就绪过滤（加工完成 + 运输位 dwell）。
-        """
-        enabled: List[int] = []
-        d_place = self._get_place("d_TM1")
-        dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
-        blocked_by_cleaning: List[str] = []
-        for t in stage1_enabled:
-            t_name = self.id2t_name[t]
-            if t_name.startswith("u_"):
-                src = t_name[2:]
-                if not self._is_process_ready(src):
-                    continue
-                if self._select_target_for_source(src) is None:
-                    continue
-            elif t_name.startswith("t_"):
-                target = t_name[2:]
-                target_place = self._get_place(target)
-                if bool(getattr(target_place, "is_cleaning", False)):
-                    blocked_by_cleaning.append(target)
-                    continue
-                if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
-                    continue
-            enabled.append(t)
-        return enabled
-
-    def _get_enable_t(self) -> List[int]:
-        stage1_enabled = self._get_enable_t_stage1()
-        return self._apply_enable_stage2(stage1_enabled)
-
-    def _is_deadlock_state(self, stage1_enabled: Optional[List[int]] = None) -> bool:
-        if len(self._get_place("LP_done").tokens) >= self.n_wafer:
-            return False
-        if stage1_enabled is None:
-            self._update_marking_vector()
-            stage1_enabled = self._get_enable_t_stage1()
-        return len(stage1_enabled) == 0
-
-    def get_enable_t(self) -> List[int]:
-        self._update_marking_vector()
-        return self._get_enable_t()
-
     def get_enable_actions(self, wait_action_start: Optional[int] = None) -> List[int]:
         """
         返回完整离散动作可用索引（transition + wait）。
@@ -657,327 +908,6 @@ class PetriSingleDevice:
             self._token_stats[token.token_id]["chambers"].setdefault(place_name, {"enter": None, "exit": None})["exit"] = self.time
         if place_name == "LP_done":
             self._token_stats[token.token_id]["exit_system"] = self.time
-
-    def _fire(self, t_idx: int, start_time: int, end_time: int) -> Dict[str, Any]:
-        t_name = self.id2t_name[t_idx]
-        pre_places = np.flatnonzero(self.pre[:, t_idx] > 0)
-        pst_places = np.flatnonzero(self.pst[:, t_idx] > 0)
-        if pre_places.size == 0 or pst_places.size == 0:
-            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
-        pre_place = self.marks[int(pre_places[0])]
-        pst_place = self.marks[int(pst_places[0])]
-        if len(pre_place.tokens) == 0:
-            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
-
-        tok = pre_place.pop_head()
-        wafer_id = int(getattr(tok, "token_id", -1))
-        self._track_leave(tok, pre_place.name)
-        tok.enter_time = self.time
-        tok.stay_time = 0
-
-        if t_name.startswith("u_"):
-            src = t_name[2:]
-            dst_level_targets = tuple(self._u_targets.get(src, []))
-            setattr(tok, "_dst_level_targets", dst_level_targets)
-            setattr(tok, "_dst_level_full_on_pick", self._is_dst_level_full(src))
-            dst = self._select_target_for_source(src)
-            if dst is not None:
-                setattr(tok, "_target_place", dst)
-            tok.machine = int(self._next_robot_machine())
-            if src in self._chamber_active and wafer_id in self._chamber_active[src]:
-                idx = self._chamber_active[src].pop(wafer_id)
-                e, _, wid = self._chamber_timeline[src][idx]
-                self._chamber_timeline[src][idx] = (e, start_time, wid)
-            self._on_processing_unload(src)
-        elif t_name.startswith("t_"):
-            target = t_name[2:]
-            if hasattr(tok, "_target_place"):
-                delattr(tok, "_target_place")
-            if hasattr(tok, "_dst_level_targets"):
-                delattr(tok, "_dst_level_targets")
-            if hasattr(tok, "_dst_level_full_on_pick"):
-                delattr(tok, "_dst_level_full_on_pick")
-            step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "LP_done": 3}
-            tok.step = max(int(getattr(tok, "step", 0)), step_map.get(target, 0))
-            self._track_enter(tok, target)
-            if target == "LP_done":
-                self.done_count += 1
-                self._per_wafer_reward += float(self.R_done)
-            elif target in self._chamber_timeline and wafer_id >= 0:
-                idx = len(self._chamber_timeline[target])
-                self._chamber_timeline[target].append((end_time, None, wafer_id))
-                self._chamber_active[target][wafer_id] = idx
-
-        tok.where = int(getattr(tok, "where", 0)) + 1
-        pst_place.append(tok)
-        self._update_marking_vector()
-        return {
-            "t_name": t_name,
-            "t1": int(start_time),
-            "t2": int(end_time),
-            "token_id": wafer_id,
-        }
-
-    def calc_reward(self, t1: int, t2: int, detailed: bool = False):
-        dt = max(0, t2 - t1)
-        parts = {
-            "time_cost": 0.0,
-            "proc_reward": 0.0,
-            "safe_reward": 0.0,
-            "warn_penalty": 0.0,
-            "penalty": 0.0,
-            "wafer_done_bonus": 0.0,
-            "finish_bonus": 0.0,
-            "scrap_penalty": 0.0,
-        }
-        
-        # 时间惩罚：每步按 dt 线性惩罚，鼓励更快完成
-        if self.reward_config.get("time_cost", 1):
-            parts["time_cost"] = -float(dt * self.time_coef)
-        
-        # 加工奖励：每个加工位上每个晶圆根据加工进度给予奖励
-        if self.reward_config.get("proc_reward", 1):
-            for p in self.marks:
-                if p.type != CHAMBER or len(p.tokens) == 0 or p.processing_time <= 0:
-                    continue
-                remain = max(0, p.processing_time - int(p.head().stay_time))
-                progress = min(dt, remain)
-                parts["proc_reward"] += self.processing_reward_coef * float(progress)
-
-        # 与 pn.py 对齐：运输位(type=2, 单设备主要是 d_TM1)超过 D_Residual_time 后按超时秒数惩罚
-        if self.reward_config.get("transport_penalty", 1):
-            for p in self.marks:
-                if p.type != DELIVERY_ROBOT or len(p.tokens) == 0:
-                    continue
-                for tok in p.tokens:
-                    deadline = int(tok.enter_time) + int(self.D_Residual_time)
-                    over_start = max(int(t1), deadline)
-                    if int(t2) > over_start:
-                        parts["penalty"] -= float(int(t2) - over_start) * float(self.transport_overtime_coef)
-
-        for p in self.marks:
-            if p.type != CHAMBER or len(p.tokens) == 0:
-                continue
-            left = p.processing_time + self.P_Residual_time - p.head().stay_time
-            if self.reward_config.get("warn_penalty", 1) and left <= self.T_warn:
-                parts["warn_penalty"] -= float(self.a_warn)
-            if self.reward_config.get("safe_reward", 1) and left > self.T_safe:
-                parts["safe_reward"] += float(self.b_safe)
-
-        total = sum(parts.values())
-        if detailed:
-            parts["total"] = float(total)
-            return parts
-        return float(total)
-
-    def reset(self):
-        self.marks = self._clone_marks(self.ori_marks)
-        self._episode_process_time_map = self._build_episode_process_time_map()
-        self._apply_episode_process_time_map()
-        self.time = 0
-        self.done_count = 0
-        self.scrap_count = 0
-        self.deadlock_count = 0
-        self.resident_violation_count = 0
-        self.qtime_violation_count = 0
-        self.fire_log.clear()
-        self._per_wafer_reward = 0.0
-        self._token_stats = {}
-        self._idle_penalty_applied = False
-        self._consecutive_wait_time = 0
-        self._next_machine_id = 1
-        self._last_deadlock = False
-        self._chamber_timeline = {"PM1": [], "PM3": [], "PM4": []}
-        self._chamber_active = {"PM1": {}, "PM3": {}, "PM4": {}}
-        self._init_single_cleaning_state()
-        self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
-        self._update_marking_vector()
-        return None, self.get_enable_t()
-
-    def step(self, a1=None, detailed_reward: bool = False, wait_duration: Optional[int] = None):
-        """
-        单设备一步推进入口。
-        - 非 wait：按既有 ttime 发射变迁
-        - wait：支持多档等待，并用关键事件截断，避免一次跨越多个决策点
-        """
-        DONE = False
-        SCRAPE = False
-
-        self._last_deadlock = False
-        # ======超出最大运行时间直接判定为超时结束，避免“原地等待”导致的无效步骤======
-        if self.time >= MAX_TIME:
-            timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
-            DONE = True
-            SCRAPE = True
-            return DONE, timeout_reward, SCRAPE
-
-        action = a1
-        do_wait = (wait_duration is not None) or action is None
-
-        t1 = self.time
-
-        # wait 动作逻辑
-        if do_wait:
-            requested_wait = int(wait_duration)
-            assert requested_wait > 0, "wait_duration should be non-positive"
-            wait_requested_raw = int(requested_wait)
-            if self._has_completed_wafers() and requested_wait > 5:
-                # 完工后只允许最小 wait 粒度，避免长时间空等。
-                requested_wait = 5
-                wait_reason = "completed_wafer_cap_5s"
-                actual_dt = requested_wait
-            elif requested_wait == 5:
-                # 最小 wait 固定推进 5s，不做事件截断。
-                wait_reason = "fixed_5s"
-                actual_dt = requested_wait
-            else:
-                next_event_delta = self.get_next_event_delta()
-                if next_event_delta is None:
-                    # 没有可预见关键事件时，按请求时长推进，避免“原地空转”。
-                    actual_dt = requested_wait
-                    wait_reason = "no_future_event"
-                else:
-                    # 关键规则：wait 只推进到“下一个事件或请求时长”中更早者。
-                    actual_dt = min(requested_wait, next_event_delta)
-                    wait_reason = "next_event_capped" if int(next_event_delta) < requested_wait else "requested_duration"
-
-            assert  actual_dt > 0, f"actual_dt ({actual_dt}) should be positive"
-
-            t2 = t1 + actual_dt
-            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
-            self.advance_time(actual_dt, event_reason=wait_reason)
-            self._consecutive_wait_time += (t2 - t1)
-
-            # 停滞惩罚
-            if self._consecutive_wait_time >= self.idle_timeout and not self._idle_penalty_applied:
-                self._idle_penalty_applied = True
-                if detailed_reward:
-                    reward_result["idle_timeout_penalty"] = -float(self.idle_penalty)
-                    reward_result["total"] -= float(self.idle_penalty)
-                else:
-                    reward_result -= float(self.idle_penalty)
-        else:
-            self._consecutive_wait_time = 0
-            enabled = set(self.get_enable_t())
-            if action not in enabled:
-                dt = max(1, self.ttime)
-                t2 = t1 + dt
-                reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
-                if detailed_reward:
-                    reward_result["illegal_penalty"] = -5.0
-                    reward_result["total"] -= 5.0
-                else:
-                    reward_result -= 5.0
-                self.advance_time(dt, event_reason="illegal_action")
-                return False, reward_result, False
-
-            t2 = t1 + self.ttime
-            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
-            self.advance_time(self.ttime, event_reason="fire_transition")
-            log_entry = self._fire(int(action), start_time=t1, end_time=t2)
-            self.fire_log.append(log_entry)
-
-            # 在线 release 惩罚通道（两阶段训练第一阶段会关闭 no_release_penalty）
-            if not self.no_release_penalty and self.reward_config.get("release_violation_penalty", 1):
-                latest_idx = len(self.fire_log) - 1
-                blame = self.blame_release_violations()
-                if latest_idx in blame:
-                    pen = float(blame[latest_idx])
-                    if detailed_reward:
-                        reward_result["release_violation_penalty"] = -pen
-                        reward_result["total"] -= pen
-                    else:
-                        reward_result -= pen
-
-            if self._per_wafer_reward > 0:
-                if detailed_reward:
-                    reward_result["wafer_done_bonus"] += self._per_wafer_reward
-                    reward_result["total"] += self._per_wafer_reward
-                else:
-                    reward_result += self._per_wafer_reward
-                self._per_wafer_reward = 0.0
-
-        finish = len(self._get_place("LP_done").tokens) >= self.n_wafer
-        # ====== 违反驻留时间约束 ======
-        is_scrap, scrap_info = self._check_scrap()
-        if is_scrap:
-            self.scrap_count += 1
-            self.resident_violation_count += 1
-            if detailed_reward:
-                reward_result["scrap_penalty"] -= float(self.R_scrap)
-                reward_result["total"] -= float(self.R_scrap)
-                reward_result["scrap_info"] = scrap_info
-            else:
-                reward_result -= float(self.R_scrap)
-            if self.stop_on_scrap:
-                DONE = True
-                SCRAPE = True
-                return DONE, reward_result, SCRAPE
-
-        # ====== 死锁检测 =======
-        stage1_enabled = self._get_enable_t_stage1()
-        if not finish and self._is_deadlock_state(stage1_enabled):
-            self.deadlock_count += 1
-            self._last_deadlock = True
-            deadlock_penalty = float(abs(self.R_scrap))
-            if detailed_reward:
-                reward_result["deadlock_penalty"] = -deadlock_penalty
-                reward_result["total"] -= deadlock_penalty
-            else:
-                reward_result -= deadlock_penalty
-            DONE = True
-            SCRAPE = False
-            return DONE, reward_result, SCRAPE
-
-        # ===== 任务完成奖励 ======
-        if finish:
-            if detailed_reward:
-                reward_result["finish_bonus"] += float(self.R_finish)
-                reward_result["total"] += float(self.R_finish)
-            else:
-                reward_result += float(self.R_finish)
-            SCRAPE = False
-        return bool(finish), reward_result, SCRAPE
-
-    def calc_wafer_statistics(self) -> Dict[str, Any]:
-        system_times: List[float] = []
-        chamber_stats: Dict[str, List[float]] = {}
-        completed = 0
-        for _, s in self._token_stats.items():
-            enter = s.get("enter_system")
-            leave = s.get("exit_system")
-            if enter is not None and leave is not None:
-                completed += 1
-                system_times.append(float(leave - enter))
-            for c_name, c_stat in s.get("chambers", {}).items():
-                c_enter = c_stat.get("enter")
-                c_leave = c_stat.get("exit")
-                if c_enter is not None and c_leave is not None:
-                    chamber_stats.setdefault(c_name, []).append(float(c_leave - c_enter))
-
-        chamber_summary: Dict[str, Dict[str, float]] = {}
-        for name, vals in chamber_stats.items():
-            if vals:
-                chamber_summary[name] = {"avg": sum(vals) / len(vals), "max": max(vals), "count": len(vals)}
-
-        return {
-            "system_avg": (sum(system_times) / len(system_times)) if system_times else 0.0,
-            "system_max": max(system_times) if system_times else 0.0,
-            "system_diff": 0.0,
-            "completed_count": completed,
-            "in_progress_count": max(0, self.n_wafer - completed),
-            "chambers": chamber_summary,
-            "transports": {},
-            "transports_detail": {},
-            "resident_violation_count": self.resident_violation_count,
-            "qtime_violation_count": self.qtime_violation_count,
-            "deadlock_count": self.deadlock_count,
-            "chamber_processed_counts": {
-                p.name: int(getattr(p, "processed_wafer_count", 0))
-                for p in self.marks
-                if p.name.startswith("PM")
-            },
-        }
 
     def render_gantt(self, out_path: str) -> None:
         return None
