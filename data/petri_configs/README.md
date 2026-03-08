@@ -19,7 +19,7 @@ data/petri_configs/
 - `n_wafer`: 晶圆数量（默认: 4）
 
 ### 奖励参数
-- `c_time`: 每秒时间成本，防止躺平（默认: 0.5）
+- `time_coef`: 每秒时间成本，防止躺平（默认: 1.0）
 - `R_done`: 每片完工奖励（默认: 100）
 - `R_scrap`: 报废惩罚（默认: 100）
 
@@ -29,9 +29,6 @@ data/petri_configs/
 - `T_safe`: 安全裕量阈值（秒）（默认: 15）
 - `b_safe`: 安全裕量奖励系数（默认: 0.5）
 
-### WAIT 动作参数
-- `MAX_WAIT_STEP`: WAIT 最大跳跃时间（默认: 20）
-
 ### 堵塞预防参数
 - `c_congest`: 下游堵塞预测惩罚系数（默认: 50）
 
@@ -40,7 +37,7 @@ data/petri_configs/
 - `P_Residual_time`: 加工腔室剩余时间（默认: 15）
 
 ### 释放时间违规惩罚参数
-- `c_release_violation`: 违反最早释放时间的惩罚系数（默认: 30）
+- `release_penalty_coef`: 违反最早释放时间的惩罚系数（默认: 0.1）
 - `T_transport`: 运输时间（默认: 5）
 - `T_load`: 装载时间（默认: 5）
 - `T_pm1_to_pm2`: PM1 到 PM2 的必要运输时间（默认: 15）
@@ -123,7 +120,7 @@ from data.petri_configs.env_config import PetriEnvConfig
 config = PetriEnvConfig(
     n_wafer=6,
     R_done=200,
-    c_time=1.0
+    time_coef=1.0
 )
 
 config.save("data/petri_configs/my_config.json")

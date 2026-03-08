@@ -33,7 +33,7 @@ def example_2_custom_config():
         n_wafer=6,
         R_done=200,
         R_scrap=150,
-        c_time=1.0,
+        time_coef=1.0,
         training_phase=1,
         stop_on_scrap=False  # 不在报废时停止
     )
@@ -72,7 +72,7 @@ def example_4_save_config():
     config = PetriEnvConfig(
         n_wafer=8,
         R_done=150,
-        c_time=0.8,
+        time_coef=0.8,
         training_phase=2,
         idle_timeout=150,
         idle_penalty=2000
@@ -189,16 +189,16 @@ def example_9_parameter_sweep():
     print("=" * 60)
     
     # 扫描不同的时间成本参数
-    c_time_values = [0.1, 0.5, 1.0, 2.0]
+    time_coef_values = [0.1, 0.5, 1.0, 2.0]
     
     configs = []
-    for c_time in c_time_values:
+    for time_coef in time_coef_values:
         config = PetriEnvConfig(
-            c_time=c_time,
+            time_coef=time_coef,
             training_phase=2
         )
-        configs.append((f"c_time_{c_time}", config))
-        print(f"创建配置: c_time={c_time}")
+        configs.append((f"time_coef_{time_coef}", config))
+        print(f"创建配置: time_coef={time_coef}")
     
     print(f"\n共创建 {len(configs)} 个配置用于参数扫描")
     

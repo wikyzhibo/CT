@@ -257,24 +257,34 @@ class PetriMainWindow(QMainWindow):
             return
         if mode == self._device_mode:
             return
-        self._device_mode = mode
-        self.center_canvas.set_device_mode(mode)
+        old_mode = self._device_mode
         # 运行时切换底层 env/adapter
         if self._adapter_factory is not None:
             try:
                 new_adapter = self._adapter_factory(mode, self._robot_capacity)
                 self.viewmodel.replace_adapter(new_adapter, reset=True)
-                self._model_handler = None
-                self._concurrent_model_handler = None
-                self._update_model_buttons_state()
-                # 兼容策略：若已选择模型，则按新模式重载；成功保留，失败提示并失效
-                if self._model_path_override is not None and self._model_apply_callback is not None:
-                    ok, msg = self._model_apply_callback(str(self._model_path_override), mode)
-                    if not ok:
-                        self.set_model_handler(None)
-                        QMessageBox.warning(self, "模型与设备模式不兼容", msg)
             except Exception as e:
+                # 切换失败时保持原模式与菜单勾选，避免 UI 与后端状态错位
+                self._action_device_cascade.blockSignals(True)
+                self._action_device_single.blockSignals(True)
+                self._action_device_cascade.setChecked(old_mode == "cascade")
+                self._action_device_single.setChecked(old_mode == "single")
+                self._action_device_cascade.blockSignals(False)
+                self._action_device_single.blockSignals(False)
                 QMessageBox.warning(self, "设备切换失败", f"无法切换到 {mode}: {e}")
+                self._refresh_status_message()
+                return
+        self._device_mode = mode
+        self.center_canvas.set_device_mode(mode)
+        self._model_handler = None
+        self._concurrent_model_handler = None
+        self._update_model_buttons_state()
+        # 兼容策略：若已选择模型，则按新模式重载；成功保留，失败提示并失效
+        if self._model_path_override is not None and self._model_apply_callback is not None:
+            ok, msg = self._model_apply_callback(str(self._model_path_override), mode)
+            if not ok:
+                self.set_model_handler(None)
+                QMessageBox.warning(self, "模型与设备模式不兼容", msg)
         self._refresh_status_message()
 
     def set_adapter_factory(self, factory) -> None:
@@ -533,6 +543,25 @@ class PetriMainWindow(QMainWindow):
         QMenu::item:selected {{
             background-color: rgb{t.bg_elevated};
             color: rgb{t.accent_cyan};
+        }}
+
+        QMessageBox {{
+            background-color: rgb{t.bg_surface};
+        }}
+        QMessageBox QLabel {{
+            color: rgb{t.text_primary};
+            background-color: transparent;
+        }}
+        QMessageBox QPushButton {{
+            min-width: 88px;
+            padding: 5px 14px;
+            color: rgb{t.text_primary};
+            background-color: rgb{t.bg_elevated};
+            border: 1px solid rgb{t.border};
+        }}
+        QMessageBox QPushButton:hover {{
+            border-color: rgb{t.accent_cyan};
+            background-color: rgb{t.bg_surface};
         }}
 
         /* -------- Buttons -------- */

@@ -178,7 +178,7 @@ graph LR
 
 `PetriEnvConfig` 数据类是系统参数的单一事实来源 (Single Source of Truth)。
 
-*   **系统规格**：`n_wafer` (晶圆数), `c_time`, `max_wafers_in_system` (最大在制品数)。
+*   **系统规格**：`n_wafer` (晶圆数), `time_coef`, `max_wafers_in_system` (最大在制品数)。
 *   **时间常数**：`T_transport` (运输时间), `T_load` (装载时间), 加工时间（在 `pn.py` 中逻辑定义，部分系数可配）。
 *   **安全裕量**：`T_warn` (预警时间), `T_safe` (安全裕量), `P_Residual_time` (驻留容忍时间)。
 *   **奖励参数**：用于详细奖励塑形的系数 (`proc_reward`, `scrap` 等)。

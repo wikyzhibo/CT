@@ -77,7 +77,6 @@ class ConfigEditor(QWidget):
         self.fields["T_pm1_to_pm2"] = self._spin(0, 1000, 15)
 
         # 其他参数
-        self.fields["MAX_WAIT_STEP"] = self._spin(0, 1000, 20)
         self.fields["idle_timeout"] = self._spin(0, 10000, 700)
         self.fields["idle_penalty"] = self._spin(0, 100000, 1000)
 
@@ -92,7 +91,6 @@ class ConfigEditor(QWidget):
         layout.addRow("T_transport", self.fields["T_transport"])
         layout.addRow("T_load", self.fields["T_load"])
         layout.addRow("T_pm1_to_pm2", self.fields["T_pm1_to_pm2"])
-        layout.addRow("MAX_WAIT_STEP", self.fields["MAX_WAIT_STEP"])
         layout.addRow("idle_timeout", self.fields["idle_timeout"])
         layout.addRow("idle_penalty", self.fields["idle_penalty"])
 
@@ -101,9 +99,9 @@ class ConfigEditor(QWidget):
 
         self.fields["R_done"] = self._spin(-100000, 100000, 100)
         self.fields["R_scrap"] = self._spin(-100000, 100000, 500)
-        self.fields["c_time"] = self._spin(0, 100, 2)
+        self.fields["time_coef"] = self._spin(0, 100, 2)
         self.fields["c_congest"] = self._spin(0, 10000, 50)
-        self.fields["c_release_violation"] = self._spin(0, 10000, 10)
+        self.fields["release_penalty_coef"] = self._spin(0, 10000, 10)
         self.fields["T_warn"] = self._spin(0, 1000, 10)
         self.fields["T_safe"] = self._spin(0, 1000, 15)
         self.fields["a_warn"] = self._double(0, 10, 0.0)
@@ -111,9 +109,9 @@ class ConfigEditor(QWidget):
 
         layout.addRow("R_done", self.fields["R_done"])
         layout.addRow("R_scrap", self.fields["R_scrap"])
-        layout.addRow("c_time", self.fields["c_time"])
+        layout.addRow("time_coef", self.fields["time_coef"])
         layout.addRow("c_congest", self.fields["c_congest"])
-        layout.addRow("c_release_violation", self.fields["c_release_violation"])
+        layout.addRow("release_penalty_coef", self.fields["release_penalty_coef"])
         layout.addRow("T_warn", self.fields["T_warn"])
         layout.addRow("a_warn", self.fields["a_warn"])
         layout.addRow("T_safe", self.fields["T_safe"])

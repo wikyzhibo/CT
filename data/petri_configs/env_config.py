@@ -229,13 +229,12 @@ class PetriEnvConfig:
         lines.append(f"  R_done: {self.R_done}")
         lines.append(f"  R_finish: {self.R_finish}")
         lines.append(f"  R_scrap: {self.R_scrap}")
-        lines.append(f"  c_time: {self.c_time}")
+        lines.append(f"  time_coef: {self.time_coef}")
         
         # 其他参数
         lines.append("\n【其他参数】")
-        lines.append(f"  MAX_WAIT_STEP: {self.MAX_WAIT_STEP}")
         lines.append(f"  c_congest: {self.c_congest}")
-        lines.append(f"  c_release_violation: {self.c_release_violation}")
+        lines.append(f"  release_penalty_coef: {self.release_penalty_coef}")
         
         # 路线配置
         lines.append("\n【路线配置】")
@@ -306,6 +305,11 @@ class PetriEnvConfig:
         print("loading petri config from", path)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        # 旧参数名迁移到新参数名（新参数优先）
+        if "time_coef" not in data and "c_time" in data:
+            data["time_coef"] = data["c_time"]
+        if "release_penalty_coef" not in data and "c_release_violation" in data:
+            data["release_penalty_coef"] = data["c_release_violation"]
         # 列表/集合在 JSON 中为列表，需转换
         if "no_residence_place_names" in data and data["no_residence_place_names"] is not None:
             data["no_residence_place_names"] = set(data["no_residence_place_names"])

@@ -104,7 +104,7 @@ obs = [
 | `penalty`            | 加工腔室超时惩罚 | 超过 `proc_time + 15s` 后逐秒惩罚         | Q2_p=0.2     | 全部    |
 | `transport_penalty`  | 运输位超时惩罚   | 运输位停留超过 `10s` 后逐秒惩罚           | Q1_p=0.2     | Phase 2 |
 | `congestion_penalty` | 堵塞预测惩罚     | 上游多个 wafer 即将同时完成但下游容量不足 | c_congest=50 | 全部    |
-| `time_cost`          | 时间成本         | 每秒 -0.5，防止躺平                       | c_time=0.5   | 全部    |
+| `time_cost`          | 时间成本         | 每秒 -0.5，防止躺平                       | time_coef=0.5   | 全部    |
 
 **奖励计算代码**：
 
@@ -215,7 +215,6 @@ python -m solutions.Continuous_model.test_env --model solutions/PPO/saved_models
 | `D_Residual_time` | 10   | 运输位超时裕量（秒），超过后逐秒惩罚 |
 | `R_scrap`         | 100  | 报废惩罚值                           |
 | `R_done`          | 100  | 每片完工奖励                         |
-| `c_time`          | 0.5  | 时间成本系数（每秒）                 |
-| `MAX_WAIT_STEP`   | 20   | WAIT 动作最大跳跃时间（秒）          |
+| `time_coef`       | 0.5  | 时间成本系数（每秒）                 |
 | `c_congest`       | 50   | 堵塞预测惩罚系数                     |
 

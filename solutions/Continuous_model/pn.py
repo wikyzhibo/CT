@@ -152,9 +152,9 @@ class Petri:
         self.config = config
         print(config.format(detailed=True))
         
-        # 将配置参数设置为实例属性（保持向后兼容）
+        # 将配置参数设置为实例属性
         self.n_wafer = config.n_wafer
-        self.c_time = config.c_time
+        self.time_coef = config.time_coef
         self.R_done = config.R_done
         self.R_finish = getattr(config, 'R_finish', 800)  # 全部完工大奖励
         self.R_scrap = config.R_scrap
@@ -162,14 +162,12 @@ class Petri:
         self.a_warn = config.a_warn
         self.T_safe = config.T_safe
         self.b_safe = config.b_safe
-        self.MAX_WAIT_STEP = config.MAX_WAIT_STEP
         self.c_congest = config.c_congest
         self.D_Residual_time = config.D_Residual_time
         self.P_Residual_time = config.P_Residual_time
-        self.c_release_violation = config.c_release_violation
+        self.release_penalty_coef = config.release_penalty_coef
         self.T_transport = config.T_transport
         self.T_load = config.T_load
-        self.T_pm1_to_pm2 = config.T_pm1_to_pm2
         self.idle_penalty = config.idle_penalty
         # idle_timeout 在 marks 就绪后设为 最大处理时间+30，见下方
         self.stop_on_scrap = config.stop_on_scrap
@@ -396,7 +394,7 @@ class Petri:
             }
             return chain_map.get(t_name, [])
         
-        penalty_coeff = self.c_release_violation * 100
+        penalty_coeff = self.release_penalty_coef * 100
         
         for i, log in enumerate(self.fire_log):
             t_name = log["t_name"]
@@ -727,7 +725,7 @@ class Petri:
         奖励结构：
         1. 加工奖励：type=1 腔室内 token 在 [enter, enter+proc_time) 每秒 +r
         2. 安全裕量奖励：下游腔室有 token 且 slack > T_safe 时，每秒 +b_safe
-        3. 时间成本：-c_time * Δt（不做事也亏）
+        3. 时间成本：-time_coef * Δt（不做事也亏）
         4. 超时惩罚：
            - type=1: 超过 proc_time + P_Residual_time后每秒惩罚
            - type=2: 超过 5 + D_Residual_time后每秒惩罚
@@ -825,7 +823,7 @@ class Petri:
                             safe_reward += self.b_safe * (safe_end - safe_start)
         
         
-        time_cost = self.c_time * delta_t if self.reward_config.get('time_cost', 1) else 0.0
+        time_cost = self.time_coef * delta_t if self.reward_config.get('time_cost', 1) else 0.0
         
         # 对“已进入系统但未完成”的每片晶圆按时间增量施加温和惩罚，抑制缓冲区长时间滞留。
         in_system_time_penalty = 0.0
