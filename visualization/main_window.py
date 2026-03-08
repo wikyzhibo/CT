@@ -84,6 +84,7 @@ class PetriMainWindow(QMainWindow):
         self._verification_active = False
         self._verification_sequence = []
         self._verification_index = 0
+        self._verification_env_overrides: dict | None = None
         
         # Auto Mode State Tracking ('A' or 'B' or None)
         self._current_auto_mode = None
@@ -335,10 +336,12 @@ class PetriMainWindow(QMainWindow):
         if not path:
             return
         self._action_sequence_path = Path(path)
+        self._verification_env_overrides = None
         self._refresh_status_message()
 
     def _reset_default_action_sequence(self) -> None:
         self._action_sequence_path = Path("solutions/Td_petri/planB_sequence.json")
+        self._verification_env_overrides = None
         self._refresh_status_message()
 
     def _refresh_status_message(self) -> None:
@@ -655,11 +658,15 @@ class PetriMainWindow(QMainWindow):
                     QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
                     return False
             
-            with open(seq_path, "r") as f:
-                self._verification_sequence = json.load(f)
+            with open(seq_path, "r", encoding="utf-8") as f:
+                raw_payload = json.load(f)
+            self._verification_sequence, self._verification_env_overrides = self._parse_verification_payload(raw_payload)
             
             if not self._verification_sequence:
                 QMessageBox.warning(self, "Error", "Sequence is empty!")
+                return False
+
+            if not self._apply_verification_env_overrides_if_needed():
                 return False
             
             # Reset environment implicitly? User might want to run from current state.
@@ -678,6 +685,43 @@ class PetriMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start verification: {e}")
             self._stop_verification_mode()
+            return False
+
+    def _parse_verification_payload(self, payload):
+        """
+        兼容两种格式：
+        1) 旧版：直接是 list[step]
+        2) 新版：{"sequence": [...], "replay_env_overrides": {...}, ...}
+        """
+        if isinstance(payload, list):
+            return payload, None
+        if isinstance(payload, dict):
+            seq = payload.get("sequence", [])
+            overrides = payload.get("replay_env_overrides", None)
+            return seq, overrides
+        raise ValueError("动作序列 JSON 格式不合法，需为数组或包含 sequence 字段的对象")
+
+    def _apply_verification_env_overrides_if_needed(self) -> bool:
+        """
+        若序列携带环境覆盖参数，回放前先重建环境，确保导出序列与回放环境一致。
+        """
+        overrides = self._verification_env_overrides
+        if not overrides:
+            return True
+        if self._device_mode != "single":
+            QMessageBox.warning(self, "回放配置不匹配", "该动作序列携带单设备环境参数，请先切换到“单设备”模式后再回放。")
+            return False
+        if self._adapter_factory is None:
+            return False
+        try:
+            new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity, overrides)
+            self.viewmodel.replace_adapter(new_adapter, reset=True)
+            self._model_handler = None
+            self._concurrent_model_handler = None
+            self._update_model_buttons_state()
+            return True
+        except Exception as e:
+            QMessageBox.warning(self, "回放环境构建失败", f"无法应用动作序列携带的环境参数: {e}")
             return False
 
     def _get_verification_step_action(self):

@@ -200,6 +200,24 @@ python -m solutions.Continuous_model.export_inference_sequence \
 }
 ```
 
+当导出 `single` 序列时，JSON 可能为对象结构（而非纯数组），并附带 `replay_env_overrides`：
+
+```json
+{
+  "schema_version": 2,
+  "device_mode": "single",
+  "replay_env_overrides": {
+    "single_process_time_map": {"PM1": 100, "PM3": 315, "PM4": 290},
+    "single_proc_time_rand_enabled": false
+  },
+  "sequence": [
+    {"step": 1, "time": 5, "action": "u_LP", "actions": ["u_LP"]}
+  ]
+}
+```
+
+可视化 `Model B` 回放会优先读取该覆盖参数并重建单设备环境，避免“导出序列”和“回放环境”因随机工序时长不一致而失配。
+
 单设备导出脚本与 `visualization/main.py` 的单设备模型推理保持一致：
 
 - 动作选择使用随机采样语义（`ExplorationType.RANDOM`），而非 ArgMax。

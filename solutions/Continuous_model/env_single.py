@@ -30,6 +30,7 @@ class Env_PN_Single(EnvBase):
         training_phase: int = 2,
         reward_config: Optional[Dict[str, int]] = None,
         robot_capacity: int = 1,
+        process_time_map: Optional[Dict[str, int]] = None,
         proc_time_rand_enabled: Optional[bool] = None,
         proc_time_rand_scale_map: Optional[Dict[str, Dict[str, float]]] = None,
         proc_time_rand_min_scale: Optional[float] = None,
@@ -45,6 +46,10 @@ class Env_PN_Single(EnvBase):
         if reward_config:
             config.reward_config.update(reward_config)
         config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
+        if process_time_map is not None:
+            config.single_process_time_map = {
+                str(chamber): int(value) for chamber, value in dict(process_time_map).items()
+            }
         if proc_time_rand_enabled is not None:
             config.single_proc_time_rand_enabled = bool(proc_time_rand_enabled)
         if proc_time_rand_scale_map is not None:

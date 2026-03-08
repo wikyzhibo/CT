@@ -287,6 +287,7 @@ python -m solutions.Continuous_model.export_inference_sequence \
 - `solutions/Td_petri/planB_sequence.json`
 
 其中 `planB_sequence.json` 可直接被 `visualization/main_window.py` 的 Model B 回放逻辑读取。
+单设备模式下，导出 JSON 会附带 `replay_env_overrides`（例如本次 episode 的 `single_process_time_map`），回放前可自动重建环境以保证动作序列与工序时间一致。
 
 ## 9. 常见问题与排错
 

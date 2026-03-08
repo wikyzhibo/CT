@@ -52,11 +52,25 @@ def set_windows_app_id():
             pass  # 忽略错误
 
 
-def build_adapter(adapter_name: str, device_mode: str = "cascade", robot_capacity: int = 1):
+def build_adapter(
+    adapter_name: str,
+    device_mode: str = "cascade",
+    robot_capacity: int = 1,
+    env_overrides: dict | None = None,
+):
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
     if device_mode == "single":
-        env = Env_PN_Single(detailed_reward=True, robot_capacity=robot_capacity)
+        env_overrides = dict(env_overrides or {})
+        env = Env_PN_Single(
+            detailed_reward=True,
+            robot_capacity=int(env_overrides.get("single_robot_capacity", robot_capacity)),
+            process_time_map=env_overrides.get("single_process_time_map"),
+            proc_time_rand_enabled=env_overrides.get("single_proc_time_rand_enabled"),
+            proc_time_rand_scale_map=env_overrides.get("single_proc_time_rand_scale_map"),
+            proc_time_rand_min_scale=env_overrides.get("single_proc_time_rand_min_scale"),
+            proc_time_rand_max_scale=env_overrides.get("single_proc_time_rand_max_scale"),
+        )
         return PetriSingleAdapter(env)
     env = Env_PN_Concurrent(detailed_reward=True)
     return PetriAdapter(env)
@@ -354,7 +368,14 @@ def main() -> int:
     app_icon = set_app_icon(app)
     
     window = PetriMainWindow(viewmodel)
-    window.set_adapter_factory(lambda mode, robot_capacity=1: build_adapter(args.adapter, device_mode=mode, robot_capacity=robot_capacity))
+    window.set_adapter_factory(
+        lambda mode, robot_capacity=1, env_overrides=None: build_adapter(
+            args.adapter,
+            device_mode=mode,
+            robot_capacity=robot_capacity,
+            env_overrides=env_overrides,
+        )
+    )
     window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     
     # 窗口也设置图标

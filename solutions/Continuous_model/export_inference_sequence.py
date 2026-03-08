@@ -195,7 +195,7 @@ def _rollout_single_sequence(
     training_phase: int,
     robot_capacity: int,
     use_place_obs: bool = False,
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
     env_cls = Env_PN_Single_PlaceObs if use_place_obs else Env_PN_Single
@@ -244,7 +244,15 @@ def _rollout_single_sequence(
                 break
             td = td_after
 
-    return sequence, finished
+    replay_env_overrides = {
+        # 回放时固定为本次 episode 的实际工序时长，避免可视化重启后随机采样导致动作序列失配。
+        "single_process_time_map": dict(getattr(env.net, "_episode_process_time_map", {})),
+        "single_proc_time_rand_enabled": False,
+        "single_robot_capacity": int(robot_capacity),
+        "use_place_obs": bool(use_place_obs),
+        "training_phase": int(training_phase),
+    }
+    return sequence, finished, replay_env_overrides
 
 
 def _rollout_single_sequence_with_retry(
@@ -255,14 +263,15 @@ def _rollout_single_sequence_with_retry(
     robot_capacity: int,
     max_retries: int = 10,
     use_place_obs: bool = False,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
 
     last_sequence: list[dict[str, Any]] = []
+    last_overrides: dict[str, Any] = {}
     for attempt in range(max_retries):
         attempt_seed = seed + attempt
-        sequence, finished = _rollout_single_sequence(
+        sequence, finished, replay_env_overrides = _rollout_single_sequence(
             model_path=model_path,
             max_steps=max_steps,
             seed=attempt_seed,
@@ -271,13 +280,14 @@ def _rollout_single_sequence_with_retry(
             use_place_obs=use_place_obs,
         )
         last_sequence = sequence
+        last_overrides = replay_env_overrides
         if finished:
             if attempt > 0:
                 print(f"[INFO] single 模式第 {attempt + 1} 次推理达到 finish。")
-            return sequence
+            return sequence, replay_env_overrides
 
     print(f"[WARN] single 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
-    return last_sequence
+    return last_sequence, last_overrides
 
 
 def _rollout_concurrent_sequence(
@@ -345,7 +355,7 @@ def rollout_and_export(
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     if device_mode == "single":
-        sequence = _rollout_single_sequence_with_retry(
+        sequence, replay_env_overrides = _rollout_single_sequence_with_retry(
             model_path=model_path,
             max_steps=max_steps,
             seed=seed,
@@ -354,6 +364,12 @@ def rollout_and_export(
             max_retries=single_retries,
             use_place_obs=use_place_obs,
         )
+        payload: dict[str, Any] | list[dict[str, Any]] = {
+            "schema_version": 2,
+            "device_mode": "single",
+            "sequence": sequence,
+            "replay_env_overrides": replay_env_overrides,
+        }
     elif device_mode == "cascade":
         sequence = _rollout_concurrent_sequence(
             model_path=model_path,
@@ -361,6 +377,7 @@ def rollout_and_export(
             seed=seed,
             training_phase=training_phase,
         )
+        payload = sequence
     else:
         raise ValueError(f"不支持的 device_mode: {device_mode}")
 
@@ -378,7 +395,6 @@ def rollout_and_export(
         )
     planb_path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = sequence
     with action_series_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     with planb_path.open("w", encoding="utf-8") as f:
