@@ -21,10 +21,7 @@ from tensordict.nn import TensorDictModule
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import MaskedCategorical, ProbabilisticActor
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
-from solutions.PPO.network.models import DualHeadPolicyNet
 from solutions.PPO.network.models import MaskedPolicyHead
-from solutions.Continuous_model.train_concurrent import DualActionPolicyModule
 from solutions.Continuous_model.env_single import Env_PN_Single
 
 
@@ -53,52 +50,6 @@ def _to_finish(td_next: Any) -> bool:
 def _to_time(td_state: Any) -> int:
     t = td_state["time"]
     return int(t.item() if hasattr(t, "item") else t)
-
-
-def _decode_tm_action_name(env: Env_PN_Concurrent, tm: str, action_idx: int) -> str | None:
-    if tm == "tm2":
-        if action_idx == env.tm2_wait_action:
-            return None
-        t_idx = env.tm2_transition_indices[action_idx]
-    else:
-        if action_idx == env.tm3_wait_action:
-            return None
-        t_idx = env.tm3_transition_indices[action_idx]
-    return env.net.id2t_name[t_idx]
-
-
-def _infer_model_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int]:
-    first_linear = state_dict.get("backbone.backbone.0.weight")
-    if first_linear is None:
-        raise KeyError("权重缺少 backbone.backbone.0.weight，无法推断网络结构")
-    n_hidden = int(first_linear.shape[0])
-
-    linear_key_pattern = re.compile(r"^backbone\.backbone\.(\d+)\.weight$")
-    linear_count = sum(1 for k in state_dict.keys() if linear_key_pattern.match(k))
-    if linear_count <= 0:
-        raise ValueError("未检测到 backbone 线性层权重，无法推断 n_layers")
-
-    # DualHeadPolicyNet 中 backbone 线性层数 = n_layers - 1
-    n_layers = linear_count + 1
-    return n_hidden, n_layers
-
-
-def _build_policy(env: Env_PN_Concurrent, model_path: Path, device: torch.device) -> DualActionPolicyModule:
-    n_obs = int(env.observation_spec["observation"].shape[0])
-    state_dict = torch.load(str(model_path), map_location=device, weights_only=True)
-    n_hidden, n_layers = _infer_model_shape(state_dict)
-
-    backbone = DualHeadPolicyNet(
-        n_obs=n_obs,
-        n_hidden=n_hidden,
-        n_actions_tm2=env.n_actions_tm2,
-        n_actions_tm3=env.n_actions_tm3,
-        n_layers=n_layers,
-    ).to(device)
-    policy = DualActionPolicyModule(backbone).to(device)
-    policy.load_state_dict(state_dict)
-    policy.eval()
-    return policy
 
 
 def _decode_single_action_name(env: Env_PN_Single, action_idx: int) -> str:
@@ -196,10 +147,16 @@ def _rollout_single_sequence(
     seed: int,
     training_phase: int,
     robot_capacity: int,
+    device_mode: str = "single",
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Single(seed=seed, training_phase=training_phase, robot_capacity=robot_capacity)
+    env = Env_PN_Single(
+        seed=seed,
+        training_phase=training_phase,
+        robot_capacity=robot_capacity,
+        device_mode=device_mode,
+    )
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()
@@ -250,6 +207,7 @@ def _rollout_single_sequence(
         "single_proc_time_rand_enabled": False,
         "single_robot_capacity": int(robot_capacity),
         "single_route_code": int(getattr(env.net, "single_route_code", 0)),
+        "single_device_mode": str(device_mode),
         "training_phase": int(training_phase),
     }
     return sequence, finished, replay_env_overrides
@@ -262,6 +220,7 @@ def _rollout_single_sequence_with_retry(
     training_phase: int,
     robot_capacity: int,
     max_retries: int = 10,
+    device_mode: str = "single",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
@@ -276,6 +235,7 @@ def _rollout_single_sequence_with_retry(
             seed=attempt_seed,
             training_phase=training_phase,
             robot_capacity=robot_capacity,
+            device_mode=device_mode,
         )
         last_sequence = sequence
         last_overrides = replay_env_overrides
@@ -286,57 +246,6 @@ def _rollout_single_sequence_with_retry(
 
     print(f"[WARN] single 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
     return last_sequence, last_overrides
-
-
-def _rollout_concurrent_sequence(
-    model_path: Path,
-    max_steps: int,
-    seed: int,
-    training_phase: int,
-) -> list[dict[str, Any]]:
-    device = torch.device("cpu")
-    torch.manual_seed(seed)
-
-    env = Env_PN_Concurrent(training_phase=training_phase, seed=seed)
-    policy = _build_policy(env, model_path=model_path, device=device)
-
-    td = env.reset()
-    sequence: list[dict[str, Any]] = []
-
-    with torch.no_grad():
-        for step in range(1, max_steps + 1):
-            obs_f = td["observation"].unsqueeze(0).float().to(device)
-            mask_tm2 = td["action_mask_tm2"].unsqueeze(0).to(device)
-            mask_tm3 = td["action_mask_tm3"].unsqueeze(0).to(device)
-
-            a_tm2, a_tm3, _, _, _, _ = policy(obs_f, mask_tm2, mask_tm3)
-            a_tm2_idx = int(a_tm2.squeeze(0).item())
-            a_tm3_idx = int(a_tm3.squeeze(0).item())
-
-            step_td = td.clone()
-            step_td["action_tm2"] = torch.tensor(a_tm2_idx, dtype=torch.int64)
-            step_td["action_tm3"] = torch.tensor(a_tm3_idx, dtype=torch.int64)
-            td_next = env.step(step_td)
-
-            td_after = _to_step_state(td_next)
-            current_time = _to_time(td_after)
-            tm2_name = _decode_tm_action_name(env, "tm2", a_tm2_idx)
-            tm3_name = _decode_tm_action_name(env, "tm3", a_tm3_idx)
-
-            sequence.append(
-                {
-                    "step": step,
-                    "time": current_time,
-                    "actions": [tm2_name, tm3_name],
-                }
-            )
-
-            if _to_terminated(td_next):
-                break
-
-            td = td_after
-    return sequence
-
 
 def rollout_and_export(
     model_path: Path,
@@ -359,6 +268,7 @@ def rollout_and_export(
             training_phase=training_phase,
             robot_capacity=robot_capacity,
             max_retries=single_retries,
+            device_mode="single",
         )
         payload: dict[str, Any] | list[dict[str, Any]] = {
             "schema_version": 2,
@@ -367,13 +277,33 @@ def rollout_and_export(
             "replay_env_overrides": replay_env_overrides,
         }
     elif device_mode == "cascade":
-        sequence = _rollout_concurrent_sequence(
+        sequence, replay_env_overrides = _rollout_single_sequence_with_retry(
             model_path=model_path,
             max_steps=max_steps,
             seed=seed,
             training_phase=training_phase,
+            robot_capacity=robot_capacity,
+            max_retries=single_retries,
+            device_mode="cascade",
         )
-        payload = sequence
+        # 级联模式继续保留 actions=[tm2, tm3] 结构兼容 Model B 回放，
+        # 当前统一 pn_single 后端，第二通道固定填 WAIT。
+        sequence_dual = []
+        for item in sequence:
+            action_name = item.get("action")
+            sequence_dual.append(
+                {
+                    "step": item.get("step"),
+                    "time": item.get("time"),
+                    "actions": [action_name, "WAIT"],
+                }
+            )
+        payload = {
+            "schema_version": 2,
+            "device_mode": "cascade",
+            "sequence": sequence_dual,
+            "replay_env_overrides": replay_env_overrides,
+        }
     else:
         raise ValueError(f"不支持的 device_mode: {device_mode}")
 
@@ -411,11 +341,17 @@ def main() -> None:
     parser.add_argument("--out-name", type=str, default="concurrent_infer_seq", help="action_series 输出文件前缀")
     parser.add_argument("--phase", type=int, default=2, help="环境训练阶段(1/2)")
     parser.add_argument(
-        "--device-mode",
+        "--device",
         type=str,
         default="cascade",
         choices=["cascade", "single"],
         help="设备模式：cascade=级联双机械手，single=单设备单动作",
+    )
+    parser.add_argument(
+        "--device-mode",
+        type=str,
+        choices=["cascade", "single"],
+        help="已弃用，等价于 --device",
     )
     parser.add_argument(
         "--robot-capacity",
@@ -437,7 +373,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     out_name = args.out_name
-    if out_name == "concurrent_infer_seq" and args.device_mode == "single":
+    selected_device = args.device_mode if args.device_mode else args.device
+    if out_name == "concurrent_infer_seq" and selected_device == "single":
         out_name = "single_infer_seq"
 
     out = rollout_and_export(
@@ -447,7 +384,7 @@ def main() -> None:
         out_name=out_name,
         training_phase=args.phase,
         force_overwrite_planb=args.force_overwrite_planb,
-        device_mode=args.device_mode,
+        device_mode=selected_device,
         robot_capacity=args.robot_capacity,
         single_retries=args.single_retries,
     )

@@ -99,6 +99,8 @@ class PetriEnvConfig:
     optimize_data_structures: bool = False
     turbo_mode: bool = False
     single_robot_capacity: int = 1 # 单设备机械手容量（默认为1，训练简化版可设置为2或更高以加快训练）
+    # 单设备模式：single=原单设备路径，cascade=级联路径模板
+    single_device_mode: str = "single"
     # 单设备清洗配置（训练简化版）
     single_cleaning_enabled: bool = True
     single_cleaning_targets: List[str] = field(default_factory=lambda: ["PM3", "PM4"])
@@ -176,6 +178,7 @@ class PetriEnvConfig:
         if self.n_wafer_route1 is not None or self.n_wafer_route2 is not None:
             lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
+        lines.append(f"  单设备模式: {self.single_device_mode}")
         lines.append(f"  单设备路径代号: {self.single_route_code}")
         
         if self.end_place_name != "LP_done":
@@ -281,6 +284,7 @@ class PetriEnvConfig:
         lines.append(f"  optimize_data_structures: {self.optimize_data_structures}")
         lines.append(f"  turbo_mode: {self.turbo_mode}")
         lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
+        lines.append(f"  single_device_mode: {self.single_device_mode}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")

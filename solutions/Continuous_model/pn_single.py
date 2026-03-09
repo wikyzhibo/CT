@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 from collections import deque
-import json
-import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from solutions.Continuous_model.helper_function import (
     _normalize_wait_durations,
@@ -28,6 +26,7 @@ MAX_TIME = 12000
 CHAMBER = 1
 DELIVERY_ROBOT = 2
 SOURCE = 3
+
 
 class PetriSingleDevice:
     def __init__(self, config: PetriEnvConfig = None) -> None:
@@ -63,9 +62,63 @@ class PetriSingleDevice:
         self.wait_durations = _normalize_wait_durations(
             getattr(config, "single_wait_durations", [5, 10, 20, 50, 100])
         )
+        self.single_device_mode = str(getattr(config, "single_device_mode", "single")).lower()
+        if self.single_device_mode not in {"single", "cascade"}:
+            self.single_device_mode = "single"
         self.single_route_code = 1 if int(getattr(config, "single_route_code", 0)) == 1 else 0
-        if self.single_route_code == 1:
+        if self.single_device_mode == "cascade":
+            self._single_process_chambers = (
+                "PM7", "PM8", "PM1", "PM2", "PM3", "PM4", "LLD", "PM9", "PM10"
+            )
+            self._timeline_chambers = self._single_process_chambers + ("LLC",)
+            self._u_targets = {
+                "LP": ["PM7", "PM8"],
+                "PM7": ["LLC"],
+                "PM8": ["LLC"],
+                "LLC": ["PM1", "PM2", "PM3", "PM4"],
+                "PM1": ["LLD"],
+                "PM2": ["LLD"],
+                "PM3": ["LLD"],
+                "PM4": ["LLD"],
+                "LLD": ["PM9", "PM10"],
+                "PM9": ["LP_done"],
+                "PM10": ["LP_done"],
+            }
+            self._step_map = {
+                "PM7": 1,
+                "PM8": 1,
+                "LLC": 2,
+                "PM1": 3,
+                "PM2": 3,
+                "PM3": 3,
+                "PM4": 3,
+                "LLD": 4,
+                "PM9": 5,
+                "PM10": 5,
+                "LP_done": 6,
+            }
+            self._release_station_aliases = {
+                "s1": ["PM7", "PM8"],
+                "s2": ["LLC"],
+                "s3": ["PM1", "PM2", "PM3", "PM4"],
+                "s4": ["LLD"],
+                "s5": ["PM9", "PM10"],
+            }
+            self._release_chain_by_u = {
+                "u_LP": ["s1", "s2", "s3", "s4", "s5"],
+                "u_PM7": ["s2", "s3", "s4", "s5"],
+                "u_PM8": ["s2", "s3", "s4", "s5"],
+                "u_LLC": ["s3", "s4", "s5"],
+                "u_PM1": ["s4", "s5"],
+                "u_PM2": ["s4", "s5"],
+                "u_PM3": ["s4", "s5"],
+                "u_PM4": ["s4", "s5"],
+                "u_LLD": ["s5"],
+            }
+            self._system_entry_places = {"PM7", "PM8"}
+        elif self.single_route_code == 1:
             self._single_process_chambers = ("PM1", "PM3", "PM4", "PM6")
+            self._timeline_chambers = tuple(self._single_process_chambers)
             self._u_targets = {
                 "LP": ["PM1"],
                 "PM1": ["PM3", "PM4"],
@@ -76,8 +129,10 @@ class PetriSingleDevice:
             self._step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "PM6": 3, "LP_done": 4}
             self._release_station_aliases = {"s1": ["PM1"], "s2": ["PM3", "PM4"], "s3": ["PM6"]}
             self._release_chain_by_u = {"u_LP": ["s1", "s2", "s3"]}
+            self._system_entry_places = {"PM1"}
         else:
             self._single_process_chambers = ("PM1", "PM3", "PM4")
+            self._timeline_chambers = tuple(self._single_process_chambers)
             self._u_targets = {
                 "LP": ["PM1"],
                 "PM1": ["PM3", "PM4"],
@@ -87,6 +142,7 @@ class PetriSingleDevice:
             self._step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "LP_done": 3}
             self._release_station_aliases = {"s1": ["PM1"], "s2": ["PM3", "PM4"]}
             self._release_chain_by_u = {"u_LP": ["s1", "s2"]}
+            self._system_entry_places = {"PM1"}
         self._ready_chambers: Tuple[str, ...] = tuple(self._single_process_chambers)
         self.single_proc_time_rand_enabled = bool(getattr(config, "single_proc_time_rand_enabled", False))
         self.single_proc_time_rand_min_scale = float(getattr(config, "single_proc_time_rand_min_scale", 1.0))
@@ -106,6 +162,7 @@ class PetriSingleDevice:
             robot_capacity=self.robot_capacity,
             process_time_map=self._base_process_time_map,
             route_code=self.single_route_code,
+            device_mode=self.single_device_mode,
         )
         self.pre: np.ndarray = info["pre"]
         self.pre_color: np.ndarray = info.get("pre_color", self.pre[:, :, None])
@@ -143,8 +200,8 @@ class PetriSingleDevice:
         self._next_machine_id = 1
         self._last_deadlock = False
         self.no_release_penalty = False
-        self._chamber_timeline: Dict[str, list] = {name: [] for name in self._single_process_chambers}
-        self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._single_process_chambers}
+        self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
+        self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_single_cleaning_state()
 
     def step(self, a1=None, detailed_reward: bool = False, wait_duration: Optional[int] = None):
@@ -173,11 +230,12 @@ class PetriSingleDevice:
         if do_wait:
             requested_wait = int(wait_duration)
             assert requested_wait > 0, "wait_duration should be non-positive"
-            wait_requested_raw = int(requested_wait)
-            if self._has_completed_wafers() and requested_wait > 5:
-                # 完工后只允许最小 wait 粒度，避免长时间空等。
+            lp_done_count = len(self._get_place("LP_done").tokens)
+            episode_finished = lp_done_count >= self.n_wafer
+            if episode_finished and requested_wait > 5:
+                # 仅当 episode 全部完成（所有晶圆均在 LP_done）时才截断 wait，避免长时间空等。
                 requested_wait = 5
-                wait_reason = "completed_wafer_cap_5s"
+                wait_reason = "episode_finished_cap_5s"
                 actual_dt = requested_wait
             elif requested_wait == 5:
                 # 最小 wait 固定推进 5s，不做事件截断。
@@ -191,8 +249,14 @@ class PetriSingleDevice:
                     wait_reason = "no_future_event"
                 else:
                     # 关键规则：wait 只推进到“下一个事件或请求时长”中更早者。
-                    actual_dt = min(requested_wait, next_event_delta)
-                    wait_reason = "next_event_capped" if int(next_event_delta) < requested_wait else "requested_duration"
+                    if int(next_event_delta) <= 0:
+                        # next_event_delta 可能为 0（关键事件就在当前时刻），
+                        # 此时若继续按 min() 会得到 0 并触发断言，导致 wait 分支崩溃。
+                        actual_dt = min(requested_wait, 5)
+                        wait_reason = "immediate_event_fallback_5s"
+                    else:
+                        actual_dt = min(requested_wait, next_event_delta)
+                        wait_reason = "next_event_capped" if int(next_event_delta) < requested_wait else "requested_duration"
 
             assert  actual_dt > 0, f"actual_dt ({actual_dt}) should be positive"
 
@@ -282,8 +346,8 @@ class PetriSingleDevice:
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
         self._last_deadlock = False
-        self._chamber_timeline = {name: [] for name in self._single_process_chambers}
-        self._chamber_active = {name: {} for name in self._single_process_chambers}
+        self._chamber_timeline = {name: [] for name in self._timeline_chambers}
+        self._chamber_active = {name: {} for name in self._timeline_chambers}
         self._init_single_cleaning_state()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         self._update_marking_vector()
@@ -367,6 +431,14 @@ class PetriSingleDevice:
             if dst is not None:
                 setattr(tok, "_target_place", dst)
             tok.machine = int(self._next_robot_machine())
+            if self.single_device_mode == "cascade":
+                # 级联模式下用 machine 字段承载 TM 语义：
+                # 1=TM2（LP/PM7/PM8/LLD/PM9/PM10 侧），2=TM3（LLC/PM1-4 侧）
+                # 说明：u_LLD/u_PM9/u_PM10 属于返回外环，应落在 TM2 语义。
+                if src in {"LLC", "PM1", "PM2", "PM3", "PM4"}:
+                    tok.machine = 2
+                else:
+                    tok.machine = 1
             if src in self._chamber_active and wafer_id in self._chamber_active[src]:
                 idx = self._chamber_active[src].pop(wafer_id)
                 e, _, wid = self._chamber_timeline[src][idx]
@@ -409,14 +481,10 @@ class PetriSingleDevice:
 
         # =====
         stage1_enabled: List[int] = []
-        d_tm = self._get_place("d_TM1")
-        d_tm_idx = self._get_place_index("d_TM1")
-        head_tok = d_tm.head() if len(d_tm.tokens) > 0 else None
-        head_target = getattr(head_tok, "_target_place", None) if head_tok is not None else None
-        head_where = int(getattr(head_tok, "where", 0)) if head_tok is not None else 0
-        color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
+        d_tm = self._get_place("d_TM1") if ("d_TM1" in self.id2p_name and self.single_device_mode != "cascade") else None
+        head_tok = d_tm.head() if (d_tm is not None and len(d_tm.tokens) > 0) else None
         locked_sources: set[str] = set()
-        if self.robot_capacity == 2 and head_tok is not None:
+        if self.robot_capacity == 2 and self.single_device_mode != "cascade" and head_tok is not None:
             locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
 
         # =====self.m >= self.pre[:, t]=======
@@ -426,8 +494,19 @@ class PetriSingleDevice:
             base_pre_idx = np.flatnonzero(base_pre > 0)
             if base_pre_idx.size == 0:
                 continue
+            t_name = self.id2t_name[t]
             color_pre = base_pre
-            if base_pre[d_tm_idx] > 0:
+            head_where = 0
+            color_idx = 0
+            transport_pre_idx = np.flatnonzero(
+                (base_pre > 0) & np.array([name.startswith("d_") for name in self.id2p_name], dtype=bool)
+            )
+            if transport_pre_idx.size > 0:
+                tp_idx = int(transport_pre_idx[0])
+                tp = self.marks[tp_idx]
+                tp_head = tp.head() if len(tp.tokens) > 0 else None
+                head_where = int(getattr(tp_head, "where", 0)) if tp_head is not None else 0
+                color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
                 color_pre = self.pre_color[:, t, color_idx]
             if np.any((base_pre > 0) & (color_pre <= 0)):
                 continue
@@ -435,13 +514,11 @@ class PetriSingleDevice:
                 continue
             if np.any(self.m + self.net[:, t] > self.k):
                 continue
-
-            t_name = self.id2t_name[t]
             if t_name.startswith("u_"):
                 src = t_name[2:]
-                if self.robot_capacity == 2:
+                if self.robot_capacity == 2 and self.single_device_mode != "cascade":
                     # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
-                    if len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
+                    if d_tm is not None and len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
                         continue
                     # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
                     # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
@@ -453,7 +530,11 @@ class PetriSingleDevice:
                         continue
             elif t_name.startswith("t_"):
                 target = t_name[2:]
-                if head_target is not None and head_target != target:
+                transport_name = self._transport_for_t_target(target)
+                tp = self._get_place(transport_name)
+                tp_head = tp.head() if len(tp.tokens) > 0 else None
+                tp_head_target = getattr(tp_head, "_target_place", None) if tp_head is not None else None
+                if tp_head_target is not None and tp_head_target != target:
                     continue
             stage1_enabled.append(t)
 
@@ -462,9 +543,6 @@ class PetriSingleDevice:
         Stage2: 在 Stage1 基础上做就绪过滤（加工完成 + 运输位 dwell）。
         """
         stage2_enabled: List[int] = []
-        d_place = self._get_place("d_TM1")
-        dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
-        blocked_by_cleaning: List[str] = []
         for t in stage1_enabled:
             t_name = self.id2t_name[t]
             if t_name.startswith("u_"):
@@ -477,8 +555,9 @@ class PetriSingleDevice:
                 target = t_name[2:]
                 target_place = self._get_place(target)
                 if bool(getattr(target_place, "is_cleaning", False)):
-                    blocked_by_cleaning.append(target)
                     continue
+                d_place = self._get_place(self._transport_for_t_target(target))
+                dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
                 if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
                     continue
             stage2_enabled.append(t)
@@ -546,7 +625,20 @@ class PetriSingleDevice:
         return chamber_map
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
-        defaults = {"PM1": 100, "PM3": 300, "PM4": 300, "PM6": 300}
+        if self.single_device_mode == "cascade":
+            defaults = {
+                "PM7": 70,
+                "PM8": 70,
+                "PM1": 600,
+                "PM2": 600,
+                "PM3": 600,
+                "PM4": 600,
+                "LLD": 70,
+                "PM9": 200,
+                "PM10": 200,
+            }
+        else:
+            defaults = {"PM1": 100, "PM3": 300, "PM4": 300, "PM6": 300}
         return _preprocess_process_time_map(
             process_time_map=process_time_map,
             chambers=self._single_process_chambers,
@@ -601,6 +693,20 @@ class PetriSingleDevice:
 
     def _get_place_index(self, name: str) -> int:
         return self.id2p_name.index(name)
+
+    def _transport_for_u_source(self, source: str) -> str:
+        if self.single_device_mode != "cascade":
+            return "d_TM1"
+        if source in {"LLC", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"}:
+            return "d_TM3"
+        return "d_TM2"
+
+    def _transport_for_t_target(self, target: str) -> str:
+        if self.single_device_mode != "cascade":
+            return "d_TM1"
+        if target in {"PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LLD"}:
+            return "d_TM3"
+        return "d_TM2"
 
     def _update_marking_vector(self) -> None:
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
@@ -661,13 +767,19 @@ class PetriSingleDevice:
         """
         deltas: List[int] = []
         for place in self.marks:
-            if int(place.type) == CHAMBER and len(place.tokens) > 0:
-                head = place.head()
-                delta = int(place.processing_time) - int(getattr(head, "stay_time", 0))
-                deltas.append(max(0, int(delta)))
+            if len(place.tokens) == 0 or int(getattr(place, "processing_time", 0)) <= 0:
+                continue
+            if int(place.type) not in (CHAMBER, 5):
+                continue
+            if place.name.startswith("d_"):
+                continue
+            head = place.head()
+            delta = int(place.processing_time) - int(getattr(head, "stay_time", 0))
+            deltas.append(max(0, int(delta)))
         if not deltas:
             return None
-        return int(min(deltas))
+        min_delta = int(min(deltas))
+        return min_delta
 
     def _has_completed_wafers(self) -> bool:
         return len(self._get_place("LP_done").tokens) > 0
@@ -742,6 +854,16 @@ class PetriSingleDevice:
         仅检查目标腔室容量，运输位停留时间约束仍由 t_* 侧控制。
         """
         candidates = self._u_targets.get(source, [])
+        if self.single_device_mode == "cascade" and source in {"PM7", "PM8"}:
+            # LLC 满时仍允许从 PM7/PM8 取片到 d_TM1，后续由 t_LLC 容量约束拦截放片时机。
+            # 这与用户要求一致：LLC 有片时 u_PM7/u_PM8 仍应可使能。
+            if "LLC" in candidates:
+                return "LLC"
+        if self.single_device_mode == "cascade" and source in {"PM1", "PM2", "PM3", "PM4"}:
+            # LLD 满时仍允许从 PM1-4 先取片到 d_TM1，后续由 t_LLD 实际容量约束放行。
+            # 需求：LLD 有晶圆时，u_PM1/u_PM2/u_PM3/u_PM4 仍应保持可使能。
+            if "LLD" in candidates:
+                return "LLD"
         if preferred_target is not None:
             if preferred_target not in candidates:
                 return None
@@ -901,8 +1023,10 @@ class PetriSingleDevice:
     def _track_enter(self, token: BasedToken, place_name: str) -> None:
         if token.token_id not in self._token_stats:
             self._token_stats[token.token_id] = {"enter_system": None, "exit_system": None, "chambers": {}}
-        if place_name == "PM1" and self._token_stats[token.token_id]["enter_system"] is None:
+        if place_name in self._system_entry_places and self._token_stats[token.token_id]["enter_system"] is None:
             self._token_stats[token.token_id]["enter_system"] = self.time
+        if place_name == "LP_done":
+            self._token_stats[token.token_id]["exit_system"] = self.time
         if place_name.startswith("PM"):
             self._token_stats[token.token_id]["chambers"].setdefault(place_name, {"enter": self.time, "exit": None})
 
@@ -911,8 +1035,6 @@ class PetriSingleDevice:
             return
         if place_name.startswith("PM"):
             self._token_stats[token.token_id]["chambers"].setdefault(place_name, {"enter": None, "exit": None})["exit"] = self.time
-        if place_name == "LP_done":
-            self._token_stats[token.token_id]["exit_system"] = self.time
 
     def render_gantt(self, out_path: str) -> None:
         return None

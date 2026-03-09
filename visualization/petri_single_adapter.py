@@ -17,16 +17,19 @@ from .algorithm_interface import (
     WaferState,
 )
 
-
 class PetriSingleAdapter(AlgorithmAdapter):
     def __init__(self, env: Env_PN_Single) -> None:
         self.env = env
         self.net = env.net
+        self.device_mode = str(getattr(self.net, "single_device_mode", "single")).lower()
         self._last_reward_detail: Dict[str, float] = {}
         self._history: List[Dict[str, Any]] = []
-        self.disabled_chambers = {"PM2", "PM5"}
-        if int(getattr(self.net, "single_route_code", 0)) == 0:
-            self.disabled_chambers.add("PM6")
+        if self.device_mode == "cascade":
+            self.disabled_chambers = {"PM5", "PM6"}
+        else:
+            self.disabled_chambers = {"PM2", "PM5"}
+            if int(getattr(self.net, "single_route_code", 0)) == 0:
+                self.disabled_chambers.add("PM6")
 
     def reset(self) -> StateInfo:
         self.env.reset()
@@ -66,36 +69,19 @@ class PetriSingleAdapter(AlgorithmAdapter):
         if wait_duration is not None:
             return f"WAIT_{int(wait_duration)}s"
         if 0 <= action < len(self.net.id2t_name):
-            name = self.net.id2t_name[action]
-            if name.startswith("u_"):
-                parts = name.split("_")
-                # 兼容两种命名：
-                # 1) 旧格式 u_src_dst
-                # 2) 新格式 u_src（目标由后续 t_* 分流）
-                if len(parts) >= 3:
-                    _, src, dst = name.split("_", 2)
-                    return f"{src}→{dst}"
-                if len(parts) == 2:
-                    src = parts[1]
-                    targets = list(getattr(self.net, "_u_targets", {}).get(src, []))
-                    if len(targets) == 1:
-                        return f"{src}→{targets[0]}"
-                    if len(targets) > 1:
-                        return f"{src}→({'|'.join(targets)})"
-                    return f"{src}→?"
-            if name.startswith("t_"):
-                return name[2:]
-            return name
+            # 需求：按钮/历史直接显示原始变迁名（u_src / t_dst）
+            return str(self.net.id2t_name[action])
         return f"UNKNOWN_{action}"
 
     def get_enabled_actions(self) -> List[ActionInfo]:
         mask = self.env._mask()
         actions: List[ActionInfo] = []
         for i in range(int(self.env.n_actions)):
+            name = self.get_action_name(i)
             actions.append(
                 ActionInfo(
                     action_id=i,
-                    action_name=self.get_action_name(i),
+                    action_name=name,
                     enabled=bool(mask[i]),
                     description="" if bool(mask[i]) else "当前条件不满足",
                 )
@@ -145,7 +131,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 if int(getattr(tok, "token_id", -1)) >= 0
             ]
             release_schedule[place.name] = list(getattr(place, "release_schedule", []))
-            if place.name == "d_TM1":
+            if place.name.startswith("d_TM"):
                 transports.append(
                     ChamberState(
                         name=place.name,
@@ -159,7 +145,13 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 )
                 continue
 
-            chamber_type = "disabled" if place.name in self.disabled_chambers else "processing"
+            display_name = place.name
+            if self.device_mode == "cascade":
+                if place.name == "LP":
+                    display_name = "LLA"
+                elif place.name == "LP_done":
+                    display_name = "LLB"
+            chamber_type = "disabled" if display_name in self.disabled_chambers else "processing"
             status = self._calc_status(place.name, wafers, chamber_type)
             is_cleaning = bool(getattr(place, "is_cleaning", False))
             cleaning_remaining = float(getattr(place, "cleaning_remaining", 0.0))
@@ -169,7 +161,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
             countdown = max(0, trigger - processed) if place.name in targets else -1
             chambers.append(
                 ChamberState(
-                    name=place.name,
+                    name=display_name,
                     place_idx=idx,
                     capacity=int(place.capacity),
                     wafers=wafers,
@@ -181,31 +173,56 @@ class PetriSingleAdapter(AlgorithmAdapter):
                     cleaning_wafer_countdown=countdown,
                 )
             )
+        if self.device_mode == "cascade":
+            existing_names = {c.name for c in chambers}
+            for name in ("PM5", "PM6"):
+                if name in existing_names:
+                    continue
+                chambers.append(
+                    ChamberState(
+                        name=name,
+                        place_idx=-1,
+                        capacity=1,
+                        wafers=[],
+                        proc_time=0.0,
+                        status="disabled",
+                        chamber_type="disabled",
+                        cleaning_wafer_countdown=-1,
+                    )
+                )
 
         robot_wafers_tm2: List[WaferState] = []
         robot_wafers_tm3: List[WaferState] = []
         if transports:
-            robot_wafers = transports[0].wafers
-            machine_by_token: Dict[int, int] = {}
-            d_tm_place = next((p for p in self.net.marks if p.name == "d_TM1"), None)
-            if d_tm_place is not None:
-                for tok in d_tm_place.tokens:
-                    tid = int(getattr(tok, "token_id", -1))
-                    if tid >= 0:
-                        machine_by_token[tid] = int(getattr(tok, "machine", 1))
-            for wafer in robot_wafers:
-                machine_id = machine_by_token.get(int(wafer.token_id), 1)
-                if machine_id == 2:
-                    robot_wafers_tm3.append(wafer)
-                else:
-                    robot_wafers_tm2.append(wafer)
+            if self.device_mode == "cascade":
+                d_tm2 = next((c for c in transports if c.name == "d_TM2"), None)
+                d_tm3 = next((c for c in transports if c.name == "d_TM3"), None)
+                if d_tm2 is not None:
+                    robot_wafers_tm2.extend(d_tm2.wafers)
+                if d_tm3 is not None:
+                    robot_wafers_tm3.extend(d_tm3.wafers)
+            else:
+                robot_wafers = transports[0].wafers
+                machine_by_token: Dict[int, int] = {}
+                d_tm_place = next((p for p in self.net.marks if p.name == "d_TM1"), None)
+                if d_tm_place is not None:
+                    for tok in d_tm_place.tokens:
+                        tid = int(getattr(tok, "token_id", -1))
+                        if tid >= 0:
+                            machine_by_token[tid] = int(getattr(tok, "machine", 1))
+                for wafer in robot_wafers:
+                    machine_id = machine_by_token.get(int(wafer.token_id), 1)
+                    if machine_id == 2:
+                        robot_wafers_tm3.append(wafer)
+                    else:
+                        robot_wafers_tm2.append(wafer)
         stats = self.net.calc_wafer_statistics() if hasattr(self.net, "calc_wafer_statistics") else {}
         return StateInfo(
             time=float(getattr(self.net, "time", 0)),
             chambers=chambers,
             transport_buffers=transports,
-            start_buffers=[c for c in chambers if c.name == "LP"],
-            end_buffers=[c for c in chambers if c.name == "LP_done"],
+            start_buffers=[c for c in chambers if c.name in {"LP", "LLA"}],
+            end_buffers=[c for c in chambers if c.name in {"LP_done", "LLB"}],
             robot_states={
                 "TM2": RobotState(name="TM2", busy=bool(robot_wafers_tm2), wafers=robot_wafers_tm2),
                 "TM3": RobotState(name="TM3", busy=bool(robot_wafers_tm3), wafers=robot_wafers_tm3),

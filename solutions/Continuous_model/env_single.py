@@ -27,6 +27,7 @@ class Env_PN_Single(EnvBase):
         seed=None,
         detailed_reward: bool = False,
         training_phase: int = 2,
+        device_mode: str = "single",
         reward_config: Optional[Dict[str, int]] = None,
         robot_capacity: int = 1,
         route_code: Optional[int] = None,
@@ -41,10 +42,14 @@ class Env_PN_Single(EnvBase):
         self.detailed_reward = detailed_reward
 
         dir = Path(__file__).parents[2] / "data" / "petri_configs"
-        path = dir / "single.json"
+        mode_name = str(device_mode).lower()
+        if mode_name not in {"single", "cascade"}:
+            mode_name = "single"
+        path = dir / ("cascade.json" if mode_name == "cascade" else "single.json")
         config = PetriEnvConfig().load(path=path)
         if reward_config:
             config.reward_config.update(reward_config)
+        config.single_device_mode = str(device_mode).lower()
         config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
         if route_code is not None:
             config.single_route_code = int(route_code)
@@ -146,47 +151,57 @@ class Env_PN_Single(EnvBase):
     def _get_place_obs_pm_names(self) -> List[str]:
         # 观测 PM 列表与 pn_single 路线配置保持同源，避免 route 变更后维度漂移。
         candidates = tuple(getattr(self.net, "_single_process_chambers", ("PM1", "PM3", "PM4")))
-        observed = [name for name in candidates if name in {"PM1", "PM3", "PM4", "PM6"}]
+        observed = [name for name in candidates if name.startswith("PM")]
         if not observed:
             observed = ["PM1", "PM3", "PM4"]
         return observed
 
     def _extract_place_features(self, place_name: str) -> List[float]:
-        net_place_name = "d_TM1" if place_name == "TM" else place_name
-        place = self.net._get_place(net_place_name)
+        if place_name == "TM":
+            return self._extract_tm_features()
+        place = self.net._get_place(place_name)
         if place_name == "LP":
             remaining = float(len(place.tokens))
             denom = max(1.0, float(self.n_wafer))
             remaining_norm = float(np.clip(remaining / denom, 0.0, 1.0))
             return [remaining_norm]
-        if place_name == "TM":
-            return self._extract_tm_features(place)
-        if place_name in {"PM1", "PM3", "PM4", "PM6"}:
+        if place_name.startswith("PM") or place_name == "LLD":
             return self._extract_pm_features(place)
         return []
 
-    def _extract_tm_features(self, place) -> List[float]:
-        has_wafer = len(place.tokens) > 0
-        dwell_time = max(1.0, float(getattr(place, "processing_time", self.net.T_transport)))
+    def _extract_tm_features(self) -> List[float]:
+        transport_names = [name for name in self.net.id2p_name if name.startswith("d_")]
         penalty_time = max(1.0, float(getattr(self.net, "D_Residual_time", 10)))
+        if not transport_names:
+            return [0.0, 0.0, 0.0, 1.0]
+
+        has_wafer = False
+        any_complete = 0.0
+        any_over_long = 0.0
+        max_stay_norm = 0.0
+        min_distance_norm = 1.0
+
+        for name in transport_names:
+            place = self.net._get_place(name)
+            if len(place.tokens) == 0:
+                continue
+            has_wafer = True
+            dwell_time = max(1.0, float(getattr(place, "processing_time", self.net.T_transport)))
+            stay_time = float(getattr(place.head(), "stay_time", 0))
+            any_complete = max(any_complete, 1.0 if stay_time >= dwell_time else 0.0)
+            any_over_long = max(any_over_long, 1.0 if stay_time > penalty_time else 0.0)
+            tm_norm_denom = max(dwell_time, penalty_time) * 2.0
+            max_stay_norm = max(max_stay_norm, float(np.clip(stay_time / tm_norm_denom, 0.0, 1.0)))
+            distance_to_penalty = max(0.0, penalty_time - stay_time)
+            min_distance_norm = min(
+                min_distance_norm,
+                float(np.clip(distance_to_penalty / penalty_time, 0.0, 1.0)),
+            )
 
         if not has_wafer:
             return [0.0, 0.0, 0.0, 1.0]
 
-        stay_time = float(getattr(place.head(), "stay_time", 0))
-        transport_complete = 1.0 if stay_time >= dwell_time else 0.0
-        wafer_stay_over_long = 1.0 if stay_time > penalty_time else 0.0
-
-        tm_norm_denom = max(dwell_time, penalty_time) * 2.0
-        wafer_stay_time_norm = float(np.clip(stay_time / tm_norm_denom, 0.0, 1.0))
-        distance_to_penalty = max(0.0, penalty_time - stay_time)
-        distance_to_penalty_norm = float(np.clip(distance_to_penalty / penalty_time, 0.0, 1.0))
-        return [
-            transport_complete,
-            wafer_stay_over_long,
-            wafer_stay_time_norm,
-            distance_to_penalty_norm,
-        ]
+        return [any_complete, any_over_long, max_stay_norm, min_distance_norm]
 
     def _extract_pm_features(self, place) -> List[float]:
         has_wafer = len(place.tokens) > 0

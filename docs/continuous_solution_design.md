@@ -94,6 +94,9 @@ flowchart TB
 - 对并行目标机台场景，多个 `t_dst` 共享单一 `u_src` 可减少动作空间冗余并降低策略学习难度。
 
 ### Behavior
+- 单设备新增设备模板参数：`single_device_mode`（`single` / `cascade`）。
+  - `single`：保留原单设备路径逻辑（`single_route_code=0/1`）。
+  - `cascade`：改为级联模板路径 `LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`，但仍由 `pn_single + env_single` 承载。
 - 单设备新增路径代号参数：`single_route_code`（整数切换预置路径）。
   - `0`：`LP -> PM1(100s) -> [PM3|PM4](300s) -> LP_done`（默认，兼容旧行为）
   - `1`：`LP -> PM1(100s) -> [PM3|PM4](300s) -> PM6(300s) -> LP_done`
@@ -114,7 +117,7 @@ flowchart TB
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
 
 ### Impact
-- 原双机械手并发训练和可视化入口保持兼容。
+- 设备模式统一为 `--device single/cascade`，可视化 `cascade` 不再依赖 `pn.py`，统一走 `pn_single/env_single`。
 - 单设备逻辑集中在 `Continuous_model` 新文件中，便于后续独立迭代。
 - 单设备训练已支持两阶段：阶段1收集轨迹（关闭在线 release 惩罚），阶段2执行 `blame_release_violations` 回填奖励。
 - 训练入口 `train_single.py` 仅保留随机开关参数：`--proc-time-rand-enabled`。开启后按配置中的随机区间执行（不再提供 CLI 最小/最大覆盖）。

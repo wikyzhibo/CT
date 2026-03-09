@@ -148,6 +148,7 @@ def train_single(
     config: PPOTrainingConfig | None = None,
     training_phase: int = 2,
     checkpoint_path: str | None = None,
+    device_mode: str = "single",
     proc_time_rand_enabled: bool | None = None,
     proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None,
     proc_time_rand_min_scale: float | None = None,
@@ -163,6 +164,7 @@ def train_single(
     env = Env_PN_Single(
         training_phase=training_phase,
         detailed_reward=True,
+        device_mode=device_mode,
         proc_time_rand_enabled=proc_time_rand_enabled,
         proc_time_rand_scale_map=proc_time_rand_scale_map,
         proc_time_rand_min_scale=proc_time_rand_min_scale,
@@ -315,6 +317,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="单设备单动作 PPO 训练（两阶段 release 回填）")
+    parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--phase", type=int, default=2, help="训练阶段 (1 or 2)")
     parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint路径")
     parser.add_argument("--proc-time-rand-enabled", action="store_true", help="开启单设备工序时间随机扰动")
@@ -327,5 +330,6 @@ if __name__ == "__main__":
         config=cfg,
         training_phase=args.phase,
         checkpoint_path=args.checkpoint,
+        device_mode=args.device,
         proc_time_rand_enabled=True if args.proc_time_rand_enabled else None,
     )

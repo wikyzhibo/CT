@@ -16,10 +16,8 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
 from solutions.Continuous_model.env_single import Env_PN_Single
 
-from .petri_adapter import PetriAdapter
 from .petri_single_adapter import PetriSingleAdapter
 from .viewmodel import PetriViewModel
 from .main_window import PetriMainWindow
@@ -61,29 +59,28 @@ def build_adapter(
 ):
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
-    if device_mode == "single":
-        env_overrides = dict(env_overrides or {})
-        selected_route_code = env_overrides.get("single_route_code", route_code)
-        env = Env_PN_Single(
-            detailed_reward=True,
-            robot_capacity=int(env_overrides.get("single_robot_capacity", robot_capacity)),
-            route_code=None if selected_route_code is None else int(selected_route_code),
-            process_time_map=env_overrides.get("single_process_time_map"),
-            proc_time_rand_enabled=env_overrides.get("single_proc_time_rand_enabled"),
-            proc_time_rand_scale_map=env_overrides.get("single_proc_time_rand_scale_map"),
-            proc_time_rand_min_scale=env_overrides.get("single_proc_time_rand_min_scale"),
-            proc_time_rand_max_scale=env_overrides.get("single_proc_time_rand_max_scale"),
-        )
-        return PetriSingleAdapter(env)
-    env = Env_PN_Concurrent(detailed_reward=True)
-    return PetriAdapter(env)
+    env_overrides = dict(env_overrides or {})
+    selected_route_code = env_overrides.get("single_route_code", route_code)
+    effective_robot_capacity = int(env_overrides.get("single_robot_capacity", robot_capacity))
+    env = Env_PN_Single(
+        detailed_reward=True,
+        device_mode=device_mode,
+        robot_capacity=effective_robot_capacity,
+        route_code=None if selected_route_code is None else int(selected_route_code),
+        process_time_map=env_overrides.get("single_process_time_map"),
+        proc_time_rand_enabled=env_overrides.get("single_proc_time_rand_enabled"),
+        proc_time_rand_scale_map=env_overrides.get("single_proc_time_rand_scale_map"),
+        proc_time_rand_min_scale=env_overrides.get("single_proc_time_rand_min_scale"),
+        proc_time_rand_max_scale=env_overrides.get("single_proc_time_rand_max_scale"),
+    )
+    return PetriSingleAdapter(env)
 
 
 
 
 
 
-def load_model(model_path: str, adapter: PetriAdapter):
+def load_model(model_path: str, adapter: PetriSingleAdapter):
     """
     加载训练好的模型
     """
@@ -217,7 +214,7 @@ def load_model(model_path: str, adapter: PetriAdapter):
         return None
 
 
-def load_concurrent_model(model_path: str, adapter: PetriAdapter):
+def load_concurrent_model(model_path: str, adapter: PetriSingleAdapter):
     """
     加载双机械手并发动作模型。
     
@@ -319,42 +316,34 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
 def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWindow) -> tuple[bool, str]:
     """按设备模式加载模型并回填到窗口 handler。"""
     adapter = window.viewmodel.adapter
-    if device_mode == "single":
-        if not isinstance(adapter, PetriSingleAdapter):
-            window.set_model_handler(None)
-            return False, "当前不是单设备适配器，请先切换到单设备后再加载单动作模型。"
-        handler = load_model(model_path, adapter)
-        if handler is None:
-            window.set_model_handler(None)
-            return False, f"单设备模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
-        window.set_model_handler(handler)
-        return True, f"单设备模型加载成功: {model_path}"
-
-    if not isinstance(adapter, PetriAdapter):
-        window.set_concurrent_model_handler(None)
-        return False, "当前不是级联设备适配器，请先切换到级联设备后再加载并发模型。"
-    handler = load_concurrent_model(model_path, adapter)
+    if not isinstance(adapter, PetriSingleAdapter):
+        window.set_model_handler(None)
+        return False, "当前适配器与 pn_single 不一致，请先切换设备后重试。"
+    handler = load_model(model_path, adapter)
     if handler is None:
         window.set_model_handler(None)
-        return False, f"级联并发模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
-    window.set_concurrent_model_handler(handler)
-    return True, f"级联并发模型加载成功: {model_path}"
+        return False, f"{device_mode} 模式模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
+    window.set_model_handler(handler)
+    return True, f"{device_mode} 模式模型加载成功: {model_path}"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PySide6 Petri 可视化")
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
+    parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式")
+    parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
     parser.add_argument("--single-route-code", type=int, default=None, choices=[0, 1], help="单设备路径代号（不传则使用 single.json）")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     args = parser.parse_args()
+    selected_device = args.device_mode if args.device_mode else args.device
 
     # Windows 任务栏图标 fix
     set_windows_app_id()
 
     adapter = build_adapter(
         args.adapter,
-        device_mode="single",
+        device_mode=selected_device,
         robot_capacity=1,
         route_code=args.single_route_code,
     )
@@ -375,6 +364,12 @@ def main() -> int:
             env_overrides=env_overrides,
         )
     )
+    if selected_device in {"single", "cascade"}:
+        window._device_mode = selected_device
+        window.center_canvas.set_device_mode(selected_device)
+        window._action_device_cascade.setChecked(selected_device == "cascade")
+        window._action_device_single.setChecked(selected_device == "single")
+        window._refresh_status_message()
     window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     
     # 窗口也设置图标
@@ -387,7 +382,7 @@ def main() -> int:
             model_path = args.model
         else:
             # 默认模型路径
-            default_model = Path("solutions/PPO/saved_models/CT_concurrent_phase2_best.pt")
+            default_model = Path("solutions/Continuous_model/saved_models/CT_single_phase2_best.pt")
             if default_model.exists():
                 model_path = str(default_model)
                 print(f"使用默认模型: {model_path}")
@@ -396,7 +391,7 @@ def main() -> int:
                 print("未找到默认模型，将以手动模式运行")
         
         if model_path:
-            ok, msg = apply_model_for_mode(model_path, "single", window)
+            ok, msg = apply_model_for_mode(model_path, selected_device, window)
             print(("✓ " if ok else "✗ ") + msg)
     else:
         print("已禁用模型加载")

@@ -34,7 +34,6 @@ from .widgets.stats_panel import StatsPanel
 from .widgets.center_canvas import CenterCanvas
 from .widgets.control_panel import ControlPanel
 
-
 class RoundedContainer(QWidget):
     """主内容容器，用于绘制背景"""
     
@@ -325,7 +324,7 @@ class PetriMainWindow(QMainWindow):
     def _set_robot_capacity(self, capacity: int) -> None:
         self._robot_capacity = 2 if int(capacity) == 2 else 1
         self.center_canvas.set_robot_capacity(self._robot_capacity)
-        if self._device_mode == "single" and self._adapter_factory is not None:
+        if self._adapter_factory is not None:
             try:
                 new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity)
                 self.viewmodel.replace_adapter(new_adapter, reset=True)
@@ -451,7 +450,7 @@ class PetriMainWindow(QMainWindow):
             self.right_panel.verify_button.setEnabled(False)
 
         action_id = self.viewmodel.adapter.action_space_size
-        if self._device_mode == "single" and hasattr(self.viewmodel.adapter, "env"):
+        if hasattr(self.viewmodel.adapter, "env"):
             env = self.viewmodel.adapter.env
             for idx in range(int(getattr(env, "n_actions", 0))):
                 parse_fn = getattr(env, "parse_wait_action", None)
