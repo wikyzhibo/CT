@@ -695,25 +695,6 @@ class PetriSingleDevice:
         self._update_stay_times(safe_dt)
         self._advance_cleaning_and_idle(safe_dt)
 
-    def _start_cleaning(self, place: Place, reason: str, trigger_count: int) -> None:
-        if self.single_cleaning_duration <= 0:
-            return
-        place.is_cleaning = True
-        place.cleaning_remaining = int(self.single_cleaning_duration)
-        place.cleaning_reason = reason
-        place.processed_wafer_count = 0
-        place.idle_time = 0
-        self.fire_log.append(
-            {
-                "event_type": "cleaning_start",
-                "time": int(self.time),
-                "chamber": place.name,
-                "rule": reason,
-                "duration": int(self.single_cleaning_duration),
-                "trigger_count": int(trigger_count),
-            }
-        )
-
     def _on_processing_unload(self, source_name: str) -> None:
         if not self.single_cleaning_enabled:
             return
@@ -725,10 +706,21 @@ class PetriSingleDevice:
         if source_place.is_cleaning:
             return
         if source_place.processed_wafer_count >= self.single_cleaning_trigger_wafers:
-            self._start_cleaning(
-                source_place,
-                reason="processed_wafers",
-                trigger_count=int(source_place.processed_wafer_count),
+            count = int(source_place.processed_wafer_count)
+            source_place.is_cleaning = True
+            source_place.cleaning_remaining = int(self.single_cleaning_duration)
+            source_place.cleaning_reason = "processed_wafers"
+            source_place.processed_wafer_count = 0
+            source_place.idle_time = 0
+            self.fire_log.append(
+                {
+                    "event_type": "cleaning_start",
+                    "time": int(self.time),
+                    "chamber": source_place.name,
+                    "rule": "processed_wafers",
+                    "duration": int(self.single_cleaning_duration),
+                    "trigger_count": int(count),
+                }
             )
 
     def _is_process_ready(self, place_name: str) -> bool:

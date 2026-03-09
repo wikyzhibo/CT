@@ -15,7 +15,7 @@ from torchrl.modules import MaskedCategorical
 from tensordict import TensorDict
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from data.ppo_configs.training_config import PPOTrainingConfig
-from solutions.Continuous_model.env_single import Env_PN_Single, Env_PN_Single_PlaceObs
+from solutions.Continuous_model.env_single import Env_PN_Single
 from solutions.PPO.network.models import MaskedPolicyHead
 from pathlib import Path
 
@@ -58,7 +58,7 @@ def _to_next_state(td_next):
 
 
 def collect_rollout_single(
-    env: Env_PN_Single | Env_PN_Single_PlaceObs,
+    env: Env_PN_Single,
     policy_backbone: MaskedPolicyHead,
     n_steps: int,
     device: str = "cpu",
@@ -148,7 +148,6 @@ def train_single(
     config: PPOTrainingConfig | None = None,
     training_phase: int = 2,
     checkpoint_path: str | None = None,
-    use_place_obs: bool = False,
     proc_time_rand_enabled: bool | None = None,
     proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None,
     proc_time_rand_min_scale: float | None = None,
@@ -161,8 +160,7 @@ def train_single(
 
     torch.manual_seed(config.seed)
     device = config.device
-    env_cls = Env_PN_Single_PlaceObs if use_place_obs else Env_PN_Single
-    env = env_cls(
+    env = Env_PN_Single(
         training_phase=training_phase,
         detailed_reward=True,
         proc_time_rand_enabled=proc_time_rand_enabled,
@@ -170,7 +168,7 @@ def train_single(
         proc_time_rand_min_scale=proc_time_rand_min_scale,
         proc_time_rand_max_scale=proc_time_rand_max_scale,
     )
-    print(f"  环境类型: {env_cls.__name__}")
+    print(f"  环境类型: {env.__class__.__name__}")
 
     n_obs = env.observation_spec["observation"].shape[0]
     n_actions = env.n_actions
@@ -309,9 +307,8 @@ def train_single(
     return log, policy_backbone
 
 
-def build_single_env(use_place_obs: bool = False) -> Env_PN_Single | Env_PN_Single_PlaceObs:
-    env_cls = Env_PN_Single_PlaceObs if use_place_obs else Env_PN_Single
-    return env_cls(detailed_reward=True)
+def build_single_env() -> Env_PN_Single:
+    return Env_PN_Single(detailed_reward=True)
 
 
 if __name__ == "__main__":
@@ -320,7 +317,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="单设备单动作 PPO 训练（两阶段 release 回填）")
     parser.add_argument("--phase", type=int, default=2, help="训练阶段 (1 or 2)")
     parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint路径")
-    parser.add_argument("--place-obs", action="store_true", help="使用 Env_PN_Single_PlaceObs（库所中心观测）")
     parser.add_argument("--proc-time-rand-enabled", action="store_true", help="开启单设备工序时间随机扰动")
     args = parser.parse_args()
 
@@ -331,6 +327,5 @@ if __name__ == "__main__":
         config=cfg,
         training_phase=args.phase,
         checkpoint_path=args.checkpoint,
-        use_place_obs=args.place_obs,
         proc_time_rand_enabled=True if args.proc_time_rand_enabled else None,
     )

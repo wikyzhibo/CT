@@ -4,37 +4,18 @@ import torch
 from solutions.Continuous_model.env_single import Env_PN_Single
 
 
-def _feature_slice(env: Env_PN_Single, obs: np.ndarray, wafer_idx: int) -> np.ndarray:
-    start = wafer_idx * env.wafer_feat_dim
-    end = start + env.wafer_feat_dim
-    return obs[start:end]
-
-
-def _status_slice(env: Env_PN_Single, feat: np.ndarray) -> np.ndarray:
-    status_start = 1 + env.pair_dim
-    return feat[status_start : status_start + 4]
-
-
 def test_observation_is_float32_and_present_padding():
     env = Env_PN_Single()
     td = env.reset()
     assert td["observation"].dtype == torch.float32
 
-    lp = env.net._get_place("LP")
-    keep_tok = lp.head()
-    for p in env.net.marks:
-        p.tokens.clear()
-    lp.append(keep_tok)
-
     obs = env._build_obs()
     assert obs.dtype == np.float32
+    assert int(obs.shape[-1]) == int(env.observation_spec["observation"].shape[-1])
 
-    feat0 = _feature_slice(env, obs, 0)
-    present = float(feat0[0])
-    assert present == 1.0
-
-    feat_last = _feature_slice(env, obs, env.MAX_WAFERS - 1)
-    assert float(feat_last[0]) == 0.0
+    # reset 后运输位默认无晶圆，TM 特征回退为 [0, 0, 0, 1]
+    tm_features = obs[1:5]
+    assert np.allclose(tm_features, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
 
 
 def test_transport_status_and_time_to_scrap_semantics():
@@ -54,13 +35,10 @@ def test_transport_status_and_time_to_scrap_semantics():
             p.tokens.clear()
 
     obs = env._build_obs()
-    feat0 = _feature_slice(env, obs, 0)
+    tm_features = obs[1:5]
+    transport_complete, wafer_stay_over_long, wafer_stay_time_norm, distance_to_penalty_norm = tm_features
 
-    status = _status_slice(env, feat0)
-    # status 顺序: processing / done_waiting_pick / moving / waiting
-    assert np.allclose(status, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
-
-    rem_processing = float(feat0[1 + env.pair_dim + 4])
-    rem_scrap = float(feat0[1 + env.pair_dim + 5])
-    assert rem_processing == 0.0
-    assert rem_scrap == 1.0
+    assert float(transport_complete) == 1.0
+    assert float(wafer_stay_over_long) == 1.0
+    assert 0.0 < float(wafer_stay_time_norm) <= 1.0
+    assert float(distance_to_penalty_norm) == 0.0

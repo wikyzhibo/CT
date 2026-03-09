@@ -1,6 +1,6 @@
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.pn_single import PetriSingleDevice
-from solutions.Continuous_model.env_single import Env_PN_Single, Env_PN_Single_PlaceObs
+from solutions.Continuous_model.env_single import Env_PN_Single
 
 
 def _fire_by_name(net: PetriSingleDevice, transition_name: str) -> None:
@@ -64,7 +64,7 @@ def test_env_single_accepts_route_code_override():
 
 
 def test_place_obs_route_code0_uses_three_pm_features():
-    env = Env_PN_Single_PlaceObs(
+    env = Env_PN_Single(
         detailed_reward=False,
         robot_capacity=1,
         route_code=0,
@@ -77,7 +77,7 @@ def test_place_obs_route_code0_uses_three_pm_features():
 
 
 def test_place_obs_route_code1_includes_pm6_features():
-    env = Env_PN_Single_PlaceObs(
+    env = Env_PN_Single(
         detailed_reward=False,
         robot_capacity=1,
         route_code=1,

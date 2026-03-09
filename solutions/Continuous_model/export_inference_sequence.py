@@ -25,7 +25,7 @@ from solutions.PPO.enviroment import Env_PN_Concurrent
 from solutions.PPO.network.models import DualHeadPolicyNet
 from solutions.PPO.network.models import MaskedPolicyHead
 from solutions.Continuous_model.train_concurrent import DualActionPolicyModule
-from solutions.Continuous_model.env_single import Env_PN_Single, Env_PN_Single_PlaceObs
+from solutions.Continuous_model.env_single import Env_PN_Single
 
 
 def _to_step_state(td_next: Any) -> Any:
@@ -101,7 +101,7 @@ def _build_policy(env: Env_PN_Concurrent, model_path: Path, device: torch.device
     return policy
 
 
-def _decode_single_action_name(env: Env_PN_Single | Env_PN_Single_PlaceObs, action_idx: int) -> str:
+def _decode_single_action_name(env: Env_PN_Single, action_idx: int) -> str:
     if hasattr(env, "get_action_name"):
         return str(env.get_action_name(int(action_idx)))
     if action_idx == env.net.T:
@@ -141,7 +141,7 @@ def _infer_single_model_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int,
 
 
 def _build_single_policy(
-    env: Env_PN_Single | Env_PN_Single_PlaceObs,
+    env: Env_PN_Single,
     model_path: Path,
     device: torch.device,
 ) -> ProbabilisticActor:
@@ -196,12 +196,10 @@ def _rollout_single_sequence(
     seed: int,
     training_phase: int,
     robot_capacity: int,
-    use_place_obs: bool = False,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env_cls = Env_PN_Single_PlaceObs if use_place_obs else Env_PN_Single
-    env = env_cls(seed=seed, training_phase=training_phase, robot_capacity=robot_capacity)
+    env = Env_PN_Single(seed=seed, training_phase=training_phase, robot_capacity=robot_capacity)
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()
@@ -252,7 +250,6 @@ def _rollout_single_sequence(
         "single_proc_time_rand_enabled": False,
         "single_robot_capacity": int(robot_capacity),
         "single_route_code": int(getattr(env.net, "single_route_code", 0)),
-        "use_place_obs": bool(use_place_obs),
         "training_phase": int(training_phase),
     }
     return sequence, finished, replay_env_overrides
@@ -265,7 +262,6 @@ def _rollout_single_sequence_with_retry(
     training_phase: int,
     robot_capacity: int,
     max_retries: int = 10,
-    use_place_obs: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
@@ -280,7 +276,6 @@ def _rollout_single_sequence_with_retry(
             seed=attempt_seed,
             training_phase=training_phase,
             robot_capacity=robot_capacity,
-            use_place_obs=use_place_obs,
         )
         last_sequence = sequence
         last_overrides = replay_env_overrides
@@ -353,7 +348,6 @@ def rollout_and_export(
     device_mode: str,
     robot_capacity: int,
     single_retries: int,
-    use_place_obs: bool = False,
 ) -> dict[str, Path]:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
@@ -365,7 +359,6 @@ def rollout_and_export(
             training_phase=training_phase,
             robot_capacity=robot_capacity,
             max_retries=single_retries,
-            use_place_obs=use_place_obs,
         )
         payload: dict[str, Any] | list[dict[str, Any]] = {
             "schema_version": 2,
@@ -442,11 +435,6 @@ def main() -> None:
         default=10,
         help="single 模式未 finish 时的最大重试次数",
     )
-    parser.add_argument(
-        "--place-obs",
-        action="store_true",
-        help="single 模式使用 Env_PN_Single_PlaceObs（库所中心观测）",
-    )
     args = parser.parse_args()
     out_name = args.out_name
     if out_name == "concurrent_infer_seq" and args.device_mode == "single":
@@ -462,7 +450,6 @@ def main() -> None:
         device_mode=args.device_mode,
         robot_capacity=args.robot_capacity,
         single_retries=args.single_retries,
-        use_place_obs=args.place_obs,
     )
 
     print(f"[INFO] 已导出 action_series: {out['action_series_path']}")
