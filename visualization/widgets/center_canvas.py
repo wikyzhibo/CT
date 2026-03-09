@@ -264,7 +264,7 @@ class CenterCanvas(QGraphicsView):
             tm2_cx, tm2_cy = self._center_of_chambers(positions, self._robot_chambers["TM2 ARM1"], cw, ch)
             tm3_cx, tm3_cy = self._center_of_chambers(positions, self._robot_chambers["TM3 ARM1"], cw, ch)
             # 横排时使用基于卡片宽度的安全间距，避免双臂互相重叠
-            arm_gap = float(ui_params.robot_item.w + 40)
+            arm_gap = float(ui_params.robot_item.w + 15)
             centers["TM2 ARM1"] = (tm2_cx - arm_gap / 2, tm2_cy)
             centers["TM2 ARM2"] = (tm2_cx + arm_gap / 2, tm2_cy)
             centers["TM3 ARM1"] = (tm3_cx - arm_gap / 2, tm3_cy)
