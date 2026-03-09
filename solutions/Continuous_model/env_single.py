@@ -121,8 +121,11 @@ class Env_PN_Single(EnvBase):
 
     def _make_spec(self):
         pm_names = self._get_place_obs_pm_names()
-        # LP(1) + TM(4) + 每个 PM 的 9 维特征（route 感知）
-        obs_dim = 1 + 4 + 9 * len(pm_names)
+        # LP(1) + TM + 每个 PM 的 9 维特征（route 感知）
+        # single: TM=4 维；cascade: TM=14 维（TM2 8 维 + TM3 6 维，含去向 one-hot）
+        is_cascade = getattr(self.net, "single_device_mode", "single") == "cascade"
+        tm_dim = 14 if is_cascade else 4
+        obs_dim = 1 + tm_dim + 9 * len(pm_names)
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -158,6 +161,8 @@ class Env_PN_Single(EnvBase):
 
     def _extract_place_features(self, place_name: str) -> List[float]:
         if place_name == "TM":
+            if getattr(self.net, "single_device_mode", "single") == "cascade":
+                return self._extract_tm_cascade_features()
             return self._extract_tm_features()
         place = self.net._get_place(place_name)
         if place_name == "LP":
@@ -202,6 +207,72 @@ class Env_PN_Single(EnvBase):
             return [0.0, 0.0, 0.0, 1.0]
 
         return [any_complete, any_over_long, max_stay_norm, min_distance_norm]
+
+    def _extract_wafer_dest_onehot_tm2(self) -> List[float]:
+        """d_TM2 队首晶圆去向 one-hot（4 类）：PM7/PM8 -> 0, LLC -> 1, PM9/PM10 -> 2, LP_done -> 3"""
+        onehot = [0.0, 0.0, 0.0, 0.0]
+        if "d_TM2" not in self.net.id2p_name:
+            return onehot
+        place = self.net._get_place("d_TM2")
+        if len(place.tokens) == 0:
+            return onehot
+        target = getattr(place.head(), "_target_place", None)
+        if target is None:
+            return onehot
+        if target in {"PM7", "PM8"}:
+            onehot[0] = 1.0
+        elif target == "LLC":
+            onehot[1] = 1.0
+        elif target in {"PM9", "PM10"}:
+            onehot[2] = 1.0
+        elif target == "LP_done":
+            onehot[3] = 1.0
+        return onehot
+
+    def _extract_wafer_dest_onehot_tm3(self) -> List[float]:
+        """d_TM3 队首晶圆去向 one-hot（2 类）：PM1/2/3/4 -> 0, LLD -> 1"""
+        onehot = [0.0, 0.0]
+        if "d_TM3" not in self.net.id2p_name:
+            return onehot
+        place = self.net._get_place("d_TM3")
+        if len(place.tokens) == 0:
+            return onehot
+        target = getattr(place.head(), "_target_place", None)
+        if target is None:
+            return onehot
+        if target in {"PM1", "PM2", "PM3", "PM4"}:
+            onehot[0] = 1.0
+        elif target == "LLD":
+            onehot[1] = 1.0
+        return onehot
+
+    def _extract_tm_features_single_place(self, place_name: str) -> List[float]:
+        """单个运输位（d_TM2 或 d_TM3）的 4 维时间特征"""
+        penalty_time = max(1.0, float(getattr(self.net, "D_Residual_time", 10)))
+        if place_name not in self.net.id2p_name:
+            return [0.0, 0.0, 0.0, 1.0]
+        place = self.net._get_place(place_name)
+        if len(place.tokens) == 0:
+            return [0.0, 0.0, 0.0, 1.0]
+        dwell_time = max(1.0, float(getattr(place, "processing_time", self.net.T_transport)))
+        stay_time = float(getattr(place.head(), "stay_time", 0))
+        any_complete = 1.0 if stay_time >= dwell_time else 0.0
+        any_over_long = 1.0 if stay_time > penalty_time else 0.0
+        tm_norm_denom = max(dwell_time, penalty_time) * 2.0
+        max_stay_norm = float(np.clip(stay_time / tm_norm_denom, 0.0, 1.0))
+        distance_to_penalty = max(0.0, penalty_time - stay_time)
+        min_distance_norm = float(np.clip(distance_to_penalty / penalty_time, 0.0, 1.0))
+        return [any_complete, any_over_long, max_stay_norm, min_distance_norm]
+
+    def _extract_tm_cascade_features(self) -> List[float]:
+        """cascade 模式：TM2 块（4+4）+ TM3 块（4+2）共 14 维"""
+        # TM2: 4 维时间 + 4 维去向 one-hot
+        tm2_time = self._extract_tm_features_single_place("d_TM2")
+        tm2_onehot = self._extract_wafer_dest_onehot_tm2()
+        # TM3: 4 维时间 + 2 维去向 one-hot
+        tm3_time = self._extract_tm_features_single_place("d_TM3")
+        tm3_onehot = self._extract_wafer_dest_onehot_tm3()
+        return tm2_time + tm2_onehot + tm3_time + tm3_onehot
 
     def _extract_pm_features(self, place) -> List[float]:
         has_wafer = len(place.tokens) > 0

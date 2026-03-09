@@ -22,7 +22,7 @@ from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.construct_single import build_single_device_net
 from solutions.Continuous_model.pn import Place
 
-MAX_TIME = 12000
+MAX_TIME = 4000
 CHAMBER = 1
 DELIVERY_ROBOT = 2
 SOURCE = 3
@@ -185,7 +185,7 @@ class PetriSingleDevice:
         self._apply_episode_process_time_map()
 
         self.time = 0
-        self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
+        self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 50
         self.done_count = 0
         self.scrap_count = 0
         self.deadlock_count = 0

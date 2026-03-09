@@ -72,7 +72,7 @@ class PetriMainWindow(QMainWindow):
         QListWidget, QComboBox, QSpinBox, QSlider
     )
 
-    def __init__(self, viewmodel: PetriViewModel):
+    def __init__(self, viewmodel: PetriViewModel, *, debug: bool = False):
         super().__init__()
         self.viewmodel = viewmodel
         self.theme = ColorTheme()
@@ -127,6 +127,7 @@ class PetriMainWindow(QMainWindow):
         content_layout.addWidget(self.center_canvas, stretch=1)
 
         self.right_panel = ControlPanel(self.theme)
+        self.right_panel.set_debug_mode(debug)
         self.right_panel.setFixedWidth(p.right_panel_width)
         content_layout.addWidget(self.right_panel)
 
@@ -775,9 +776,6 @@ class PetriMainWindow(QMainWindow):
         overrides = self._verification_env_overrides
         if not overrides:
             return True
-        if self._device_mode != "single":
-            QMessageBox.warning(self, "回放配置不匹配", "该动作序列携带单设备环境参数，请先切换到“单设备”模式后再回放。")
-            return False
         if self._adapter_factory is None:
             return False
         try:
@@ -790,6 +788,40 @@ class PetriMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "回放环境构建失败", f"无法应用动作序列携带的环境参数: {e}")
             return False
+
+    def _resolve_wait_or_transition(
+        self, action_name: str | None, all_transitions: list
+    ) -> int:
+        """
+        将动作名解析为 adapter 可用的索引。
+        - 非 WAIT 变迁：返回 id2t_name 中的索引
+        - "WAIT"：返回 -1（adapter 用 action_space_size，即最小 wait）
+        - "WAIT_Xs"：返回对应档位的 action 索引，确保 WAIT_50s 等正确执行
+        """
+        if not action_name or not str(action_name).strip():
+            return -1
+        s = str(action_name).strip()
+        if not s.upper().startswith("WAIT"):
+            try:
+                return all_transitions.index(action_name)
+            except ValueError:
+                return -1
+        if s.upper() == "WAIT":
+            return -1
+        # WAIT_5s / WAIT_50s 等：解析时长并查找匹配的 action 索引
+        if s.startswith("WAIT_") and s.endswith("s"):
+            wait_text = s.removeprefix("WAIT_").removesuffix("s")
+            try:
+                wait_duration = int(wait_text)
+                if hasattr(self.viewmodel.adapter, "env"):
+                    env = self.viewmodel.adapter.env
+                    for idx in range(int(getattr(env, "n_actions", 0))):
+                        parse_fn = getattr(env, "parse_wait_action", None)
+                        if parse_fn and parse_fn(idx) == wait_duration:
+                            return int(idx)
+            except ValueError:
+                pass
+        return -1
 
     def _get_verification_step_action(self):
         """Get next action from verification sequence"""
@@ -814,27 +846,12 @@ class PetriMainWindow(QMainWindow):
                 if action_name is None:
                     raise ValueError("当前为单设备模式，序列缺少 action（或 actions[0]）字段")
 
-                if isinstance(action_name, str) and action_name.startswith("WAIT_") and action_name.endswith("s"):
-                    wait_text = action_name.removeprefix("WAIT_").removesuffix("s")
-                    action_id = int(self.viewmodel.adapter.action_space_size)
-                    try:
-                        wait_duration = int(wait_text)
-                        if hasattr(self.viewmodel.adapter, "env"):
-                            env = self.viewmodel.adapter.env
-                            for idx in range(int(getattr(env, "n_actions", 0))):
-                                parse_fn = getattr(env, "parse_wait_action", None)
-                                if parse_fn is None:
-                                    continue
-                                if parse_fn(idx) == wait_duration:
-                                    action_id = int(idx)
-                                    break
-                    except ValueError:
-                        pass
-                elif action_name == "WAIT":
-                    action_id = int(self.viewmodel.adapter.action_space_size)
-                else:
-                    action_id = all_transitions.index(action_name)
-
+                resolved = self._resolve_wait_or_transition(action_name, all_transitions)
+                action_id = (
+                    int(resolved)
+                    if resolved >= 0
+                    else int(self.viewmodel.adapter.action_space_size)
+                )
                 self._verification_index += 1
                 return action_id
 
@@ -843,15 +860,10 @@ class PetriMainWindow(QMainWindow):
                 raise ValueError("当前为级联设备模式，序列需提供 actions=[tm2, tm3]")
 
             tm2_name, tm3_name = actions[:2]
-            if tm2_name and tm2_name != "WAIT":
-                a1 = all_transitions.index(tm2_name)
-            else:
-                a1 = -1
-
-            if tm3_name and tm3_name != "WAIT":
-                a2 = all_transitions.index(tm3_name)
-            else:
-                a2 = -1
+            # 兼容 "WAIT"、"WAIT_5s"、"WAIT_10s" 等格式。WAIT_Xs 需解析为正确 action 索引，
+            # 否则 a1=-1 会被 adapter 映射为 action_space_size（固定 5s），导致 WAIT_50s 等被错误执行为 WAIT_5s。
+            a1 = self._resolve_wait_or_transition(tm2_name, all_transitions)
+            a2 = self._resolve_wait_or_transition(tm3_name, all_transitions)
 
             self._verification_index += 1
             return (a1, a2)

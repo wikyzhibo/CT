@@ -50,13 +50,18 @@ class ControlPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+        self.transition_section = QWidget()
+        section_layout = QVBoxLayout(self.transition_section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(4)
         self.title = QLabel("TRANSITIONS")
         self.title.setObjectName("PanelTitle")
-        layout.addWidget(self.title)
-
+        section_layout.addWidget(self.title)
         self.transition_group = QVBoxLayout()
         self.transition_group.setSpacing(4)
-        layout.addLayout(self.transition_group)
+        section_layout.addLayout(self.transition_group)
+        layout.addWidget(self.transition_section)
+        self.transition_section.setVisible(False)  # 默认隐藏，需 --debug 显示
 
         layout.addSpacing(p.spacing_after_transitions)
         control_title = QLabel("CONTROL")
@@ -265,6 +270,10 @@ class ControlPanel(QWidget):
         }}
         """
         self.setStyleSheet(qss)
+
+    def set_debug_mode(self, debug: bool) -> None:
+        """设置调试模式，启用时显示 TRANSITIONS 变迁按钮区域"""
+        self.transition_section.setVisible(debug)
 
     def set_model_enabled(self, enabled: bool) -> None:
         """设置是否有模型可用，控制 Model Step / Auto Mode 按钮启用状态"""

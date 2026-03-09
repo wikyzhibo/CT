@@ -335,6 +335,7 @@ def main() -> int:
     parser.add_argument("--single-route-code", type=int, default=None, choices=[0, 1], help="单设备路径代号（不传则使用 single.json）")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
+    parser.add_argument("--debug", action="store_true", help="显示变迁按钮（用于调试）")
     args = parser.parse_args()
     selected_device = args.device_mode if args.device_mode else args.device
 
@@ -354,7 +355,7 @@ def main() -> int:
     # 设置应用图标（在创建窗口之前）
     app_icon = set_app_icon(app)
     
-    window = PetriMainWindow(viewmodel)
+    window = PetriMainWindow(viewmodel, debug=args.debug)
     window.set_adapter_factory(
         lambda mode, robot_capacity=1, env_overrides=None: build_adapter(
             args.adapter,

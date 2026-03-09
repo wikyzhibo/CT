@@ -6,7 +6,7 @@
 - Not: 不改 observation 语义，不改 `reset/step/reward` 接口形态；动作空间已扩展为多档 WAIT。
 - Key rules:
  - observation 按 `LP -> TM(d_TM1) -> PM*` 顺序拼接，`PM*` 由 `single_route_code` 决定。
- - `route_code=0` 时 `PM* = PM1, PM3, PM4`；`route_code=1` 时 `PM* = PM1, PM3, PM4, PM6`。
+ - `route_code=0` 时 `PM* = PM1, PM3, PM4`；`route_code=1` 时 `PM* = PM1, PM3, PM4, PM6`；`device_mode=cascade` 时 `PM*` 含 PM7/8/1-4/9/10 等。
  - `LP_done` 不进入主体 observation。
  - 时间相关特征统一归一化并裁剪到 `[0, 1]`。
 
@@ -24,18 +24,22 @@
  - 当 `wait_duration == 5` 时，固定推进 5 秒，不做事件截断。
  - 当 `LP_done` 已有完工晶圆时，大于 5 秒的 WAIT 会被动作掩码屏蔽。
  - 其他 WAIT 仍按 `min(wait_duration, next_event_delta)` 推进，避免一次跳过多个关键决策点。
-- 观测维度随路线配置变化：
+- 观测维度随路线与设备模式变化：
  - LP: 1 维
- - TM: 4 维
- - `route_code=0`：`PM1/PM3/PM4`，每个 9 维，总维度 `1 + 4 + 9*3 = 32`
- - `route_code=1`：`PM1/PM3/PM4/PM6`，每个 9 维，总维度 `1 + 4 + 9*4 = 41`
+ - TM: single 模式 4 维；cascade 模式 14 维（TM2 块 8 维 + TM3 块 6 维，含晶圆去向 one-hot）
+ - `route_code=0`（single）：`PM1/PM3/PM4`，每个 9 维，总维度 `1 + 4 + 9*3 = 32`
+ - `route_code=1`（single）：`PM1/PM3/PM4/PM6`，每个 9 维，总维度 `1 + 4 + 9*4 = 41`
+ - cascade：TM 14 维，PM* 随级联路线变化，总维度 `1 + 14 + 9*len(PM*)`
 - LP 特征：
  - `remaining_wafer_norm = clip(len(LP.tokens) / n_wafer, 0, 1)`
-- TM 特征：
+- TM 特征（single 模式，4 维）：
  - `transport_complete`
  - `wafer_stay_over_long`
  - `wafer_stay_time_norm`
  - `distance_to_penalty_norm`
+- TM 特征（cascade 模式，14 维 = TM2 块 8 维 + TM3 块 6 维）：
+ - TM2 块：上述 4 维时间特征 + 晶圆去向 one-hot（4 类：往 PM7/8、往 LLC、往 PM9/10、往 LP_done）
+ - TM3 块：上述 4 维时间特征 + 晶圆去向 one-hot（2 类：往 PM1/2/3/4、往 LLD）
 - PM 特征（每腔室一致）：
  - `occupied`
  - `processing`
@@ -81,7 +85,7 @@
 - 反例：需要把每片晶圆位置编码成 one-hot 序列时不应使用本环境。
 
 ## Edge Cases / Gotchas
-- TM 无晶圆时，TM 特征回退为 `[0, 0, 0, 1]`。
+- TM 无晶圆时：single 模式 TM 特征回退为 `[0, 0, 0, 1]`；cascade 模式对应 TM 块的去向 one-hot 全为 0，时间特征同 single。
 - PM 无晶圆时，工艺与超时相关特征置 0，仅保留清洗相关状态。
 - 归一化分母均设置下限 `>=1`，避免除零。
 - 若开启工序时间随机扰动，同一 episode 内工序时长固定；不同 episode 才会重新采样。
