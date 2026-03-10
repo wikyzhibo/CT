@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from solutions.Continuous_model.helper_function import (
     _normalize_wait_durations,
     _preprocess_process_time_map,
@@ -225,6 +225,7 @@ class PetriSingleDevice:
         self.enable_statistics = True
         self._per_wafer_reward = 0.0
         self._token_stats: Dict[int, Dict[str, Any]] = {}
+        self._qtime_violated_tokens: Set[int] = set()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
@@ -304,6 +305,7 @@ class PetriSingleDevice:
             t2 = t1 + actual_dt
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
             self.advance_time(actual_dt, event_reason=wait_reason)
+            self._check_qtime_violation()
             self._consecutive_wait_time += (t2 - t1)
 
             # 停滞惩罚
@@ -320,6 +322,7 @@ class PetriSingleDevice:
             t2 = t1 + self.ttime
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
             self.advance_time(self.ttime, event_reason="fire_transition")
+            self._check_qtime_violation()
             log_entry = self._fire(int(action), start_time=t1, end_time=t2)
             self.fire_log.append(log_entry)
 
@@ -383,6 +386,7 @@ class PetriSingleDevice:
         self.fire_log.clear()
         self._per_wafer_reward = 0.0
         self._token_stats = {}
+        self._qtime_violated_tokens.clear()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
@@ -984,6 +988,20 @@ class PetriSingleDevice:
                     "type": "resident",
                 }
         return False, None
+
+    def _check_qtime_violation(self) -> None:
+        """检查运输位 Q-Time 超时并按 wafer 去重累计，不施加惩罚。"""
+        qtime_limit = int(self.D_Residual_time)
+        for place in self.marks:
+            if place.type != DELIVERY_ROBOT or len(place.tokens) == 0:
+                continue
+            for tok in place.tokens:
+                token_id = int(getattr(tok, "token_id", -1))
+                if token_id < 0 or token_id in self._qtime_violated_tokens:
+                    continue
+                if int(getattr(tok, "stay_time", 0)) > qtime_limit:
+                    self._qtime_violated_tokens.add(token_id)
+                    self.qtime_violation_count += 1
 
     def blame_release_violations(self) -> Dict[int, float]:
         """

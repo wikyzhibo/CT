@@ -2,6 +2,11 @@
 
 ## 2026-03-10
 
+### 单设备 Q-Time 违规统计接入 (2026-03-10)
+- **What changed**：`pn_single` 新增 `_check_qtime_violation`，在 `step()` 的 wait/fire 两条时间推进路径后检查运输位（type=2）超时，并更新 `qtime_violation_count`。
+- **Why**：可视化面板已提供 `Q-TIME` 指标卡片，需要单设备后端提供稳定一致的违规计数来源。
+- **Impact**：Q-Time 违规按 `stay_time > D_Residual_time` 判定，同一 wafer 仅首次违规计数 1 次；该检测不引入奖励惩罚，仅影响统计展示。
+
 ### Cascade 观测纳入 LLC/LLD (2026-03-10)
 - **What changed**：`Env_PN_Single` 在 `device_mode=cascade` 下将 `LLC/LLD` 纳入腔室观测列表；`LLC/LLD` 使用 4 维核心特征（`occupied/processing/done_waiting_pick/remaining_process_time_norm`），其余 PM 继续使用 9 维特征。
 - **Why**：需要让策略在级联流程中直接感知 `LLC/LLD` 状态，避免关键缓冲/交接位信息缺失。

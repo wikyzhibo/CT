@@ -118,6 +118,7 @@ flowchart TB
 - 单设备 `u_LP` 不再使用 Stage2 反推边界拦截，改为仅遵循通用使能条件（加工完成、目标可达、清洗过滤与运输位停留约束）。该变更用于减少特例裁剪，统一单设备动作语义。
 - 单设备观测向量更新为 float32，并按“合法 `(place_idx, where)` 对全集 one-hot”编码位置（静态规则枚举，不是 `P×W` 笛卡尔积）。单片晶圆特征改为 `present + one_hot(valid_pair_idx) + status_one_hot + remaining_processing_norm + time_to_scrap_norm`：`status_one_hot` 顺序为 `processing/done_waiting_pick/moving/waiting`；其中 `waiting` 定义为“位于运输位且 `stay_time > D_Residual_time`”。`remaining_processing_norm` 用剩余加工量归一化（`0` 表示可取）；`time_to_scrap_norm` 先按阈值 30 裁剪再归一化，且运输位晶圆固定为 `1`。不足 `MAX_WAFERS` 时按单片特征长度补零；末尾追加 9 维清洗状态特征（`PM1/PM3/PM4` 各 `is_cleaning + clean_remaining_time_norm + remaining_runs_before_clean_norm`），不再追加腔室处理计数。
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
+- 单设备新增独立 `_check_qtime_violation` 检测：在时间推进后检查运输位（type=2）是否 `stay_time > D_Residual_time`；仅用于统计 `qtime_violation_count`（同一 wafer 仅首次违规计数 1 次），不新增 reward 惩罚项。
 
 ### Impact
 - 设备模式统一为 `--device single/cascade`，可视化 `cascade` 不再依赖 `pn.py`，统一走 `pn_single/env_single`。
