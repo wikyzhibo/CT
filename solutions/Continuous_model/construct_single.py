@@ -36,7 +36,10 @@ def build_single_device_net(
     - device_mode=single：通过 route_code 选择预置单设备路径
       - route_code=0: LP -> PM1 -> [PM3, PM4] -> LP_done
       - route_code=1: LP -> PM1 -> [PM3, PM4] -> PM6 -> LP_done
-    - device_mode=cascade：LP -> PM7/8 -> LLC -> PM1/2/3/4 -> LLD -> PM9/10 -> LP_done
+    - device_mode=cascade：通过 route_code 选择级联路径
+      - route_code=1: LP -> PM7/8 -> LLC -> PM1/2/3/4 -> LLD -> PM9/10 -> LP_done
+      - route_code=2: LP -> PM7/8 -> LLC -> PM1/2 -> LLD -> PM9/10 -> LP_done
+      - route_code=3: LP -> PM7/8 -> LLC -> PM1/2 -> LLD -> LP_done
     """
     mode = str(device_mode).lower()
     if mode not in {"single", "cascade"}:
@@ -45,8 +48,12 @@ def build_single_device_net(
     process_time_map = process_time_map or {}
     route_code = int(route_code)
     if mode == "cascade":
+        if route_code not in {1, 2, 3}:
+            route_code = 1
+        cascade_stage3 = ("PM1", "PM2", "PM3", "PM4") if route_code == 1 else ("PM1", "PM2")
         pm_stage1 = int(process_time_map.get("PM7", 70))
-        pm_stage3 = int(process_time_map.get("PM1", 600))
+        pm_stage3_default = 600 if route_code == 1 else 300
+        pm_stage3 = int(process_time_map.get("PM1", pm_stage3_default))
         lld_time = int(process_time_map.get("LLD", 70))
         pm_stage5 = int(process_time_map.get("PM9", 200))
         modules: Dict[str, SingleModuleSpec] = {
@@ -54,26 +61,38 @@ def build_single_device_net(
             "PM7": SingleModuleSpec(tokens=0, ptime=pm_stage1, capacity=1),
             "PM8": SingleModuleSpec(tokens=0, ptime=pm_stage1, capacity=1),
             "LLC": SingleModuleSpec(tokens=0, ptime=0, capacity=1),
-            "PM1": SingleModuleSpec(tokens=0, ptime=pm_stage3, capacity=1),
-            "PM2": SingleModuleSpec(tokens=0, ptime=pm_stage3, capacity=1),
-            "PM3": SingleModuleSpec(tokens=0, ptime=pm_stage3, capacity=1),
-            "PM4": SingleModuleSpec(tokens=0, ptime=pm_stage3, capacity=1),
             "LLD": SingleModuleSpec(tokens=0, ptime=lld_time, capacity=1),
-            "PM9": SingleModuleSpec(tokens=0, ptime=pm_stage5, capacity=1),
-            "PM10": SingleModuleSpec(tokens=0, ptime=pm_stage5, capacity=1),
             "LP_done": SingleModuleSpec(tokens=0, ptime=0, capacity=max(1, n_wafer)),
             "d_TM2": SingleModuleSpec(tokens=0, ptime=ttime, capacity=robot_capacity),
             "d_TM3": SingleModuleSpec(tokens=0, ptime=ttime, capacity=robot_capacity),
         }
+        if route_code != 3:
+            modules.update(
+                {
+                    "PM9": SingleModuleSpec(tokens=0, ptime=pm_stage5, capacity=1),
+                    "PM10": SingleModuleSpec(tokens=0, ptime=pm_stage5, capacity=1),
+                }
+            )
+        for pm_name in cascade_stage3:
+            pm_time = int(process_time_map.get(pm_name, pm_stage3_default))
+            modules[pm_name] = SingleModuleSpec(tokens=0, ptime=pm_time, capacity=1)
         id2p_name = list(modules.keys())
-        id2t_name = [
-            "u_LP", "t_PM7", "t_PM8",
-            "u_PM7", "u_PM8", "t_LLC",
-            "u_LLC", "t_PM1", "t_PM2", "t_PM3", "t_PM4",
-            "u_PM1", "u_PM2", "u_PM3", "u_PM4", "t_LLD",
-            "u_LLD", "t_PM9", "t_PM10",
-            "u_PM9", "u_PM10", "t_LP_done",
-        ]
+        stage3_t = [f"t_{name}" for name in cascade_stage3]
+        stage3_u = [f"u_{name}" for name in cascade_stage3]
+        if route_code == 3:
+            id2t_name = (
+                ["u_LP", "t_PM7", "t_PM8", "u_PM7", "u_PM8", "t_LLC", "u_LLC"]
+                + stage3_t
+                + stage3_u
+                + ["t_LLD", "u_LLD", "t_LP_done"]
+            )
+        else:
+            id2t_name = (
+                ["u_LP", "t_PM7", "t_PM8", "u_PM7", "u_PM8", "t_LLC", "u_LLC"]
+                + stage3_t
+                + stage3_u
+                + ["t_LLD", "u_LLD", "t_PM9", "t_PM10", "u_PM9", "u_PM10", "t_LP_done"]
+            )
     else:
         pm1_time = int(process_time_map.get("PM1", 100))
         pm3_time = int(process_time_map.get("PM3", 300))
@@ -126,26 +145,22 @@ def build_single_device_net(
         add_arc("PM8", "u_PM8", "d_TM2")
         add_arc("d_TM2", "t_LLC", "LLC")
 
-        # TM3: 负责 LLC/PM1/PM2/PM3/PM4 取放，放 LLD/PM1/PM2/PM3/PM4
+        # TM3: 负责 LLC/PM* 取放，放 LLD/PM*
         add_arc("LLC", "u_LLC", "d_TM3")
-        add_arc("d_TM3", "t_PM1", "PM1")
-        add_arc("d_TM3", "t_PM2", "PM2")
-        add_arc("d_TM3", "t_PM3", "PM3")
-        add_arc("d_TM3", "t_PM4", "PM4")
-
-        add_arc("PM1", "u_PM1", "d_TM3")
-        add_arc("PM2", "u_PM2", "d_TM3")
-        add_arc("PM3", "u_PM3", "d_TM3")
-        add_arc("PM4", "u_PM4", "d_TM3")
+        for pm_name in cascade_stage3:
+            add_arc("d_TM3", f"t_{pm_name}", pm_name)
+            add_arc(pm_name, f"u_{pm_name}", "d_TM3")
         add_arc("d_TM3", "t_LLD", "LLD")
 
         add_arc("LLD", "u_LLD", "d_TM2")
-        add_arc("d_TM2", "t_PM9", "PM9")
-        add_arc("d_TM2", "t_PM10", "PM10")
-
-        add_arc("PM9", "u_PM9", "d_TM2")
-        add_arc("PM10", "u_PM10", "d_TM2")
-        add_arc("d_TM2", "t_LP_done", "LP_done")
+        if route_code == 3:
+            add_arc("d_TM2", "t_LP_done", "LP_done")
+        else:
+            add_arc("d_TM2", "t_PM9", "PM9")
+            add_arc("d_TM2", "t_PM10", "PM10")
+            add_arc("PM9", "u_PM9", "d_TM2")
+            add_arc("PM10", "u_PM10", "d_TM2")
+            add_arc("d_TM2", "t_LP_done", "LP_done")
     else:
         add_arc("LP", "u_LP", "d_TM1")
         add_arc("d_TM1", "t_PM1", "PM1")
@@ -181,7 +196,7 @@ def build_single_device_net(
             elif t_name in ("t_PM9", "t_PM10"):
                 allowed_where = (9,)
             elif t_name == "t_LP_done":
-                allowed_where = (11,)
+                allowed_where = (9,) if route_code == 3 else (11,)
             else:
                 allowed_where = ()
         else:

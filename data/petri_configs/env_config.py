@@ -109,8 +109,13 @@ class PetriEnvConfig:
     # 单设备工序时间配置（秒）
     single_process_time_map: Dict[str, int] = field(default_factory=_default_single_process_time_map)
     # 单设备路径代号（整数切换预置路径）
-    # 0: PM1 -> [PM3/PM4] -> LP_done
-    # 1: PM1 -> [PM3/PM4] -> PM6 -> LP_done
+    # single 模式:
+    #   0: PM1 -> [PM3/PM4] -> LP_done
+    #   1: PM1 -> [PM3/PM4] -> PM6 -> LP_done
+    # cascade 模式:
+    #   1: PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10
+    #   2: PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> PM9/PM10
+    #   3: PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> LP_done
     single_route_code: int = 1
     # 单设备工序时间随机扰动（按 episode 固定）
     single_proc_time_rand_enabled: bool = False

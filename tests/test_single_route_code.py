@@ -87,3 +87,171 @@ def test_place_obs_route_code1_includes_pm6_features():
     assert obs_dim == 1 + 4 + 9 * 4
     td = env._reset(None)
     assert int(td["observation"].shape[-1]) == obs_dim
+
+
+def test_place_obs_cascade_includes_llc_lld_with_core4_features():
+    env = Env_PN_Single(
+        detailed_reward=False,
+        device_mode="cascade",
+        robot_capacity=1,
+        route_code=2,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+            "PM9": 5,
+            "PM10": 5,
+        },
+    )
+    chamber_names = env._get_place_obs_pm_names()
+    assert "LLC" in chamber_names
+    assert "LLD" in chamber_names
+    chamber_feature_dim = sum(env._get_place_obs_feature_dim(name) for name in chamber_names)
+    obs_dim = int(env.observation_spec["observation"].shape[-1])
+    assert obs_dim == 1 + 14 + chamber_feature_dim
+    td = env._reset(None)
+    assert int(td["observation"].shape[-1]) == obs_dim
+
+
+def test_cascade_route_code2_uses_pm1_pm2_only():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        single_device_mode="cascade",
+        single_route_code=2,
+        single_process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+            "PM9": 5,
+            "PM10": 5,
+        },
+    )
+    net = PetriSingleDevice(config=cfg)
+
+    assert net.single_route_code == 2
+    assert net._u_targets["LLC"] == ["PM1", "PM2"]
+    assert "PM3" not in net._single_process_chambers
+    assert "PM4" not in net._single_process_chambers
+    assert "t_PM3" not in net.id2t_name
+    assert "t_PM4" not in net.id2t_name
+    assert "u_PM3" not in net.id2t_name
+    assert "u_PM4" not in net.id2t_name
+
+
+def test_cascade_route_code2_defaults_pm1_pm2_to_300s():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        single_device_mode="cascade",
+        single_route_code=2,
+        single_process_time_map={
+            "PM7": 70,
+            "PM8": 70,
+            "LLD": 70,
+            "PM9": 200,
+            "PM10": 200,
+        },
+    )
+    net = PetriSingleDevice(config=cfg)
+    pm1 = net._get_place("PM1")
+    pm2 = net._get_place("PM2")
+    assert pm1.processing_time == 300
+    assert pm2.processing_time == 300
+
+
+def test_cascade_route_code2_parallel_pairs_use_round_robin():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        single_device_mode="cascade",
+        single_route_code=2,
+        single_process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+            "PM9": 5,
+            "PM10": 5,
+        },
+    )
+    net = PetriSingleDevice(config=cfg)
+
+    # 使能检查阶段（advance_round_robin=False）不应推进轮换指针
+    assert net._select_target_for_source("LP") == "PM7"
+    assert net._select_target_for_source("LP") == "PM7"
+
+    # 真实发射阶段（advance_round_robin=True）应轮换
+    assert net._select_target_for_source("LP", advance_round_robin=True) == "PM7"
+    assert net._select_target_for_source("LP", advance_round_robin=True) == "PM8"
+    assert net._select_target_for_source("LLC", advance_round_robin=True) == "PM1"
+    assert net._select_target_for_source("LLC", advance_round_robin=True) == "PM2"
+    assert net._select_target_for_source("LLD", advance_round_robin=True) == "PM9"
+    assert net._select_target_for_source("LLD", advance_round_robin=True) == "PM10"
+
+
+def test_cascade_route_code3_uses_lld_then_done_without_pm9_pm10():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        single_device_mode="cascade",
+        single_route_code=3,
+        single_process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+        },
+    )
+    net = PetriSingleDevice(config=cfg)
+
+    assert net.single_route_code == 3
+    assert net._u_targets["LLC"] == ["PM1", "PM2"]
+    assert net._u_targets["PM1"] == ["LLD"]
+    assert net._u_targets["PM2"] == ["LLD"]
+    assert net._u_targets["LLD"] == ["LP_done"]
+    assert "PM9" not in net._single_process_chambers
+    assert "PM10" not in net._single_process_chambers
+    assert "t_PM9" not in net.id2t_name
+    assert "t_PM10" not in net.id2t_name
+    assert "u_PM9" not in net.id2t_name
+    assert "u_PM10" not in net.id2t_name
+
+
+def test_cascade_route_code3_can_finish_via_lld_then_lp_done():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        single_device_mode="cascade",
+        single_route_code=3,
+        single_process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+        },
+    )
+    net = PetriSingleDevice(config=cfg)
+
+    _fire_by_name(net, "u_LP")
+    _fire_by_name(net, "t_PM7")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM7")
+    _fire_by_name(net, "t_LLC")
+    _fire_by_name(net, "u_LLC")
+    _fire_by_name(net, "t_PM1")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM1")
+    _fire_by_name(net, "t_LLD")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_LLD")
+    _fire_by_name(net, "t_LP_done")
+
+    assert net.done_count == 1

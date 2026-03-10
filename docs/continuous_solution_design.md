@@ -96,10 +96,13 @@ flowchart TB
 ### Behavior
 - 单设备新增设备模板参数：`single_device_mode`（`single` / `cascade`）。
   - `single`：保留原单设备路径逻辑（`single_route_code=0/1`）。
-  - `cascade`：改为级联模板路径 `LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`，但仍由 `pn_single + env_single` 承载。
+  - `cascade`：改为级联模板路径（可按 `single_route_code` 在多条级联工艺间切换），但仍由 `pn_single + env_single` 承载。
 - 单设备新增路径代号参数：`single_route_code`（整数切换预置路径）。
-  - `0`：`LP -> PM1(100s) -> [PM3|PM4](300s) -> LP_done`（默认，兼容旧行为）
-  - `1`：`LP -> PM1(100s) -> [PM3|PM4](300s) -> PM6(300s) -> LP_done`
+  - `0`（single 模式）：`LP -> PM1(100s) -> [PM3|PM4](300s) -> LP_done`（默认，兼容旧行为）
+  - `1`（single 模式）：`LP -> PM1(100s) -> [PM3|PM4](300s) -> PM6(300s) -> LP_done`
+  - `1`（cascade 模式，兼容旧模板）：`LP -> PM7/PM8(70s) -> LLC(0s) -> PM1/PM2/PM3/PM4(600s) -> LLD(70s) -> PM9/PM10(200s) -> LP_done`
+  - `2`（cascade 模式，新增模板）：`LP -> PM7/PM8(70s) -> LLC(0s) -> PM1/PM2(300s) -> LLD(70s) -> PM9/PM10(200s) -> LP_done`
+  - `3`（cascade 模式，新增模板）：`LP -> PM7/PM8(70s) -> LLC(0s) -> PM1/PM2(300s) -> LLD(70s) -> LP_done`
 - 单设备工序时长支持配置：`single_process_time_map = {PM1, PM3, PM4, PM6}`；输入值会先预处理为最接近的 5 的倍数（最小 5）。
 - 单设备训练支持 episode 级工序时长随机扰动：`single_proc_time_rand_enabled` + `single_proc_time_rand_scale_map`（`PM1/PM3/PM4/PM6` 各自 `min/max`）；每个 episode 采样一次并固定整局生效。未配置单腔室时回退到统一 `single_proc_time_rand_min_scale/max_scale`。
 - `PM2` 仅用于界面占位展示；`PM5` 作为 UI 占位显示，不参与模型工艺流转。`PM6` 是否参与流转由 `single_route_code` 决定。
@@ -271,7 +274,11 @@ python -m solutions.Continuous_model.check_release_penalty \
 
 - 脚本：`solutions/Continuous_model/export_inference_sequence.py`
 - 输入：训练好的并发模型（`DualHeadPolicyNet` 权重）
-- 输出格式：`[{"step": int, "time": int, "actions": [tm2_action_or_null, tm3_action_or_null]}]`
+- 输出格式：顶层对象包含 `reward_report`（首项）、`schema_version`、`device_mode`、`sequence`、`replay_env_overrides`。其中 `reward_report` 报告推理全程的惩罚触发情况：
+  - `scrap_penalty`：报废惩罚次数及触发步数（`count`, `steps`）
+  - `release_penalty`：释放违规惩罚次数及触发步数
+  - `idle_timeout_penalty`：闲置惩罚次数及触发步数
+- `sequence` 格式：`[{"step": int, "time": int, "actions": [...]}]`
 
 ### 运行方式
 

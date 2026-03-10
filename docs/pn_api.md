@@ -49,7 +49,7 @@ Petri(
 
 **事后追责**
 - `_chamber_timeline` / `_chamber_active`：记录腔室实际进入/离开时间
-- `blame_release_violations()`：按 `u_*` 动作链式前瞻并回填惩罚
+- `blame_release_violations()`：按 `u_LP`/`u_LLC`/`u_LLD` 动作链式前瞻并回填惩罚（仅追责释放动作）
 
 **统计**
 - `_track_wafer_statistics(...)` 追踪统计
@@ -109,9 +109,11 @@ class BasedToken:
   - `single_cleaning_duration=150`
 
 **工艺路线**
-- `single_device_mode="cascade"`：`LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`
-- `single_route_code=0`（默认）：`LP -> PM1(100s) -> PM3/PM4(300s) -> LP_done`
-- `single_route_code=1`：`LP -> PM1(100s) -> PM3/PM4(300s) -> PM6(300s) -> LP_done`
+- `single_device_mode="cascade"`：
+  - `single_route_code=1`：`LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`（兼容旧模板）
+  - `single_route_code=2`：`LP -> PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> PM9/PM10 -> LP_done`（新增模板）
+- `single_route_code=0`（single 模式默认）：`LP -> PM1(100s) -> PM3/PM4(300s) -> LP_done`
+- `single_route_code=1`（single 模式）：`LP -> PM1(100s) -> PM3/PM4(300s) -> PM6(300s) -> LP_done`
 - 双臂模式约束：`u_*` 仅在可解析到有效目标腔室时才允许发射；若下游层满导致目标不可解析，则该 `u_*` 必须禁用，避免出现 `LP -> d_TM1 -> LP_done` 的非法短路。
 - 上述约束同样适用于 `d_TM1` 为空时：双臂“可任意取片”不等于可忽略目标可达性，目标不可解析时必须禁用 `u_*`。
 
@@ -124,6 +126,7 @@ class BasedToken:
 - `step(t=None, wait=None, with_reward=False, detailed_reward=False, ...)`：执行单步（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> done）
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 的单设备事后追责，输出 `fire_log_index -> penalty`
+  - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - `single_route_code=0`：追责站点 `s1=PM1`，`s2=PM3∪PM4`，`u_LP` 链路按 `s1 -> s2` 判定
   - `single_route_code=1`：在上述基础上增加 `s3=PM6`，`u_LP` 链路扩展为 `s1 -> s2 -> s3`
 - 清洗事件日志会附加写入 `fire_log`（`event_type=cleaning_start|cleaning_end`），用于后续追责/复盘。
@@ -136,7 +139,7 @@ class BasedToken:
 **设备模式字段**
 - `single_device_mode`: `single` 或 `cascade`。
   - `single`: 使用原单设备路径（可叠加 `single_route_code`）。
-  - `cascade`: 使用级联路径模板，但接口仍保持单动作离散动作空间（`transition + wait`）。
+  - `cascade`: 使用级联路径模板（`single_route_code=1/2`），接口仍保持单动作离散动作空间（`transition + wait`）。
 
 **驻留时间更新规则（单设备）**
 - `LP`（type=3）中的 token 不更新 `stay_time`，与 `pn.py` 保持一致

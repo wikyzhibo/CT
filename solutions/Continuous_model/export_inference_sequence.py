@@ -24,7 +24,6 @@ from torchrl.modules import MaskedCategorical, ProbabilisticActor
 from solutions.PPO.network.models import MaskedPolicyHead
 from solutions.Continuous_model.env_single import Env_PN_Single
 
-
 def _to_step_state(td_next: Any) -> Any:
     if "next" in td_next.keys():
         return td_next["next"].clone()
@@ -45,6 +44,18 @@ def _to_finish(td_next: Any) -> bool:
     else:
         f = td_next.get("finish", False)
     return bool(f.item() if hasattr(f, "item") else f)
+
+
+def _to_reward_detail(td: Any) -> dict:
+    """从 step 返回值中提取 reward_detail（可能位于根或 next 下）。
+    TorchRL step 会过滤非 spec 键，故 export 改用 env._last_reward_detail。"""
+    for candidate in [td, td.get("next") if hasattr(td, "get") else {}]:
+        if candidate is None:
+            continue
+        detail = candidate.get("reward_detail") if hasattr(candidate, "get") else None
+        if isinstance(detail, dict):
+            return dict(detail)
+    return {}
 
 
 def _to_time(td_state: Any) -> int:
@@ -148,7 +159,7 @@ def _rollout_single_sequence(
     training_phase: int,
     robot_capacity: int,
     device_mode: str = "single",
-) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any]]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
     env = Env_PN_Single(
@@ -156,32 +167,48 @@ def _rollout_single_sequence(
         training_phase=training_phase,
         robot_capacity=robot_capacity,
         device_mode=device_mode,
+        detailed_reward=True,
     )
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()
     sequence: list[dict[str, Any]] = []
     finished = False
+    scrap_steps: list[int] = []
+    release_steps: list[int] = []
+    idle_steps: list[int] = []
 
     with torch.no_grad():
         for step in range(1, max_steps + 1):
-            obs = td["observation"]
-            td_model = TensorDict(
-                {
-                    "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0).to(device),
-                    "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device),
-                    "action_mask": td["action_mask"].unsqueeze(0).bool().to(device),
-                },
-                batch_size=[1],
-            )
+            try:
+                obs = td["observation"]
+                td_model = TensorDict(
+                    {
+                        "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0).to(device),
+                        "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device),
+                        "action_mask": td["action_mask"].unsqueeze(0).bool().to(device),
+                    },
+                    batch_size=[1],
+                )
 
-            with set_exploration_type(ExplorationType.RANDOM):
-                td_out = policy(td_model)
-            action_idx = int(td_out["action"].squeeze(0).item())
+                with set_exploration_type(ExplorationType.MODE):
+                    td_out = policy(td_model)
+                action_idx = int(td_out["action"].squeeze(0).item())
 
-            step_td = td.clone()
-            step_td["action"] = torch.tensor(action_idx, dtype=torch.int64)
-            td_next = env.step(step_td)
+                step_td = td.clone()
+                step_td["action"] = torch.tensor(action_idx, dtype=torch.int64)
+                td_next = env.step(step_td)
+            except Exception:
+                raise
+
+            # 从 env 实例读取，绕过 TorchRL step 对非 spec 键的过滤
+            reward_detail = getattr(env, "_last_reward_detail", {})
+            if reward_detail.get("scrap_penalty", 0) != 0:
+                scrap_steps.append(step)
+            if reward_detail.get("release_violation_penalty", 0) != 0:
+                release_steps.append(step)
+            if reward_detail.get("idle_timeout_penalty", 0) != 0:
+                idle_steps.append(step)
 
             td_after = _to_step_state(td_next)
             current_time = _to_time(td_after)
@@ -201,6 +228,11 @@ def _rollout_single_sequence(
                 break
             td = td_after
 
+    reward_report = {
+        "scrap_penalty": {"count": len(scrap_steps), "steps": scrap_steps},
+        "release_penalty": {"count": len(release_steps), "steps": release_steps},
+        "idle_timeout_penalty": {"count": len(idle_steps), "steps": idle_steps},
+    }
     replay_env_overrides = {
         # 回放时固定为本次 episode 的实际工序时长，避免可视化重启后随机采样导致动作序列失配。
         "single_process_time_map": dict(getattr(env.net, "_episode_process_time_map", {})),
@@ -210,7 +242,7 @@ def _rollout_single_sequence(
         "single_device_mode": str(device_mode),
         "training_phase": int(training_phase),
     }
-    return sequence, finished, replay_env_overrides
+    return sequence, finished, replay_env_overrides, reward_report
 
 
 def _rollout_single_sequence_with_retry(
@@ -221,15 +253,16 @@ def _rollout_single_sequence_with_retry(
     robot_capacity: int,
     max_retries: int = 10,
     device_mode: str = "single",
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
 
     last_sequence: list[dict[str, Any]] = []
     last_overrides: dict[str, Any] = {}
+    last_report: dict[str, Any] = {}
     for attempt in range(max_retries):
         attempt_seed = seed + attempt
-        sequence, finished, replay_env_overrides = _rollout_single_sequence(
+        sequence, finished, replay_env_overrides, reward_report = _rollout_single_sequence(
             model_path=model_path,
             max_steps=max_steps,
             seed=attempt_seed,
@@ -239,13 +272,14 @@ def _rollout_single_sequence_with_retry(
         )
         last_sequence = sequence
         last_overrides = replay_env_overrides
+        last_report = reward_report
         if finished:
             if attempt > 0:
                 print(f"[INFO] single 模式第 {attempt + 1} 次推理达到 finish。")
-            return sequence, replay_env_overrides
+            return sequence, replay_env_overrides, reward_report
 
     print(f"[WARN] single 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
-    return last_sequence, last_overrides
+    return last_sequence, last_overrides, last_report
 
 def rollout_and_export(
     model_path: Path,
@@ -261,7 +295,7 @@ def rollout_and_export(
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     if device_mode == "single":
-        sequence, replay_env_overrides = _rollout_single_sequence_with_retry(
+        sequence, replay_env_overrides, reward_report = _rollout_single_sequence_with_retry(
             model_path=model_path,
             max_steps=max_steps,
             seed=seed,
@@ -271,13 +305,14 @@ def rollout_and_export(
             device_mode="single",
         )
         payload: dict[str, Any] | list[dict[str, Any]] = {
+            "reward_report": reward_report,
             "schema_version": 2,
             "device_mode": "single",
             "sequence": sequence,
             "replay_env_overrides": replay_env_overrides,
         }
     elif device_mode == "cascade":
-        sequence, replay_env_overrides = _rollout_single_sequence_with_retry(
+        sequence, replay_env_overrides, reward_report = _rollout_single_sequence_with_retry(
             model_path=model_path,
             max_steps=max_steps,
             seed=seed,
@@ -299,6 +334,7 @@ def rollout_and_export(
                 }
             )
         payload = {
+            "reward_report": reward_report,
             "schema_version": 2,
             "device_mode": "cascade",
             "sequence": sequence_dual,

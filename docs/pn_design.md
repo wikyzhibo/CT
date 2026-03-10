@@ -32,7 +32,7 @@
 
 - **LLC (s2)** 不在线施加释放违规惩罚；晶圆可在 LLC 缓冲，以推迟进入 s3/s4 从而避免 LLD 冲突。
 - **LLC 容量为 1**：PM7/PM8 近似同时完工时仅一片可进入 LLC，由 capacity 与使能约束保证。
-- 事后追责（`blame_release_violations`）会按该 `u_*` 动作对应路线展开后续站点并逐站检查最早到达时刻（例如路线1可覆盖 `s1 -> s2 -> s3 -> s4 -> s5`）。
+- 事后追责（`blame_release_violations`）仅针对 `u_LP`、`u_LLC`、`u_LLD` 释放动作，按对应路线展开后续站点并逐站检查最早到达时刻（例如路线1可覆盖 `s1 -> s2 -> s3 -> s4 -> s5`）。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
 - 事后追责容量判定采用：`在该时刻已占用数量（排除当前晶圆） + 1（当前晶圆） > capacity`，即“加入当前晶圆后是否超容量”。
 - 在线 `pn.py` 的 step reward 不再直接注入 `release_violation_penalty`，该惩罚由训练/验证流程在 second pass 回填。
 

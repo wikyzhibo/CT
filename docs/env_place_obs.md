@@ -5,8 +5,9 @@
 - When: 当训练策略需要按库所/机器状态建模，而不是按晶圆列表拼接时使用。
 - Not: 不改 observation 语义，不改 `reset/step/reward` 接口形态；动作空间已扩展为多档 WAIT。
 - Key rules:
- - observation 按 `LP -> TM(d_TM1) -> PM*` 顺序拼接，`PM*` 由 `single_route_code` 决定。
- - `route_code=0` 时 `PM* = PM1, PM3, PM4`；`route_code=1` 时 `PM* = PM1, PM3, PM4, PM6`；`device_mode=cascade` 时 `PM*` 含 PM7/8/1-4/9/10 等。
+ - observation 按 `LP -> TM -> chamber*` 顺序拼接，chamber 列表由 `single_route_code` 与 `device_mode` 决定。
+ - `route_code=0` 时 `PM* = PM1, PM3, PM4`；`route_code=1` 时 `PM* = PM1, PM3, PM4, PM6`；
+ - `device_mode=cascade` 时会额外纳入 `LLC/LLD` 两个腔室；其中 `LLC/LLD` 使用 4 维核心特征，其余 PM 仍使用 9 维特征。
  - `LP_done` 不进入主体 observation。
  - 时间相关特征统一归一化并裁剪到 `[0, 1]`。
 
@@ -29,7 +30,7 @@
  - TM: single 模式 4 维；cascade 模式 14 维（TM2 块 8 维 + TM3 块 6 维，含晶圆去向 one-hot）
  - `route_code=0`（single）：`PM1/PM3/PM4`，每个 9 维，总维度 `1 + 4 + 9*3 = 32`
  - `route_code=1`（single）：`PM1/PM3/PM4/PM6`，每个 9 维，总维度 `1 + 4 + 9*4 = 41`
- - cascade：TM 14 维，PM* 随级联路线变化，总维度 `1 + 14 + 9*len(PM*)`
+ - cascade：TM 14 维；PM 按 9 维、`LLC/LLD` 按 4 维，总维度 `1 + 14 + 9*len(PM*) + 4*len({LLC,LLD}∩chamber*)`
 - LP 特征：
  - `remaining_wafer_norm = clip(len(LP.tokens) / n_wafer, 0, 1)`
 - TM 特征（single 模式，4 维）：
@@ -50,6 +51,11 @@
  - `is_cleaning`
  - `clean_remaining_time_norm`
  - `remaining_runs_before_clean_norm`
+- LLC/LLD 特征（4 维核心）：
+ - `occupied`
+ - `processing`
+ - `done_waiting_pick`
+ - `remaining_process_time_norm`
 
 ## Configuration / API
 - 类名：`Env_PN_Single_PlaceObs`

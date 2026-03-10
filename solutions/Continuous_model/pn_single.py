@@ -22,7 +22,7 @@ from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.construct_single import build_single_device_net
 from solutions.Continuous_model.pn import Place
 
-MAX_TIME = 4000
+MAX_TIME = 15000
 CHAMBER = 1
 DELIVERY_ROBOT = 2
 SOURCE = 3
@@ -65,56 +65,86 @@ class PetriSingleDevice:
         self.single_device_mode = str(getattr(config, "single_device_mode", "single")).lower()
         if self.single_device_mode not in {"single", "cascade"}:
             self.single_device_mode = "single"
-        self.single_route_code = 1 if int(getattr(config, "single_route_code", 0)) == 1 else 0
+        raw_route_code = int(getattr(config, "single_route_code", 0))
         if self.single_device_mode == "cascade":
-            self._single_process_chambers = (
-                "PM7", "PM8", "PM1", "PM2", "PM3", "PM4", "LLD", "PM9", "PM10"
-            )
+            self.single_route_code = raw_route_code if raw_route_code in {1, 2, 3} else 1
+        else:
+            self.single_route_code = 1 if raw_route_code == 1 else 0
+        if self.single_device_mode == "cascade":
+            cascade_stage3 = ("PM1", "PM2", "PM3", "PM4") if self.single_route_code == 1 else ("PM1", "PM2")
+            if self.single_route_code == 3:
+                self._single_process_chambers = ("PM7", "PM8", *cascade_stage3, "LLD")
+            else:
+                self._single_process_chambers = ("PM7", "PM8", *cascade_stage3, "LLD", "PM9", "PM10")
             self._timeline_chambers = self._single_process_chambers + ("LLC",)
             self._u_targets = {
                 "LP": ["PM7", "PM8"],
                 "PM7": ["LLC"],
                 "PM8": ["LLC"],
-                "LLC": ["PM1", "PM2", "PM3", "PM4"],
+                "LLC": list(cascade_stage3),
                 "PM1": ["LLD"],
                 "PM2": ["LLD"],
-                "PM3": ["LLD"],
-                "PM4": ["LLD"],
-                "LLD": ["PM9", "PM10"],
-                "PM9": ["LP_done"],
-                "PM10": ["LP_done"],
             }
-            self._step_map = {
-                "PM7": 1,
-                "PM8": 1,
-                "LLC": 2,
-                "PM1": 3,
-                "PM2": 3,
-                "PM3": 3,
-                "PM4": 3,
-                "LLD": 4,
-                "PM9": 5,
-                "PM10": 5,
-                "LP_done": 6,
-            }
-            self._release_station_aliases = {
-                "s1": ["PM7", "PM8"],
-                "s2": ["LLC"],
-                "s3": ["PM1", "PM2", "PM3", "PM4"],
-                "s4": ["LLD"],
-                "s5": ["PM9", "PM10"],
-            }
-            self._release_chain_by_u = {
-                "u_LP": ["s1", "s2", "s3", "s4", "s5"],
-                "u_PM7": ["s2", "s3", "s4", "s5"],
-                "u_PM8": ["s2", "s3", "s4", "s5"],
-                "u_LLC": ["s3", "s4", "s5"],
-                "u_PM1": ["s4", "s5"],
-                "u_PM2": ["s4", "s5"],
-                "u_PM3": ["s4", "s5"],
-                "u_PM4": ["s4", "s5"],
-                "u_LLD": ["s5"],
-            }
+            if self.single_route_code == 3:
+                self._u_targets.update({"LLD": ["LP_done"]})
+            else:
+                self._u_targets.update(
+                    {
+                        "LLD": ["PM9", "PM10"],
+                        "PM9": ["LP_done"],
+                        "PM10": ["LP_done"],
+                    }
+                )
+            if self.single_route_code == 1:
+                self._u_targets.update({"PM3": ["LLD"], "PM4": ["LLD"]})
+            if self.single_route_code == 3:
+                self._step_map = {
+                    "PM7": 1,
+                    "PM8": 1,
+                    "LLC": 2,
+                    "PM1": 3,
+                    "PM2": 3,
+                    "LLD": 4,
+                    "LP_done": 5,
+                }
+            else:
+                self._step_map = {
+                    "PM7": 1,
+                    "PM8": 1,
+                    "LLC": 2,
+                    "PM1": 3,
+                    "PM2": 3,
+                    "LLD": 4,
+                    "PM9": 5,
+                    "PM10": 5,
+                    "LP_done": 6,
+                }
+            if self.single_route_code == 1:
+                self._step_map.update({"PM3": 3, "PM4": 3})
+            if self.single_route_code == 3:
+                self._release_station_aliases = {
+                    "s1": ["PM7", "PM8"],
+                    "s2": ["LLC"],
+                    "s3": list(cascade_stage3),
+                    "s4": ["LLD"],
+                }
+                self._release_chain_by_u = {
+                    "u_LP": ["s1", "s2"],
+                    "u_LLC": ["s3", "s4"],
+                }
+            else:
+                self._release_station_aliases = {
+                    "s1": ["PM7", "PM8"],
+                    "s2": ["LLC"],
+                    "s3": list(cascade_stage3),
+                    "s4": ["LLD"],
+                    "s5": ["PM9", "PM10"],
+                }
+                self._release_chain_by_u = {
+                    "u_LP": ["s1", "s2"],
+                    "u_LLC": ["s3", "s4"],
+                    "u_LLD": ["s5"],
+                }
             self._system_entry_places = {"PM7", "PM8"}
         elif self.single_route_code == 1:
             self._single_process_chambers = ("PM1", "PM3", "PM4", "PM6")
@@ -198,6 +228,17 @@ class PetriSingleDevice:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
+        self._cascade_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
+        self._cascade_round_robin_next: Dict[str, str] = {}
+        if self.single_device_mode == "cascade":
+            self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
+            if self.single_route_code in {2, 3}:
+                self._cascade_round_robin_pairs["LLC"] = ("PM1", "PM2")
+            if self.single_route_code == 2:
+                self._cascade_round_robin_pairs["LLD"] = ("PM9", "PM10")
+            self._cascade_round_robin_next = {
+                source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
+            }
         self._last_deadlock = False
         self.no_release_penalty = False
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
@@ -345,6 +386,10 @@ class PetriSingleDevice:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
+        if self.single_device_mode == "cascade":
+            self._cascade_round_robin_next = {
+                source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
+            }
         self._last_deadlock = False
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
@@ -418,6 +463,7 @@ class PetriSingleDevice:
 
         tok = pre_place.pop_head()
         wafer_id = int(getattr(tok, "token_id", -1))
+        where_before = int(getattr(tok, "where", 0))
         self._track_leave(tok, pre_place.name)
         tok.enter_time = self.time
         tok.stay_time = 0
@@ -427,7 +473,7 @@ class PetriSingleDevice:
             dst_level_targets = tuple(self._u_targets.get(src, []))
             setattr(tok, "_dst_level_targets", dst_level_targets)
             setattr(tok, "_dst_level_full_on_pick", self._is_dst_level_full(src))
-            dst = self._select_target_for_source(src)
+            dst = self._select_target_for_source(src, advance_round_robin=True)
             if dst is not None:
                 setattr(tok, "_target_place", dst)
             tok.machine = int(self._next_robot_machine())
@@ -626,17 +672,18 @@ class PetriSingleDevice:
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
         if self.single_device_mode == "cascade":
+            pm_stage3_default = 600 if self.single_route_code == 1 else 300
             defaults = {
                 "PM7": 70,
                 "PM8": 70,
-                "PM1": 600,
-                "PM2": 600,
-                "PM3": 600,
-                "PM4": 600,
+                "PM1": pm_stage3_default,
+                "PM2": pm_stage3_default,
                 "LLD": 70,
-                "PM9": 200,
-                "PM10": 200,
             }
+            if self.single_route_code != 3:
+                defaults.update({"PM9": 200, "PM10": 200})
+            if self.single_route_code == 1:
+                defaults.update({"PM3": pm_stage3_default, "PM4": pm_stage3_default})
         else:
             defaults = {"PM1": 100, "PM3": 300, "PM4": 300, "PM6": 300}
         return _preprocess_process_time_map(
@@ -848,6 +895,7 @@ class PetriSingleDevice:
         source: str,
         preferred_target: Optional[str] = None,
         ignore_cleaning: bool = False,
+        advance_round_robin: bool = False,
     ) -> Optional[str]:
         """
         为 u_<source> 选择一个可接收目标（确定性顺序）。
@@ -864,6 +912,28 @@ class PetriSingleDevice:
             # 需求：LLD 有晶圆时，u_PM1/u_PM2/u_PM3/u_PM4 仍应保持可使能。
             if "LLD" in candidates:
                 return "LLD"
+        if self.single_device_mode == "cascade" and source in self._cascade_round_robin_pairs and preferred_target is None:
+            # 路线2并行腔体采用轮换分配；仅在真实发射时推进轮换指针，避免使能检查污染状态。
+            rr_targets = list(self._cascade_round_robin_pairs[source])
+            available_targets: List[str] = []
+            for target in rr_targets:
+                if target not in candidates:
+                    continue
+                target_place = self._get_place(target)
+                if (not ignore_cleaning) and bool(getattr(target_place, "is_cleaning", False)):
+                    continue
+                if len(target_place.tokens) < target_place.capacity:
+                    available_targets.append(target)
+            if len(available_targets) == 2:
+                next_target = self._cascade_round_robin_next.get(source, available_targets[0])
+                chosen_target = next_target if next_target in available_targets else available_targets[0]
+                if advance_round_robin:
+                    self._cascade_round_robin_next[source] = (
+                        available_targets[1] if chosen_target == available_targets[0] else available_targets[0]
+                    )
+                return chosen_target
+            if len(available_targets) == 1:
+                return available_targets[0]
         if preferred_target is not None:
             if preferred_target not in candidates:
                 return None
@@ -958,15 +1028,19 @@ class PetriSingleDevice:
         chain_map: Dict[str, List[str]] = dict(self._release_chain_by_u)
 
         # 2) 回溯 fire_log，针对每个 u_* 动作检查其 downstream chain 是否存在容量冲突。
+        # 仅追责释放动作：u_LP（从 LP 释放）、u_LLC（从 LLC 释放）、u_LLD（从 LLD 释放）。
+        # u_PM7、u_PM2 等从加工腔卸载的动作不追责。
+        RELEASE_BLAME_WHITELIST = frozenset({"u_LP", "u_LLC"})
         penalty_coeff = float(self.release_penalty_coef) * 100.0
         for i, log in enumerate(self.fire_log):
             t_name = log.get("t_name", "")
             wid = int(log.get("token_id", -1))
-            # 仅追责 u_* 动作，且必须有合法的 wafer_id
-            if wid < 0 or not t_name.startswith("u_"):
+            if t_name not in RELEASE_BLAME_WHITELIST:
+                continue
+            # 必须有合法的 wafer_id
+            if wid < 0:
                 continue
             chain = chain_map.get(t_name, [])
-            # 不在追责名单上不进行追责，避免误伤其他动作
             if not chain:
                 continue
 

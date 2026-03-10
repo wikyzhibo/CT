@@ -78,6 +78,7 @@ class Env_PN_Single(EnvBase):
         self.wait_action_indices = list(range(self.wait_action_start, self.n_actions))
         self.n_wafer = config.n_wafer
         self._make_spec()
+        self._last_reward_detail: dict = {}
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()
         self.set_seed(seed)
@@ -120,12 +121,13 @@ class Env_PN_Single(EnvBase):
         return self.net.id2t_name[int(value)]
 
     def _make_spec(self):
-        pm_names = self._get_place_obs_pm_names()
-        # LP(1) + TM + 每个 PM 的 9 维特征（route 感知）
+        chamber_names = self._get_place_obs_pm_names()
+        chamber_feature_dim = sum(self._get_place_obs_feature_dim(name) for name in chamber_names)
+        # LP(1) + TM + 每个腔室特征（route 感知）
         # single: TM=4 维；cascade: TM=14 维（TM2 8 维 + TM3 6 维，含去向 one-hot）
         is_cascade = getattr(self.net, "single_device_mode", "single") == "cascade"
         tm_dim = 14 if is_cascade else 4
-        obs_dim = 1 + tm_dim + 9 * len(pm_names)
+        obs_dim = 1 + tm_dim + chamber_feature_dim
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -152,12 +154,28 @@ class Env_PN_Single(EnvBase):
         )
 
     def _get_place_obs_pm_names(self) -> List[str]:
-        # 观测 PM 列表与 pn_single 路线配置保持同源，避免 route 变更后维度漂移。
-        candidates = tuple(getattr(self.net, "_single_process_chambers", ("PM1", "PM3", "PM4")))
-        observed = [name for name in candidates if name.startswith("PM")]
+        # 观测腔室列表与 pn_single 路线配置保持同源，避免 route 变更后维度漂移。
+        candidates = list(getattr(self.net, "_single_process_chambers", ("PM1", "PM3", "PM4")))
+        is_cascade = getattr(self.net, "single_device_mode", "single") == "cascade"
+        if is_cascade and "LLC" not in candidates:
+            candidates.append("LLC")
+        observed: List[str] = []
+        seen = set()
+        for name in candidates:
+            if not (name.startswith("PM") or name in {"LLC", "LLD"}):
+                continue
+            if name in seen:
+                continue
+            observed.append(name)
+            seen.add(name)
         if not observed:
             observed = ["PM1", "PM3", "PM4"]
         return observed
+
+    def _get_place_obs_feature_dim(self, place_name: str) -> int:
+        if place_name in {"LLC", "LLD"}:
+            return 4
+        return 9
 
     def _extract_place_features(self, place_name: str) -> List[float]:
         if place_name == "TM":
@@ -170,7 +188,9 @@ class Env_PN_Single(EnvBase):
             denom = max(1.0, float(self.n_wafer))
             remaining_norm = float(np.clip(remaining / denom, 0.0, 1.0))
             return [remaining_norm]
-        if place_name.startswith("PM") or place_name == "LLD":
+        if place_name in {"LLC", "LLD"}:
+            return self._extract_ll_features(place)
+        if place_name.startswith("PM"):
             return self._extract_pm_features(place)
         return []
 
@@ -320,6 +340,36 @@ class Env_PN_Single(EnvBase):
             remaining_runs_before_clean_norm,
         ]
 
+    def _extract_ll_features(self, place) -> List[float]:
+        has_wafer = len(place.tokens) > 0
+        raw_proc_time = float(getattr(place, "processing_time", 0))
+        proc_time = max(1.0, raw_proc_time)
+
+        occupied = 1.0 if has_wafer else 0.0
+        processing = 0.0
+        done_waiting_pick = 0.0
+        remaining_process_time_norm = 0.0
+
+        if has_wafer:
+            stay_time = float(getattr(place.head(), "stay_time", 0))
+            if raw_proc_time <= 0.0:
+                # LLC 是 0 秒驻留位，落片后可视为已完成待取。
+                processing = 0.0
+                done_waiting_pick = 1.0
+                remaining_process_time_norm = 0.0
+            else:
+                processing = 1.0 if stay_time < proc_time else 0.0
+                done_waiting_pick = 1.0 if stay_time >= proc_time else 0.0
+                remaining_proc = max(0.0, proc_time - stay_time)
+                remaining_process_time_norm = float(np.clip(remaining_proc / proc_time, 0.0, 1.0))
+
+        return [
+            occupied,
+            processing,
+            done_waiting_pick,
+            remaining_process_time_norm,
+        ]
+
     def _build_obs(self):
         obs: List[float] = []
         obs.extend(self._extract_place_features("LP"))
@@ -342,6 +392,7 @@ class Env_PN_Single(EnvBase):
 
     def _reset(self, td_params):
         self.net.reset()
+        self._last_reward_detail = {}
         return self._build_state_td(self._build_obs(), self._mask(), self.net.time)
 
     def _step(self, tensordict=None):
@@ -354,7 +405,13 @@ class Env_PN_Single(EnvBase):
             done, reward_result, scrap = self.net.step(a1=int(transition_idx), detailed_reward=self.detailed_reward)
         deadlock = bool(getattr(self.net, "_last_deadlock", False))
         reward = reward_result.get("total", 0.0) if isinstance(reward_result, dict) else float(reward_result)
-        return TensorDict(
+        reward_detail: dict = {}
+        if self.detailed_reward and isinstance(reward_result, dict):
+            for key in ("scrap_penalty", "release_violation_penalty", "idle_timeout_penalty"):
+                v = reward_result.get(key, 0)
+                if isinstance(v, (int, float)) and v != 0:
+                    reward_detail[key] = float(v)
+        out = TensorDict(
             {
                 "observation": torch.as_tensor(self._build_obs(), dtype=torch.float32),
                 "action_mask": torch.as_tensor(self._mask(), dtype=torch.bool),
@@ -367,6 +424,11 @@ class Env_PN_Single(EnvBase):
             },
             batch_size=[],
         )
+        if reward_detail:
+            out["reward_detail"] = reward_detail
+        # 绕过 TorchRL step 对非 spec 键的过滤，供 export 直接读取
+        self._last_reward_detail = reward_detail
+        return out
 
     def _set_seed(self, seed: int | None):
         rng = torch.manual_seed(seed)

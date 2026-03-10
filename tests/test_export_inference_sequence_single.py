@@ -65,7 +65,7 @@ def test_single_rollout_uses_policy_tensordict_path(monkeypatch):
     monkeypatch.setattr(exporter, "Env_PN_Single", _DummyEnv)
     monkeypatch.setattr(exporter, "_build_single_policy", lambda *args, **kwargs: dummy_policy)
 
-    seq, finished, replay_overrides = exporter._rollout_single_sequence(
+    seq, finished, replay_overrides, reward_report = exporter._rollout_single_sequence(
         model_path=Path("dummy.pt"),
         max_steps=3,
         seed=0,
@@ -74,6 +74,9 @@ def test_single_rollout_uses_policy_tensordict_path(monkeypatch):
     )
 
     assert dummy_policy.called is True
+    assert "scrap_penalty" in reward_report
+    assert "release_penalty" in reward_report
+    assert "idle_timeout_penalty" in reward_report
     assert dummy_policy.seen_td is not None
     assert set(dummy_policy.seen_td.keys()) == {"observation", "observation_f", "action_mask"}
     assert dummy_policy.seen_td["observation"].dtype == torch.int64
@@ -91,13 +94,14 @@ def test_single_rollout_retries_until_finish(monkeypatch):
 
     def _fake_rollout_single_sequence(**kwargs):
         calls.append(kwargs["seed"])
+        empty_report = {"scrap_penalty": {"count": 0, "steps": []}, "release_penalty": {"count": 0, "steps": []}, "idle_timeout_penalty": {"count": 0, "steps": []}}
         if len(calls) < 3:
-            return ([{"step": 1, "time": 5, "action": "WAIT", "actions": ["WAIT"]}], False, {})
-        return ([{"step": 1, "time": 5, "action": "u_LP", "actions": ["u_LP"]}], True, {})
+            return ([{"step": 1, "time": 5, "action": "WAIT", "actions": ["WAIT"]}], False, {}, empty_report)
+        return ([{"step": 1, "time": 5, "action": "u_LP", "actions": ["u_LP"]}], True, {}, empty_report)
 
     monkeypatch.setattr(exporter, "_rollout_single_sequence", _fake_rollout_single_sequence)
 
-    seq, replay_overrides = exporter._rollout_single_sequence_with_retry(
+    seq, replay_overrides, reward_report = exporter._rollout_single_sequence_with_retry(
         model_path=Path("dummy.pt"),
         max_steps=10,
         seed=7,
@@ -109,3 +113,4 @@ def test_single_rollout_retries_until_finish(monkeypatch):
     assert calls == [7, 8, 9]
     assert seq[0]["action"] == "u_LP"
     assert isinstance(replay_overrides, dict)
+    assert isinstance(reward_report, dict)

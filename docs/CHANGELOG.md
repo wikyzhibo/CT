@@ -1,6 +1,38 @@
 # CHANGELOG
 
+## 2026-03-10
+
+### Cascade 观测纳入 LLC/LLD (2026-03-10)
+- **What changed**：`Env_PN_Single` 在 `device_mode=cascade` 下将 `LLC/LLD` 纳入腔室观测列表；`LLC/LLD` 使用 4 维核心特征（`occupied/processing/done_waiting_pick/remaining_process_time_norm`），其余 PM 继续使用 9 维特征。
+- **Why**：需要让策略在级联流程中直接感知 `LLC/LLD` 状态，避免关键缓冲/交接位信息缺失。
+- **Impact**：仅 cascade 模式 observation 维度发生变化；single 模式维度保持不变（`route_code=0 -> 32`，`route_code=1 -> 41`）。
+
 ## 2026-03-09
+
+### Cascade 新增 route_code=3 (2026-03-09)
+- **What changed**：`pn_single/construct_single` 在 `single_device_mode=cascade` 下新增 `single_route_code=3`，路径为 `LP -> PM7/PM8(70) -> LLC(0) -> PM1/PM2(300) -> LLD(70) -> LP_done`。
+- **Why**：支持“保留 LLD 清洗/缓冲段，但去掉 PM9/PM10 末段”的级联工艺模板，满足新工艺路径验证需求。
+- **Impact**：级联模式可通过 `single_route_code=1/2/3` 切换三套模板；`route_code=3` 下不再生成 `PM9/PM10` 相关变迁动作。
+
+### Cascade 新增 route_code=2 (2026-03-09)
+- **What changed**：`pn_single/construct_single` 在 `single_device_mode=cascade` 下新增 `single_route_code=2`，路径为 `LP -> PM7/PM8(70) -> LLC(0) -> PM1/PM2(300) -> LLD(70) -> PM9/PM10(200) -> LP_done`。
+- **Why**：支持新增级联工艺路线，并保留现有 `route_code=1`（`PM1/2/3/4`）兼容既有流程。
+- **Impact**：级联模式可通过 `single_route_code=1/2` 切换两套模板；`route_code=2` 下不再生成 `PM3/PM4` 对应变迁动作。
+
+### 追责简要报告增强 (2026-03-09)
+- **What changed**：`check_release_penalty.py` 输出新增 `penalized_actions_report`，覆盖所有被惩罚动作，包含 `action_name + step + reason + where_penalized`。
+- **Why**：便于快速定位“哪一步、哪个动作、因哪个站点超容量而被 second-pass 惩罚”。
+- **Impact**：可直接在结果文件里查看完整追责清单，无需手工对照 `blame_raw` 与 `step_records`。
+
+### 释放违规追责限定 (2026-03-09)
+- **What changed**：`blame_release_violations` 仅追责 `u_LP`、`u_LLC`、`u_LLD` 释放动作，不再追责 `u_PM7`、`u_PM2` 等从加工腔卸载的动作。
+- **Why**：释放违规应归因于「从 LP/LLC/LLD 释放晶圆」的决策，不应惩罚 PM 腔室的取片动作。
+- **Impact**：导出的 `release_penalty.steps` 将只包含 u_LP/u_LLC/u_LLD 动作所在步，u_PM7/u_PM2 所在步不再计入。
+
+### 推理序列奖励报告 (2026-03-09)
+- `export_inference_sequence.py` 在导出的 JSON 最前面增加 `reward_report` 区块。
+- 包含 `scrap_penalty`、`release_penalty`、`idle_timeout_penalty` 的次数及触发步数（`count`, `steps`）。
+- 回放逻辑仅读取 `sequence`、`replay_env_overrides`，兼容现有 `planB_sequence.json` 消费者。
 
 ### What changed
 - 单设备环境观测已统一：`Env_PN_Single` 合并 `Env_PN_Single_PlaceObs`，默认采用库所中心 obs 构造（`LP -> TM(d_TM1) -> PM*`）。

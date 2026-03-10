@@ -1,7 +1,7 @@
 """
-脚本式验证：检查训练收集流程中的二次释放惩罚回填是否正确。
+脚本式验证：检查单设备(pn_single)流程中的二次释放惩罚回填是否正确。
 
-流程对齐 collect_rollout 的两阶段逻辑：
+流程：
 1) 第一阶段关闭在线 release 惩罚执行固定动作序列。
 2) 第二阶段调用 blame_release_violations 追责并把惩罚回填到对应 step reward。
 """
@@ -16,16 +16,46 @@ from typing import Any
 
 import torch
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
+from solutions.Continuous_model.env_single import Env_PN_Single
 
 
-def _load_sequence(seq) -> list[dict[str, Any]]:
-    path = (Path(__file__).resolve().parent/ "action_series"/ seq)
+def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
+    # #region agent log
+    payload = {
+        "sessionId": "0f180c",
+        "runId": "report-with-reason",
+        "hypothesisId": hypothesis_id,
+        "location": "solutions/Continuous_model/check_release_penalty.py",
+        "message": message,
+        "data": data,
+        "timestamp": int(datetime.now().timestamp() * 1000),
+    }
+    log_path = Path(__file__).resolve().parents[2] / "debug-0f180c.log"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    # #endregion
+
+
+def _load_sequence(seq_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any], Path]:
+    path = Path(seq_path)
+    if not path.is_absolute():
+        direct = path
+        in_action_series = Path(__file__).resolve().parent / "action_series" / path
+        path = direct if direct.exists() else in_action_series
+
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError("sequence JSON 顶层必须是 list")
-    return data
+    if isinstance(data, list):
+        return data, {}, path
+    if isinstance(data, dict):
+        seq = data.get("sequence", [])
+        if not isinstance(seq, list):
+            raise ValueError("sequence JSON 中 sequence 必须是 list")
+        overrides = data.get("replay_env_overrides", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        return seq, overrides, path
+    raise ValueError("sequence JSON 顶层必须是 list 或 dict(含 sequence)")
 
 
 def _extract_step_result(td_next: Any) -> tuple[float, bool, int]:
@@ -49,85 +79,156 @@ def _to_next_state(td_next: Any) -> Any:
     return td_next.clone()
 
 
-def _tm2_action_index(env: Env_PN_Concurrent, name: str | None) -> int:
-    if name is None or str(name).lower() == "wait":
-        return env.tm2_wait_action
-    for i, t_idx in enumerate(env.tm2_transition_indices):
-        if env.net.id2t_name[t_idx] == name:
-            return i
-    raise ValueError(f"TM2 动作名无效或不受 TM2 控制: {name}")
+def _normalize_action_name(raw_name: str | None) -> str:
+    if raw_name is None:
+        return "WAIT_5s"
+    name = str(raw_name).strip()
+    if name.upper() == "WAIT":
+        return "WAIT_5s"
+    return name
 
-def _tm3_action_index(env: Env_PN_Concurrent, name: str | None) -> int:
-    if name is None or str(name).lower() == "wait":
-        return env.tm3_wait_action
-    for i, t_idx in enumerate(env.tm3_transition_indices):
-        if env.net.id2t_name[t_idx] == name:
+
+def _single_action_index(env: Env_PN_Single, raw_name: str | None) -> int:
+    action_name = _normalize_action_name(raw_name)
+    for i in range(env.n_actions):
+        if env.get_action_name(i) == action_name:
             return i
-    raise ValueError(f"TM3 动作名无效或不受 TM3 控制: {name}")
+    raise ValueError(f"单设备动作名无效: {action_name}")
+
+
+def _build_release_violation_reasons(
+    env: Env_PN_Single,
+    fire_indices: list[int],
+) -> dict[int, dict[str, Any]]:
+    net = env.net
+    reasons: dict[int, dict[str, Any]] = {}
+    if not fire_indices:
+        return reasons
+
+    proc_times = {p.name: p.processing_time for p in net.marks}
+    capacities = {p.name: p.capacity for p in net.marks}
+
+    def build_intervals(chamber_name: str) -> list[tuple[int, int, int]]:
+        intervals: list[tuple[int, int, int]] = []
+        for (enter, leave, wid) in net._chamber_timeline.get(chamber_name, []):
+            l = leave if leave is not None else enter + proc_times.get(chamber_name, 0)
+            intervals.append((int(enter), int(l), int(wid)))
+        intervals.sort(key=lambda x: x[0])
+        return intervals
+
+    intervals_by_station: dict[str, list[tuple[int, int, int]]] = {}
+    capacity_by_station: dict[str, int] = {}
+    proc_time_by_station: dict[str, int] = {}
+    for station, chambers in net._release_station_aliases.items():
+        merged: list[tuple[int, int, int]] = []
+        for chamber_name in chambers:
+            merged.extend(build_intervals(chamber_name))
+        merged.sort(key=lambda x: x[0])
+        intervals_by_station[station] = merged
+        capacity_by_station[station] = int(sum(capacities.get(name, 0) for name in chambers))
+        proc_time_by_station[station] = int(max((proc_times.get(name, 0) for name in chambers), default=0))
+
+    edge_transfer = int(net.T_transport + net.T_load)
+    chain_map: dict[str, list[str]] = dict(net._release_chain_by_u)
+
+    for fire_idx in fire_indices:
+        if not (0 <= int(fire_idx) < len(net.fire_log)):
+            continue
+        log = net.fire_log[int(fire_idx)]
+        t_name = str(log.get("t_name", ""))
+        wid = int(log.get("token_id", -1))
+        chain = chain_map.get(t_name, [])
+        arrival = int(log.get("t1", 0)) + edge_transfer
+
+        reason_item = {
+            "reason": "unknown",
+            "violated_station": None,
+            "arrival": arrival,
+            "capacity": None,
+            "occupied_prior": None,
+        }
+        for idx, station in enumerate(chain):
+            intervals = intervals_by_station.get(station, [])
+            cap = int(capacity_by_station.get(station, 1))
+            occupied_prior = int(
+                sum(1 for (e, l, wid0) in intervals if e <= arrival < l and wid0 < wid)
+            )
+            if occupied_prior + 1 > cap:
+                reason_item = {
+                    "reason": "downstream_capacity_exceeded",
+                    "violated_station": station,
+                    "arrival": int(arrival),
+                    "capacity": cap,
+                    "occupied_prior": occupied_prior,
+                }
+                break
+            if idx < len(chain) - 1:
+                arrival = arrival + int(proc_time_by_station.get(station, 0)) + edge_transfer
+        reasons[int(fire_idx)] = reason_item
+    return reasons
+
 
 def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
-    seq = _load_sequence(sequence_path)
-    env = Env_PN_Concurrent(training_phase=2)
+    seq, replay_env_overrides, resolved_sequence_path = _load_sequence(sequence_path)
+    env = Env_PN_Single(
+        seed=0,
+        training_phase=int(replay_env_overrides.get("training_phase", 2)),
+        device_mode=str(replay_env_overrides.get("single_device_mode", "single")),
+        robot_capacity=int(replay_env_overrides.get("single_robot_capacity", 1)),
+        route_code=int(replay_env_overrides.get("single_route_code", 0)),
+        process_time_map=replay_env_overrides.get("single_process_time_map"),
+        detailed_reward=True,
+    )
     td = env.reset()
 
     records: list[dict[str, Any]] = []
     fire_log_ranges: list[tuple[int, int]] = []
-    target_step_indices: list[int] = []
+    tracked_u_llc_step_indices: list[int] = []
 
     env.net.no_release_penalty = True
     try:
         for idx, item in enumerate(seq):
-            actions = item.get("actions", [None, None])
-            tm2_name = actions[0] if len(actions) > 0 else None
-            tm3_name = actions[1] if len(actions) > 0 else None
+            actions = item.get("actions", [])
+            action_name = actions[0] if len(actions) > 0 else item.get("action")
+            action_idx = _single_action_index(env, action_name)
 
-            a_tm2 = _tm2_action_index(env, tm2_name)
-            a_tm3 = _tm3_action_index(env, tm3_name)
-
-            # 检查动作合法性
-            mask_tm2 = td["action_mask_tm2"]
-            mask_tm3 = td["action_mask_tm3"]
-            if not bool(mask_tm2[a_tm2].item()):
-                raise RuntimeError(f"第 {idx+1} 步 TM2 动作不可用: {tm2_name}")
-            if not bool(mask_tm3[a_tm3].item()):
-                raise RuntimeError(f"第 {idx+1} 步 TM3 WAIT 不可用")
+            mask = td["action_mask"]
+            if not bool(mask[action_idx].item()):
+                raise RuntimeError(f"第 {idx+1} 步动作不可用: {_normalize_action_name(action_name)}")
 
             fire_start = len(env.net.fire_log)
 
             step_td = td.clone()
-            step_td["action_tm2"] = torch.tensor(a_tm2, dtype=torch.int64)
-            step_td["action_tm3"] = torch.tensor(a_tm3, dtype=torch.int64)
+            step_td["action"] = torch.tensor(action_idx, dtype=torch.int64)
             td_next = env.step(step_td)
 
             fire_end = len(env.net.fire_log)
             fire_log_ranges.append((fire_start, fire_end))
 
             reward_before, terminated, sim_time = _extract_step_result(td_next)
-            record = {
-                "step": idx + 1,
-                "time": sim_time,
-                "tm2_action": tm2_name if tm2_name is not None else "wait",
-                "tm3_action": "wait",
-                "reward_before_second_pass": reward_before,
-                "reward_after_second_pass": reward_before,
-                "second_pass_penalties": [],
-                "terminated": terminated,
-            }
-            records.append(record)
+            normalized_action = _normalize_action_name(action_name)
+            records.append(
+                {
+                    "step": idx + 1,
+                    "time": sim_time,
+                    "action": normalized_action,
+                    "reward_before_second_pass": reward_before,
+                    "reward_after_second_pass": reward_before,
+                    "second_pass_penalties": [],
+                    "terminated": terminated,
+                }
+            )
 
-            if tm2_name == "u_LP2_s1":
-                target_step_indices.append(idx)
+            if normalized_action == "u_LLC":
+                tracked_u_llc_step_indices.append(idx)
 
-            # 返回下一步状态
             td = _to_next_state(td_next)
     finally:
         env.net.no_release_penalty = False
-        for log in env.net.fire_log:
-            print(log)
 
-
-            # 序列结束后做第二阶段追责（不依赖 episode 结束）
     blame = env.net.blame_release_violations()
+    fire_indices = sorted(int(k) for k in blame.keys())
+    reasons_by_fire_idx = _build_release_violation_reasons(env, fire_indices)
     mapped_blame: list[dict[str, Any]] = []
     for fire_idx, penalty in blame.items():
         for step_idx, (start, end) in enumerate(fire_log_ranges):
@@ -141,7 +242,7 @@ def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
                         "fire_log_index": int(fire_idx),
                         "penalty": float(penalty),
                         "mapped_step_index": step_idx,
-                        "mapped_tm2_action": records[step_idx]["tm2_action"],
+                        "mapped_action": records[step_idx]["action"],
                     }
                 )
                 break
@@ -149,54 +250,97 @@ def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
     total_before = float(sum(r["reward_before_second_pass"] for r in records))
     total_after = float(sum(r["reward_after_second_pass"] for r in records))
 
-    # 检查“最后一个 u_LP2_s1”是否被二次惩罚命中
-    last_lp2_u_step = target_step_indices[-1] if target_step_indices else None
-    last_lp2_u_penalty = 0.0
-    if last_lp2_u_step is not None:
-        last_lp2_u_penalty = float(
-            sum(p["penalty"] for p in records[last_lp2_u_step]["second_pass_penalties"])
+    tracked_u_llc_penalties: list[dict[str, Any]] = []
+    for step_idx in tracked_u_llc_step_indices:
+        tracked_u_llc_penalties.append(
+            {
+                "step_index": step_idx,
+                "step": step_idx + 1,
+                "penalty": float(sum(p["penalty"] for p in records[step_idx]["second_pass_penalties"])),
+            }
         )
+
+    penalized_actions_report: list[dict[str, Any]] = []
+    penalized_action_lines: list[dict[str, Any]] = []
+    for item in mapped_blame:
+        fire_idx = int(item["fire_log_index"])
+        step_index = int(item["mapped_step_index"])
+        step_num = step_index + 1
+        reason = reasons_by_fire_idx.get(fire_idx, {})
+        reason_text = str(reason.get("reason", "unknown"))
+        penalized_action_lines.append(
+            {
+                "action_name": str(item["mapped_action"]),
+                "step": step_num,
+                "reason": reason_text,
+            }
+        )
+        penalized_actions_report.append(
+            {
+                "action_name": str(item["mapped_action"]),
+                "step": step_num,
+                "fire_log_index": fire_idx,
+                "penalty": float(item["penalty"]),
+                "reason": reason_text,
+                "violated_station": reason.get("violated_station"),
+                "arrival": reason.get("arrival"),
+                "where_penalized": {
+                    "step_record_index": step_index,
+                    "field": "step_records[*].reward_after_second_pass",
+                },
+            }
+        )
+
+    _debug_log(
+        "H1_H2_H3",
+        "penalized-actions-report-built",
+        {
+            "count": len(penalized_actions_report),
+            "first3": penalized_actions_report[:3],
+        },
+    )
 
     payload = {
         "meta": {
             "script": "solutions/Continuous_model/check_release_penalty.py",
-            "sequence_path": str(sequence_path),
+            "sequence_path": str(resolved_sequence_path),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "steps": len(records),
-            "tm3_policy": "always_wait",
+            "env": "Env_PN_Single",
         },
         "summary": {
             "total_reward_before_second_pass": total_before,
             "total_reward_after_second_pass": total_after,
             "total_second_pass_penalty": total_before - total_after,
             "blame_count": len(blame),
-            "last_u_LP2_s1_step_index": last_lp2_u_step,
-            "last_u_LP2_s1_second_pass_penalty": last_lp2_u_penalty,
-            "last_u_LP2_s1_penalized": last_lp2_u_penalty > 0.0,
+            "tracked_u_llc_count": len(tracked_u_llc_step_indices),
         },
         "blame_raw": {str(k): float(v) for k, v in blame.items()},
         "blame_mapped": mapped_blame,
+        "penalized_action_lines": penalized_action_lines,
+        "penalized_actions_report": penalized_actions_report,
+        "tracked_u_llc_penalties": tracked_u_llc_penalties,
         "step_records": records,
     }
 
     results_dir.mkdir(parents=True, exist_ok=True)
-    out_path = results_dir / f"release_penalty_second_pass.json"
+    out_path = results_dir / "release_penalty_second_pass.json"
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
     print(f"[INFO] 结果已输出: {out_path}")
-    print(
-        "[INFO] 最后一个 u_LP2_s1 二次惩罚 = "
-        f"{payload['summary']['last_u_LP2_s1_second_pass_penalty']}"
-    )
+    print("[INFO] 追责逐行摘要(action_name + step + reason):")
+    for x in penalized_action_lines:
+        print(x)
+
     return out_path
 
 
 def main() -> None:
-    default_sequence = "wrong_seq.json"
+    default_sequence = Path(__file__).resolve().parents[2] / "solutions" / "Td_petri" / "planB_sequence.json"
     default_results = Path(__file__).resolve().parents[2] / "results"
 
-    parser = argparse.ArgumentParser(description="验证二次释放惩罚回填的脚本")
+    parser = argparse.ArgumentParser(description="验证单设备二次释放惩罚回填的脚本")
     parser.add_argument("--sequence", type=Path, default=default_sequence, help="动作序列 JSON 路径")
     parser.add_argument("--results-dir", type=Path, default=default_results, help="输出目录")
     args = parser.parse_args()
