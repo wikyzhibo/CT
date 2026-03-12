@@ -98,7 +98,8 @@ class PetriMainWindow(QMainWindow):
         }
         self._model_path_override: Path | None = None
         self._model_apply_callback = None
-        self._action_sequence_path = Path("solutions/Td_petri/planB_sequence.json")
+        self._action_sequence_default_dir = Path("seq")
+        self._action_sequence_path: Path | None = None
         self._adapter_factory = None
         
         self._drag_pos: QPoint | None = None
@@ -342,7 +343,13 @@ class PetriMainWindow(QMainWindow):
         self._refresh_status_message()
 
     def _pick_action_sequence_json(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择动作序列 JSON", str(self._action_sequence_path.parent), "JSON Files (*.json)")
+        if self._action_sequence_path is not None:
+            start_dir = self._action_sequence_path.parent
+        else:
+            start_dir = self._action_sequence_default_dir
+        if not start_dir.exists():
+            start_dir = Path.cwd()
+        path, _ = QFileDialog.getOpenFileName(self, "选择动作序列 JSON", str(start_dir), "JSON Files (*.json)")
         if not path:
             return
         self._action_sequence_path = Path(path)
@@ -350,7 +357,7 @@ class PetriMainWindow(QMainWindow):
         self._refresh_status_message()
 
     def _reset_default_action_sequence(self) -> None:
-        self._action_sequence_path = Path("solutions/Td_petri/planB_sequence.json")
+        self._action_sequence_path = None
         self._verification_env_overrides = None
         self._refresh_status_message()
 
@@ -362,7 +369,10 @@ class PetriMainWindow(QMainWindow):
             wafers_text = f"R1={self._wafer_count_route1}, R2={self._wafer_count_route2}"
         arm_mode_text = "Dual Arm" if self._robot_capacity == 2 else "Single Arm"
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
-        seq_text = str(self._action_sequence_path)
+        if self._action_sequence_path is None:
+            seq_text = f"未选择（默认目录: {self._action_sequence_default_dir}）"
+        else:
+            seq_text = str(self._action_sequence_path)
         clean_labels = []
         if self._cleaning_options["idle_80"]:
             clean_labels.append("idle80/30s")
@@ -722,6 +732,9 @@ class PetriMainWindow(QMainWindow):
         
         try:
             seq_path = self._action_sequence_path
+            if seq_path is None:
+                QMessageBox.warning(self, "Error", "未选择动作序列 JSON，请先在回放菜单中选择文件。")
+                return False
             if not seq_path.exists():
                     QMessageBox.warning(self, "Error", f"{seq_path} not found! Run generation script first.")
                     return False

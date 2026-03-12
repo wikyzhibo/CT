@@ -346,9 +346,9 @@ def rollout_and_export(
     project_root = Path(__file__).resolve().parents[2]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    action_series_dir = Path(__file__).resolve().parent / "action_series"
-    action_series_dir.mkdir(parents=True, exist_ok=True)
-    action_series_path = action_series_dir / f"{out_name}_{timestamp}.json"
+    action_series_dir = Path(__file__).resolve().parents[2] / "seq"
+    #action_series_dir.mkdir(parents=True, exist_ok=True)
+    action_series_path = action_series_dir / f"tmp.json"
 
     planb_path = project_root / "solutions" / "Td_petri" / "planB_sequence.json"
     if planb_path.exists() and not force_overwrite_planb:
@@ -412,9 +412,9 @@ def main() -> None:
     selected_device = args.device_mode if args.device_mode else args.device
     if out_name == "concurrent_infer_seq" and selected_device == "single":
         out_name = "single_infer_seq"
-
+    model_path = Path(__file__).resolve().parents[2] / "models" / args.model
     out = rollout_and_export(
-        model_path=args.model,
+        model_path=model_path,
         max_steps=args.max_steps,
         seed=args.seed,
         out_name=out_name,

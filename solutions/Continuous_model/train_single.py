@@ -211,7 +211,7 @@ def train_single(
     os.makedirs(backup_dir, exist_ok=True)
 
     model_prefix = f"CT_single_phase{training_phase}"
-    best_model_path = os.path.join(saved_models_dir, f"{model_prefix}_best.pt")
+    best_model_path = Path(__file__).resolve().parents[2] / "models" / "tmp.pt"
     best_reward = float("-inf")
     log = defaultdict(list)
 

@@ -22,7 +22,7 @@ from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.construct_single import build_single_device_net
 from solutions.Continuous_model.pn import Place
 
-MAX_TIME = 15000
+MAX_TIME = 20000
 CHAMBER = 1
 DELIVERY_ROBOT = 2
 SOURCE = 3
