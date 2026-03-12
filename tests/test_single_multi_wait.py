@@ -3,7 +3,7 @@ import numpy as np
 
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.env_single import Env_PN_Single
-from solutions.Continuous_model.pn_single import PetriSingleDevice
+from solutions.Continuous_model.pn_single import ClusterTool
 
 
 def _extract_next_td(td):
@@ -60,7 +60,7 @@ def test_wait_fallback_when_no_future_event():
         stop_on_scrap=False,
         single_wait_durations=[5, 10, 20, 50, 100],
     )
-    net = PetriSingleDevice(config=config)
+    net = ClusterTool(config=config)
     net.reset()
 
     for place in net.marks:
@@ -136,7 +136,7 @@ def test_wait_5_does_not_use_event_capping():
         stop_on_scrap=False,
         single_wait_durations=[5, 20],
     )
-    net = PetriSingleDevice(config=config)
+    net = ClusterTool(config=config)
     net.reset()
 
     for place in net.marks:

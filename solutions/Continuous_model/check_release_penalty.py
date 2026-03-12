@@ -337,15 +337,15 @@ def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
 
 
 def main() -> None:
-    default_sequence = Path(__file__).resolve().parents[2] / "solutions" / "Td_petri" / "planB_sequence.json"
     default_results = Path(__file__).resolve().parents[2] / "results"
 
     parser = argparse.ArgumentParser(description="验证单设备二次释放惩罚回填的脚本")
-    parser.add_argument("--sequence", type=Path, default=default_sequence, help="动作序列 JSON 路径")
+    parser.add_argument("--sequence", type=Path, help="动作序列 JSON 路径")
     parser.add_argument("--results-dir", type=Path, default=default_results, help="输出目录")
     args = parser.parse_args()
+    sequence_path = Path(__file__).resolve().parents[2] / "seq" / args.sequence
 
-    run_sequence(sequence_path=args.sequence, results_dir=args.results_dir)
+    run_sequence(sequence_path=sequence_path, results_dir=args.results_dir)
 
 
 if __name__ == "__main__":

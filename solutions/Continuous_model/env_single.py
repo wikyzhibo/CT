@@ -13,7 +13,7 @@ from torchrl.data import Binary, Categorical, Composite, Unbounded
 from torchrl.envs import EnvBase
 
 from data.petri_configs.env_config import PetriEnvConfig
-from solutions.Continuous_model.pn_single import PetriSingleDevice
+from solutions.Continuous_model.pn_single import ClusterTool
 from pathlib import Path
 
 class Env_PN_Single(EnvBase):
@@ -69,7 +69,7 @@ class Env_PN_Single(EnvBase):
         if proc_time_rand_max_scale is not None:
             config.single_proc_time_rand_max_scale = float(proc_time_rand_max_scale)
 
-        self.net = PetriSingleDevice(config=config)
+        self.net = ClusterTool(config=config)
         # 与 pn_single 保持同一份 wait 档位来源，避免 env/net 两处规则漂移。
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
         self.action_catalog = self._build_action_catalog()

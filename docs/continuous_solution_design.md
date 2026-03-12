@@ -111,6 +111,7 @@ flowchart TB
 - 释放追责：支持 `blame_release_violations()`，利用单设备 `_chamber_timeline` 做 second-pass 回填
 - 释放追责站点按路径代号聚合：`s1=PM1`，`s2=PM3∪PM4`；当 `single_route_code=1` 时新增 `s3=PM6`，`u_LP` 链路检查扩展为 `s1->s2->s3`。
 - `u_src` 发射前会检查“至少一个候选目标可接收”，并在发射时确定 `_target_place`。
+- `single` 模式下当 `u_PM1` 目标层为并行 `PM3/PM4` 且两者均可接收时，采用轮换分配（round-robin），避免长期偏置到单一腔室。
 - `t_*` 使能在 `d_TM1` 侧额外受 `pre_color[:,:,where]` 限制：只有当前 `where` 对应颜色截面允许的目标才可放行。
 - 每次晶圆被变迁移动后执行 `where += 1`，用于推进 color 截面判定。
 - 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。

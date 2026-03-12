@@ -350,21 +350,12 @@ def rollout_and_export(
     #action_series_dir.mkdir(parents=True, exist_ok=True)
     action_series_path = action_series_dir / f"tmp.json"
 
-    planb_path = project_root / "solutions" / "Td_petri" / "planB_sequence.json"
-    if planb_path.exists() and not force_overwrite_planb:
-        raise FileExistsError(
-            f"{planb_path} 已存在。若需覆盖，请传 --force-overwrite-planb"
-        )
-    planb_path.parent.mkdir(parents=True, exist_ok=True)
 
     with action_series_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    with planb_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
 
     return {
-        "action_series_path": action_series_path,
-        "planb_path": planb_path,
+        "action_series_path": action_series_path
     }
 
 
@@ -382,12 +373,6 @@ def main() -> None:
         default="cascade",
         choices=["cascade", "single"],
         help="设备模式：cascade=级联双机械手，single=单设备单动作",
-    )
-    parser.add_argument(
-        "--device-mode",
-        type=str,
-        choices=["cascade", "single"],
-        help="已弃用，等价于 --device",
     )
     parser.add_argument(
         "--robot-capacity",
@@ -409,7 +394,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     out_name = args.out_name
-    selected_device = args.device_mode if args.device_mode else args.device
+    selected_device = args.device
     if out_name == "concurrent_infer_seq" and selected_device == "single":
         out_name = "single_infer_seq"
     model_path = Path(__file__).resolve().parents[2] / "models" / args.model
@@ -426,7 +411,6 @@ def main() -> None:
     )
 
     print(f"[INFO] 已导出 action_series: {out['action_series_path']}")
-    print(f"[INFO] 已导出 planB_sequence: {out['planb_path']}")
 
 
 if __name__ == "__main__":

@@ -323,9 +323,11 @@ if __name__ == "__main__":
     parser.add_argument("--proc-time-rand-enabled", action="store_true", help="开启单设备工序时间随机扰动")
     args = parser.parse_args()
 
-    path = Path(__file__).parents[2] / "data" / "ppo_configs" / "s_train.json"
+    root = Path(__file__).parents[2]
+    path = root / "data" / "ppo_configs" / "s_train.json"
     cfg = PPOTrainingConfig.load(path)
     print(f"从 {path} 加载配置")
+    checkpoint_path = root / "models" / args.checkpoint
     train_single(
         config=cfg,
         training_phase=args.phase,

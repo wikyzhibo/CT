@@ -1,16 +1,16 @@
 from data.petri_configs.env_config import PetriEnvConfig
-from solutions.Continuous_model.pn_single import PetriSingleDevice
+from solutions.Continuous_model.pn_single import ClusterTool
 from solutions.Continuous_model.env_single import Env_PN_Single
 
 
-def _fire_by_name(net: PetriSingleDevice, transition_name: str) -> None:
+def _fire_by_name(net: ClusterTool, transition_name: str) -> None:
     tid = net.id2t_name.index(transition_name)
     net.step(a1=tid, detailed_reward=True)
 
 
 def test_single_route_code0_keeps_legacy_topology():
     cfg = PetriEnvConfig(n_wafer=1, stop_on_scrap=False, single_route_code=0)
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     assert net.single_route_code == 0
     assert net._u_targets["PM1"] == ["PM3", "PM4"]
@@ -27,7 +27,7 @@ def test_single_route_code1_runs_through_pm6_before_done():
         single_route_code=1,
         single_process_time_map={"PM1": 5, "PM3": 5, "PM4": 5, "PM6": 5},
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     assert net.single_route_code == 1
     assert net._u_targets["PM1"] == ["PM3", "PM4"]
@@ -131,7 +131,7 @@ def test_cascade_route_code2_uses_pm1_pm2_only():
             "PM10": 5,
         },
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     assert net.single_route_code == 2
     assert net._u_targets["LLC"] == ["PM1", "PM2"]
@@ -157,7 +157,7 @@ def test_cascade_route_code2_defaults_pm1_pm2_to_300s():
             "PM10": 200,
         },
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
     pm1 = net._get_place("PM1")
     pm2 = net._get_place("PM2")
     assert pm1.processing_time == 300
@@ -180,7 +180,7 @@ def test_cascade_route_code2_parallel_pairs_use_round_robin():
             "PM10": 5,
         },
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     # 使能检查阶段（advance_round_robin=False）不应推进轮换指针
     assert net._select_target_for_source("LP") == "PM7"
@@ -209,7 +209,7 @@ def test_cascade_route_code3_uses_lld_then_done_without_pm9_pm10():
             "LLD": 5,
         },
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     assert net.single_route_code == 3
     assert net._u_targets["LLC"] == ["PM1", "PM2"]
@@ -238,7 +238,7 @@ def test_cascade_route_code3_can_finish_via_lld_then_lp_done():
             "LLD": 5,
         },
     )
-    net = PetriSingleDevice(config=cfg)
+    net = ClusterTool(config=cfg)
 
     _fire_by_name(net, "u_LP")
     _fire_by_name(net, "t_PM7")

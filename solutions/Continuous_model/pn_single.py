@@ -28,7 +28,7 @@ DELIVERY_ROBOT = 2
 SOURCE = 3
 
 
-class PetriSingleDevice:
+class ClusterTool:
     def __init__(self, config: PetriEnvConfig = None) -> None:
         assert config is not None, "config must be provided"
         self.config = config
@@ -231,6 +231,8 @@ class PetriSingleDevice:
         self._next_machine_id = 1
         self._cascade_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
         self._cascade_round_robin_next: Dict[str, str] = {}
+        self._single_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
+        self._single_round_robin_next: Dict[str, str] = {}
         if self.single_device_mode == "cascade":
             self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
             if self.single_route_code in {2, 3}:
@@ -239,6 +241,14 @@ class PetriSingleDevice:
                 self._cascade_round_robin_pairs["LLD"] = ("PM9", "PM10")
             self._cascade_round_robin_next = {
                 source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
+            }
+        else:
+            for source, targets in self._u_targets.items():
+                if len(targets) == 2:
+                    pair = (str(targets[0]), str(targets[1]))
+                    self._single_round_robin_pairs[source] = pair
+            self._single_round_robin_next = {
+                source: pair[0] for source, pair in self._single_round_robin_pairs.items()
             }
         self._last_deadlock = False
         self.no_release_penalty = False
@@ -394,6 +404,10 @@ class PetriSingleDevice:
             self._cascade_round_robin_next = {
                 source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
             }
+        else:
+            self._single_round_robin_next = {
+                source: pair[0] for source, pair in self._single_round_robin_pairs.items()
+            }
         self._last_deadlock = False
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
@@ -529,14 +543,17 @@ class PetriSingleDevice:
         Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
         """
 
-        # =====
+        # step 1: 若为双臂，预先锁定一些u_*变迁
         stage1_enabled: List[int] = []
         d_tm = self._get_place("d_TM1") if ("d_TM1" in self.id2p_name and self.single_device_mode != "cascade") else None
         head_tok = d_tm.head() if (d_tm is not None and len(d_tm.tokens) > 0) else None
+
+        # 机器手容量为2时，如果 d_TM1 队首有晶圆，则锁定后续 u_* 来源到该晶圆的 dst 层，直到该晶圆离开 d_TM1。
         locked_sources: set[str] = set()
         if self.robot_capacity == 2 and self.single_device_mode != "cascade" and head_tok is not None:
             locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
 
+        # step2: 遍历变迁，结构性使能
         # =====self.m >= self.pre[:, t]=======
         # =====self.m + self.pst[:, t] <= self.k=======
         for t in range(self.T):
@@ -579,6 +596,7 @@ class PetriSingleDevice:
                     if self._select_target_for_source(src, ignore_cleaning=True) is None:
                         continue
             elif t_name.startswith("t_"):
+                # t_*类型变迁，取队首token._target_place进行目标检查
                 target = t_name[2:]
                 transport_name = self._transport_for_t_target(target)
                 tp = self._get_place(transport_name)
@@ -933,6 +951,28 @@ class PetriSingleDevice:
                 chosen_target = next_target if next_target in available_targets else available_targets[0]
                 if advance_round_robin:
                     self._cascade_round_robin_next[source] = (
+                        available_targets[1] if chosen_target == available_targets[0] else available_targets[0]
+                    )
+                return chosen_target
+            if len(available_targets) == 1:
+                return available_targets[0]
+        if self.single_device_mode == "single" and source in self._single_round_robin_pairs and preferred_target is None:
+            # single 模式并行目标采用轮换分配，避免持续偏置到候选列表中的第一个目标。
+            rr_targets = list(self._single_round_robin_pairs[source])
+            available_targets: List[str] = []
+            for target in rr_targets:
+                if target not in candidates:
+                    continue
+                target_place = self._get_place(target)
+                if (not ignore_cleaning) and bool(getattr(target_place, "is_cleaning", False)):
+                    continue
+                if len(target_place.tokens) < target_place.capacity:
+                    available_targets.append(target)
+            if len(available_targets) == 2:
+                next_target = self._single_round_robin_next.get(source, available_targets[0])
+                chosen_target = next_target if next_target in available_targets else available_targets[0]
+                if advance_round_robin:
+                    self._single_round_robin_next[source] = (
                         available_targets[1] if chosen_target == available_targets[0] else available_targets[0]
                     )
                 return chosen_target
