@@ -53,7 +53,7 @@ class ClusterTool:
         self.n_wafer = int(config.n_wafer)
         
         self.done_event_reward = int(config.done_event_reward)
-        self.finish_event_reward = int(config.finish_event_reward)
+        self.finish_event_reward = self.done_event_reward * 6
         self.scrap_event_penalty = int(config.scrap_event_penalty)
         self.idle_event_penalty = float(config.idle_event_penalty)
         self.release_event_penalty = float(config.release_event_penalty)
@@ -1107,6 +1107,18 @@ class ClusterTool:
             intervals.sort(key=lambda x: x[0])
             return intervals
 
+        # 从 fire_log 提取清洁区间（腔室在清洁期间占位，wid=-999 表示清洁占位）
+        def build_cleaning_intervals(chamber_name: str) -> List[tuple]:
+            if not getattr(self, "cleaning_enabled", False) or chamber_name not in getattr(self, "cleaning_targets", set()):
+                return []
+            out: List[tuple] = []
+            for ev in self.fire_log:
+                if ev.get("event_type") == "cleaning_start" and ev.get("chamber") == chamber_name:
+                    t0 = int(ev.get("time", 0))
+                    dur = int(ev.get("duration", self.cleaning_duration))
+                    out.append((t0, t0 + dur, -999))
+            return out
+
         intervals_by_station: Dict[str, List[tuple]] = {}
         capacity_by_station: Dict[str, int] = {}
         proc_time_by_station: Dict[str, int] = {}
@@ -1114,6 +1126,7 @@ class ClusterTool:
             merged: List[tuple] = []
             for chamber_name in chambers:
                 merged.extend(build_intervals(chamber_name))
+                merged.extend(build_cleaning_intervals(chamber_name))
             merged.sort(key=lambda x: x[0])
             intervals_by_station[station] = merged
             capacity_by_station[station] = int(sum(capacities.get(name, 0) for name in chambers))
@@ -1151,7 +1164,8 @@ class ClusterTool:
             for idx, station in enumerate(chain):
                 intervals = intervals_by_station.get(station, [])
                 cap = capacity_by_station.get(station, 1)
-                if will_exceed_capacity(intervals, arrival, cap, wid):
+                exceeds = will_exceed_capacity(intervals, arrival, cap, wid)
+                if exceeds:
                     violated = True
                     break
                 if idx < len(chain) - 1:

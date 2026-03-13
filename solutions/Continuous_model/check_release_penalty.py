@@ -19,23 +19,6 @@ import torch
 from solutions.Continuous_model.env_single import Env_PN_Single
 
 
-def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": "0f180c",
-        "runId": "report-with-reason",
-        "hypothesisId": hypothesis_id,
-        "location": "solutions/Continuous_model/check_release_penalty.py",
-        "message": message,
-        "data": data,
-        "timestamp": int(datetime.now().timestamp() * 1000),
-    }
-    log_path = Path(__file__).resolve().parents[2] / "debug-0f180c.log"
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    # #endregion
-
-
 def _load_sequence(seq_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any], Path]:
     path = Path(seq_path)
     if not path.is_absolute():
@@ -116,6 +99,17 @@ def _build_release_violation_reasons(
         intervals.sort(key=lambda x: x[0])
         return intervals
 
+    def build_cleaning_intervals(chamber_name: str) -> list[tuple[int, int, int]]:
+        if not getattr(net, "cleaning_enabled", False) or chamber_name not in getattr(net, "cleaning_targets", set()):
+            return []
+        out: list[tuple[int, int, int]] = []
+        for ev in net.fire_log:
+            if ev.get("event_type") == "cleaning_start" and ev.get("chamber") == chamber_name:
+                t0 = int(ev.get("time", 0))
+                dur = int(ev.get("duration", getattr(net, "cleaning_duration", 150)))
+                out.append((t0, t0 + dur, -999))
+        return out
+
     intervals_by_station: dict[str, list[tuple[int, int, int]]] = {}
     capacity_by_station: dict[str, int] = {}
     proc_time_by_station: dict[str, int] = {}
@@ -123,6 +117,7 @@ def _build_release_violation_reasons(
         merged: list[tuple[int, int, int]] = []
         for chamber_name in chambers:
             merged.extend(build_intervals(chamber_name))
+            merged.extend(build_cleaning_intervals(chamber_name))
         merged.sort(key=lambda x: x[0])
         intervals_by_station[station] = merged
         capacity_by_station[station] = int(sum(capacities.get(name, 0) for name in chambers))
@@ -285,15 +280,6 @@ def run_sequence(sequence_path: Path, results_dir: Path) -> Path:
                 },
             }
         )
-
-    _debug_log(
-        "H1_H2_H3",
-        "penalized-actions-report-built",
-        {
-            "count": len(penalized_actions_report),
-            "first3": penalized_actions_report[:3],
-        },
-    )
 
     payload = {
         "meta": {

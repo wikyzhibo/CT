@@ -136,7 +136,8 @@ class BasedToken:
 - `get_action_mask(wait_action_start=None, n_actions=None) -> np.ndarray`：返回完整离散动作掩码（`transition + wait`）
 - `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
-- `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 的单设备事后追责，输出 `fire_log_index -> penalty`
+- `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`
+  - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`cleaning_targets` 内腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - `single_route_code=0`：追责站点 `s1=PM1`，`s2=PM3∪PM4`，`u_LP` 链路按 `s1 -> s2` 判定
   - `single_route_code=1`：在上述基础上增加 `s3=PM6`，`u_LP` 链路扩展为 `s1 -> s2 -> s3`
@@ -145,6 +146,7 @@ class BasedToken:
 
 **事后追责相关字段**
 - `_chamber_timeline/_chamber_active`：按路径代号记录加工腔体进入离开时间线（`code=0` 为 PM1/PM3/PM4；`code=1` 额外包含 PM6），供 episode 结束后 `blame_release_violations` 使用
+- `blame_release_violations` 将 `fire_log` 中的 `cleaning_start` 转为清洁占位区间，与晶圆区间一并计入下游站点容量，故 PM3/PM4 同时清洁时对 s2 的释放会被正确追责
 
 **设备模式字段**
 - `single_device_mode`: `single` 或 `cascade`。
