@@ -88,6 +88,7 @@ flowchart TB
 - 单设备在可视化菜单中可被真实切换，不再仅 UI 占位。
 - 单设备 `u-d-t` 子网的卸载命名由 `u_src_dst` 简化为 `u_src`，例如 `u_PM1_PM3/u_PM1_PM4 -> u_PM1`。
 - 单设备构网新增 `pre_color(place, transition, color)` 三维前置约束，`color` 由 token 的 `where` 驱动。
+- **路由元数据由路径解析生成**：`construct_single.py` 中的 `parse_route(stages, buffer_names)` 从路线阶段序列（如 `[["PM1"], ["PM3","PM4"], ["PM6"]]`）解析出 `chambers`、`step_map`、`u_targets`、`release_station_aliases`、`system_entry_places`、`release_chain_by_u`、`timeline_chambers`，`ClusterTool` 不再维护硬编码分支。
 
 ### Why
 - 需要在不破坏现有 `pn.py`/并发训练流程的前提下，快速试验单设备工艺。

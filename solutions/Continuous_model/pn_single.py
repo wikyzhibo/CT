@@ -17,7 +17,12 @@ import numpy as np
 
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.construct import BasedToken
-from solutions.Continuous_model.construct_single import build_single_device_net
+from solutions.Continuous_model.construct_single import (
+    BUFFER_NAMES,
+    ROUTE_SPECS,
+    build_single_device_net,
+    parse_route,
+)
 from solutions.Continuous_model.pn import Place
 
 CHAMBER = 1
@@ -32,7 +37,6 @@ class ClusterTool:
 
         self.MAX_TIME = config.MAX_TIME
         self.n_wafer = int(config.n_wafer)
-        self.device_mode = config.device_mode
         
         self.done_event_reward = int(config.done_event_reward)
         self.finish_event_reward = int(config.finish_event_reward)
@@ -61,114 +65,27 @@ class ClusterTool:
         self.cleaning_duration = max(0, int(config.cleaning_duration))
         self.wait_durations = _normalize_wait_durations(config.single_wait_durations)
         
-        self.route_code = config.route_code
+        self.device_mode = getattr(config, "single_device_mode", None) or config.device_mode
+        self.route_code = getattr(config, "single_route_code", None) or config.route_code
+        self.single_device_mode = self.device_mode
+        self.single_route_code = self.route_code
 
-        if self.device_mode == "cascade":
-            cascade_stage3 = ("PM1", "PM2", "PM3", "PM4") if self.route_code == 1 else ("PM1", "PM2")
-            if self.route_code == 3:
-                self.chambers = ("PM7", "PM8", *cascade_stage3, "LLD")
-            else:
-                self.chambers = ("PM7", "PM8", *cascade_stage3, "LLD", "PM9", "PM10")
-            self._timeline_chambers = self.chambers + ("LLC",)
-            self._u_targets = {
-                "LP": ["PM7", "PM8"],
-                "PM7": ["LLC"],
-                "PM8": ["LLC"],
-                "LLC": list(cascade_stage3),
-                "PM1": ["LLD"],
-                "PM2": ["LLD"],
-            }
-            if self.route_code == 3:
-                self._u_targets.update({"LLD": ["LP_done"]})
-            else:
-                self._u_targets.update(
-                    {
-                        "LLD": ["PM9", "PM10"],
-                        "PM9": ["LP_done"],
-                        "PM10": ["LP_done"],
-                    }
-                )
-            if self.route_code == 1:
-                self._u_targets.update({"PM3": ["LLD"], "PM4": ["LLD"]})
-            if self.route_code == 3:
-                self._step_map = {
-                    "PM7": 1,
-                    "PM8": 1,
-                    "LLC": 2,
-                    "PM1": 3,
-                    "PM2": 3,
-                    "LLD": 4,
-                    "LP_done": 5,
-                }
-            else:
-                self._step_map = {
-                    "PM7": 1,
-                    "PM8": 1,
-                    "LLC": 2,
-                    "PM1": 3,
-                    "PM2": 3,
-                    "LLD": 4,
-                    "PM9": 5,
-                    "PM10": 5,
-                    "LP_done": 6,
-                }
-            if self.route_code == 1:
-                self._step_map.update({"PM3": 3, "PM4": 3})
-            if self.route_code == 3:
-                self._release_station_aliases = {
-                    "s1": ["PM7", "PM8"],
-                    "s2": ["LLC"],
-                    "s3": list(cascade_stage3),
-                    "s4": ["LLD"],
-                }
-                self._release_chain_by_u = {
-                    "u_LP": ["s1", "s2"],
-                    "u_LLC": ["s3", "s4"],
-                }
-            else:
-                self._release_station_aliases = {
-                    "s1": ["PM7", "PM8"],
-                    "s2": ["LLC"],
-                    "s3": list(cascade_stage3),
-                    "s4": ["LLD"],
-                    "s5": ["PM9", "PM10"],
-                }
-                self._release_chain_by_u = {
-                    "u_LP": ["s1", "s2"],
-                    "u_LLC": ["s3", "s4"],
-                    "u_LLD": ["s5"],
-                }
-            self._system_entry_places = {"PM7", "PM8"}
+        route_key = (self.device_mode, self.route_code)
+        stages = ROUTE_SPECS.get(route_key) or ROUTE_SPECS.get(
+            (self.device_mode, 1 if self.device_mode == "cascade" else 0),
+            ROUTE_SPECS[("single", 0)],
+        )
+        route_meta = parse_route(stages, BUFFER_NAMES)
+        self.chambers = tuple(route_meta["chambers"])
+        self._timeline_chambers = tuple(route_meta["timeline_chambers"])
+        self._u_targets = dict(route_meta["u_targets"])
+        self._step_map = dict(route_meta["step_map"])
+        self._release_station_aliases = dict(route_meta["release_station_aliases"])
+        self._release_chain_by_u = dict(route_meta["release_chain_by_u"])
+        self._system_entry_places = set(route_meta["system_entry_places"])
+        self._ready_chambers = tuple(route_meta["chambers"])
+        self._single_process_chambers = self.chambers
 
-        if self.route_code == 1 and self.device_mode == "single":
-            self.chambers = ("PM1", "PM3", "PM4", "PM6")
-            self._timeline_chambers = tuple(self.chambers)
-            self._u_targets = {
-                "LP": ["PM1"],
-                "PM1": ["PM3", "PM4"],
-                "PM3": ["PM6"],
-                "PM4": ["PM6"],
-                "PM6": ["LP_done"],
-            }
-            self._step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "PM6": 3, "LP_done": 4}
-            self._release_station_aliases = {"s1": ["PM1"], "s2": ["PM3", "PM4"], "s3": ["PM6"]}
-            self._release_chain_by_u = {"u_LP": ["s1", "s2", "s3"]}
-            self._system_entry_places = {"PM1"}
-        else:
-            self.chambers = ("PM1", "PM3", "PM4")
-            self._timeline_chambers = tuple(self.chambers)
-            self._u_targets = {
-                "LP": ["PM1"],
-                "PM1": ["PM3", "PM4"],
-                "PM3": ["LP_done"],
-                "PM4": ["LP_done"],
-            }
-            self._step_map = {"PM1": 1, "PM3": 2, "PM4": 2, "LP_done": 3}
-            self._release_station_aliases = {"s1": ["PM1"], "s2": ["PM3", "PM4"]}
-            self._release_chain_by_u = {"u_LP": ["s1", "s2"]}
-            self._system_entry_places = {"PM1"}
-
-        self._ready_chambers: Tuple[str, ...] = tuple(self.chambers)
         self.proc_rand_enabled = bool(config.proc_rand_enabled)
         self._proc_rand_scale_map = dict(config.single_proc_time_rand_scale_map or {})
         raw = dict(config.single_process_time_map or {})
@@ -244,6 +161,7 @@ class ClusterTool:
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
+        self.train = True
 
     def step(self, a1=None, detailed_reward: bool = False, wait_duration: Optional[int] = None):
         """
@@ -617,6 +535,14 @@ class ClusterTool:
                     continue
             stage2_enabled.append(t)
         return stage2_enabled
+
+    def train(self):
+        """训练模式"""
+        self.train = True
+
+    def eval(self):
+        """评估模式"""
+        self.train = False
 
     def calc_wafer_statistics(self) -> Dict[str, Any]:
         system_times: List[float] = []

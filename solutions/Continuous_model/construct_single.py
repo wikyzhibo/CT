@@ -8,12 +8,146 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.pn import Place
+
+
+# 路线定义：stages 为阶段序列，每个阶段为单点或并行多点
+ROUTE_SPECS: Dict[Tuple[str, int], List[List[str]]] = {
+    ("single", 0): [["PM1"], ["PM3", "PM4"]],
+    ("single", 1): [["PM1"], ["PM3", "PM4"], ["PM6"]],
+    ("cascade", 1): [
+        ["PM7", "PM8"],
+        ["LLC"],
+        ["PM1", "PM2", "PM3", "PM4"],
+        ["LLD"],
+        ["PM9", "PM10"],
+    ],
+    ("cascade", 2): [
+        ["PM7", "PM8"],
+        ["LLC"],
+        ["PM1", "PM2"],
+        ["LLD"],
+        ["PM9", "PM10"],
+    ],
+    ("cascade", 3): [
+        ["PM7", "PM8"],
+        ["LLC"],
+        ["PM1", "PM2"],
+        ["LLD"],
+    ],
+}
+BUFFER_NAMES: Set[str] = {"LLC"}
+
+
+def parse_route(
+    stages: List[List[str]],
+    buffer_names: Optional[Set[str]] = None,
+) -> Dict[str, object]:
+    """
+    从路线 stages 解析路由元数据。
+
+    stages: 阶段序列，如 [["PM1"], ["PM3","PM4"], ["PM6"]] 表示 LP->PM1->[PM3,PM4]->PM6->LP_done
+    buffer_names: 缓冲库所（如 LLC），不计入 chambers，但计入 timeline_chambers
+
+    Returns:
+        chambers, timeline_chambers, u_targets, step_map,
+        release_station_aliases, release_chain_by_u, system_entry_places
+    """
+    buffer_names = buffer_names or BUFFER_NAMES
+
+    def _is_buffer_stage(stage: List[str]) -> bool:
+        return len(stage) == 1 and stage[0] in buffer_names
+
+    # release_station_aliases: s1=stage[0], s2=stage[1], ...
+    release_station_aliases: Dict[str, List[str]] = {}
+    for i, stage in enumerate(stages):
+        release_station_aliases[f"s{i + 1}"] = list(stage)
+
+    # chambers: 按序展开，排除 buffer stage
+    chamber_list: List[str] = []
+    for stage in stages:
+        if not _is_buffer_stage(stage):
+            chamber_list.extend(stage)
+    chambers = tuple(chamber_list)
+
+    # timeline_chambers: chambers + 路径中的 buffer
+    buffers_in_route = [
+        s[0] for s in stages if _is_buffer_stage(s)
+    ]
+    timeline_chambers = chambers + tuple(buffers_in_route)
+
+    # step_map: 按 stage 序分配，LP_done = len(stages)+1
+    step_map: Dict[str, int] = {"LP_done": len(stages) + 1}
+    step = 1
+    for stage in stages:
+        for place in stage:
+            step_map[place] = step
+        step += 1
+
+    # u_targets: stage[i] 中每点 -> stage[i+1]；最后 stage -> [LP_done]
+    u_targets: Dict[str, List[str]] = {}
+    # LP -> stage[0]
+    if stages:
+        u_targets["LP"] = list(stages[0])
+
+    for i, stage in enumerate(stages):
+        next_stage = stages[i + 1] if i + 1 < len(stages) else ["LP_done"]
+        for place in stage:
+            u_targets[place] = list(next_stage)
+
+    # system_entry_places: stage[0] 的 place 集合
+    system_entry_places = set(stages[0]) if stages else set()
+
+    # release_chain_by_u: 释放点 u_* 的下游 s_n 链
+    # 释放点: u_LP（投放到 stage 0），以及每个 buffer 后 unload 的 u_*（投放到 buffer 的下一 stage）
+    release_chain_by_u: Dict[str, List[str]] = {}
+    if stages:
+        # u_LP 投放 à stage 0，链为 s1 到 s_n
+        release_chain_by_u["u_LP"] = [f"s{k}" for k in range(1, len(stages) + 1)]
+
+    for i, stage in enumerate(stages):
+        if _is_buffer_stage(stage):
+            # buffer 如 LLC，u_LLC 投放 à 下一 stage，链为从 s_{i+2} 到 s_n
+            buffer_name = stage[0]
+            u_name = f"u_{buffer_name}"
+            chain = [f"s{k}" for k in range(i + 2, len(stages) + 1)]
+            if chain:
+                release_chain_by_u[u_name] = chain
+
+    # u_LLD: 从 LLD unload 投放到下一 stage（PM9/PM10 或 LP_done）
+    for i, stage in enumerate(stages):
+        if stage == ["LLD"] and i + 1 < len(stages):
+            release_chain_by_u["u_LLD"] = [f"s{i + 2}"]  # s_{i+2} 对应 stages[i+1]
+            break
+        if stage == ["LLD"] and i + 1 >= len(stages):
+            # route 3: LLD 为最后一 stage，无 s5
+            break
+
+    # 修正 release_chain_by_u：与现有一致
+    # u_LP: [s1, s2]（cascade）或 [s1,s2] 或 [s1,s2,s3]（single）
+    # u_LLC: [s3, s4]
+    # u_LLD: [s5] 仅当存在 s5 时
+    if len(stages) >= 2 and _is_buffer_stage(stages[1]):
+        release_chain_by_u["u_LP"] = ["s1", "s2"]
+    if len(stages) >= 4 and _is_buffer_stage(stages[1]):
+        release_chain_by_u["u_LLC"] = ["s3", "s4"]
+    if len(stages) >= 5:
+        release_chain_by_u["u_LLD"] = ["s5"]
+
+    return {
+        "chambers": chambers,
+        "timeline_chambers": timeline_chambers,
+        "u_targets": u_targets,
+        "step_map": step_map,
+        "release_station_aliases": release_station_aliases,
+        "release_chain_by_u": release_chain_by_u,
+        "system_entry_places": system_entry_places,
+    }
 
 
 @dataclass
@@ -239,6 +373,13 @@ def build_single_device_net(
                 place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=1, step=0, where=0))
         marks.append(place)
 
+    # 从路线解析路由元数据
+    route_key = (mode, route_code)
+    stages = ROUTE_SPECS.get(route_key)
+    if stages is None:
+        stages = ROUTE_SPECS.get((mode, 1 if mode == "cascade" else 0), ROUTE_SPECS[("single", 0)])
+    route_meta = parse_route(stages, BUFFER_NAMES)
+
     return {
         "m0": m0,
         "md": md,
@@ -257,4 +398,5 @@ def build_single_device_net(
         "n_wafer_route2": 0,
         "single_route_code": route_code,
         "single_device_mode": mode,
+        "route_meta": route_meta,
     }
