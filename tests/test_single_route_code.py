@@ -9,7 +9,7 @@ def _fire_by_name(net: ClusterTool, transition_name: str) -> None:
 
 
 def test_single_route_code0_keeps_legacy_topology():
-    cfg = PetriEnvConfig(n_wafer=1, stop_on_scrap=False, single_route_code=0)
+    cfg = PetriEnvConfig(n_wafer=1, stop_on_scrap=False, route_code=0)
     net = ClusterTool(config=cfg)
 
     assert net.single_route_code == 0
@@ -24,8 +24,8 @@ def test_single_route_code1_runs_through_pm6_before_done():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_route_code=1,
-        single_process_time_map={"PM1": 5, "PM3": 5, "PM4": 5, "PM6": 5},
+        route_code=1,
+        process_time_map={"PM1": 5, "PM3": 5, "PM4": 5, "PM6": 5},
     )
     net = ClusterTool(config=cfg)
 
@@ -71,7 +71,7 @@ def test_place_obs_route_code0_uses_three_pm_features():
         process_time_map={"PM1": 5, "PM3": 5, "PM4": 5},
     )
     obs_dim = int(env.observation_spec["observation"].shape[-1])
-    assert obs_dim == 1 + 4 + 9 * 3
+    assert obs_dim == 1 + 8 + 9 * 3
     td = env._reset(None)
     assert int(td["observation"].shape[-1]) == obs_dim
 
@@ -84,7 +84,7 @@ def test_place_obs_route_code1_includes_pm6_features():
         process_time_map={"PM1": 5, "PM3": 5, "PM4": 5, "PM6": 5},
     )
     obs_dim = int(env.observation_spec["observation"].shape[-1])
-    assert obs_dim == 1 + 4 + 9 * 4
+    assert obs_dim == 1 + 8 + 9 * 4
     td = env._reset(None)
     assert int(td["observation"].shape[-1]) == obs_dim
 
@@ -119,9 +119,9 @@ def test_cascade_route_code2_uses_pm1_pm2_only():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_device_mode="cascade",
-        single_route_code=2,
-        single_process_time_map={
+        device_mode="cascade",
+        route_code=2,
+        process_time_map={
             "PM7": 5,
             "PM8": 5,
             "PM1": 5,
@@ -147,9 +147,9 @@ def test_cascade_route_code2_defaults_pm1_pm2_to_300s():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_device_mode="cascade",
-        single_route_code=2,
-        single_process_time_map={
+        device_mode="cascade",
+        route_code=2,
+        process_time_map={
             "PM7": 70,
             "PM8": 70,
             "LLD": 70,
@@ -168,9 +168,9 @@ def test_cascade_route_code2_parallel_pairs_use_round_robin():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_device_mode="cascade",
-        single_route_code=2,
-        single_process_time_map={
+        device_mode="cascade",
+        route_code=2,
+        process_time_map={
             "PM7": 5,
             "PM8": 5,
             "PM1": 5,
@@ -199,9 +199,9 @@ def test_cascade_route_code3_uses_lld_then_done_without_pm9_pm10():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_device_mode="cascade",
-        single_route_code=3,
-        single_process_time_map={
+        device_mode="cascade",
+        route_code=3,
+        process_time_map={
             "PM7": 5,
             "PM8": 5,
             "PM1": 5,
@@ -228,9 +228,9 @@ def test_cascade_route_code3_can_finish_via_lld_then_lp_done():
     cfg = PetriEnvConfig(
         n_wafer=1,
         stop_on_scrap=False,
-        single_device_mode="cascade",
-        single_route_code=3,
-        single_process_time_map={
+        device_mode="cascade",
+        route_code=3,
+        process_time_map={
             "PM7": 5,
             "PM8": 5,
             "PM1": 5,

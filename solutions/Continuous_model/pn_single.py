@@ -190,6 +190,7 @@ class ClusterTool:
         单设备一步推进入口。
         - 非 wait：按既有 ttime 发射变迁
         - wait：支持多档等待，并用关键事件截断，避免一次跨越多个决策点
+        返回：(done, reward_result, scrap, action_mask)
         """
         DONE = False
         SCRAPE = False
@@ -200,7 +201,11 @@ class ClusterTool:
             timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
             DONE = True
             SCRAPE = True
-            return DONE, timeout_reward, SCRAPE
+            action_mask = self.get_action_mask(
+                wait_action_start=int(self.T),
+                n_actions=int(self.T + len(self.wait_durations)),
+            )
+            return DONE, timeout_reward, SCRAPE, action_mask
 
         action = a1
         do_wait = (wait_duration is not None) or action is None
@@ -300,7 +305,11 @@ class ClusterTool:
             if self.stop_on_scrap:
                 DONE = True
                 SCRAPE = True
-                return DONE, reward_result, SCRAPE
+                action_mask = self.get_action_mask(
+                    wait_action_start=int(self.T),
+                    n_actions=int(self.T + len(self.wait_durations)),
+                )
+                return DONE, reward_result, SCRAPE, action_mask
 
         # ===== 任务完成奖励 ======
         if finish:
@@ -310,7 +319,11 @@ class ClusterTool:
             else:
                 reward_result += float(self.finish_event_reward)
             SCRAPE = False
-        return bool(finish), reward_result, SCRAPE
+        action_mask = self.get_action_mask(
+            wait_action_start=int(self.T),
+            n_actions=int(self.T + len(self.wait_durations)),
+        )
+        return bool(finish), reward_result, SCRAPE, action_mask
 
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
@@ -786,13 +799,6 @@ class ClusterTool:
     def _get_place_index(self, name: str) -> int:
         return self.id2p_name.index(name)
 
-    def _transport_for_u_source(self, source: str) -> str:
-        if self.device_mode != "cascade":
-            return "d_TM1"
-        if source in {"LLC", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"}:
-            return "d_TM3"
-        return "d_TM2"
-
     def _transport_for_t_target(self, target: str) -> str:
         if self.device_mode != "cascade":
             return "d_TM1"
@@ -869,9 +875,6 @@ class ClusterTool:
             return None
         min_delta = int(min(deltas))
         return min_delta
-
-    def _has_completed_wafers(self) -> bool:
-        return len(self._get_place("LP_done").tokens) > 0
 
     def _has_ready_chamber_wafers(self) -> bool:
         """

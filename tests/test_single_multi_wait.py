@@ -71,7 +71,7 @@ def test_wait_fallback_when_no_future_event():
             place.cleaning_remaining = 0
 
     assert net.get_next_event_delta() is None
-    _, reward_result, _ = net.step(detailed_reward=True, wait_duration=20)
+    _, reward_result, _, _ = net.step(detailed_reward=True, wait_duration=20)
 
     assert net.time == 20
 
@@ -149,6 +149,6 @@ def test_wait_5_does_not_use_event_capping():
     pm3.processing_time = 100
     pm3.tokens[0].stay_time = 97  # next_event_delta = 3
 
-    _, reward_result, _ = net.step(detailed_reward=True, wait_duration=5)
+    _, reward_result, _, _ = net.step(detailed_reward=True, wait_duration=5)
 
     assert net.time == 5

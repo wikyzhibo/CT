@@ -13,9 +13,9 @@ def test_observation_is_float32_and_present_padding():
     assert obs.dtype == np.float32
     assert int(obs.shape[-1]) == int(env.observation_spec["observation"].shape[-1])
 
-    # reset 后运输位默认无晶圆，TM 特征回退为 [0, 0, 0, 1]
-    tm_features = obs[1:5]
-    assert np.allclose(tm_features, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+    # reset 后运输位默认无晶圆，TM 特征为 8 维：时间 [0,0,0,1] + 去向 one-hot [0,0,0,0]
+    tm_features = obs[1:9]
+    assert np.allclose(tm_features, np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
 
 
 def test_transport_status_and_time_to_scrap_semantics():
@@ -35,8 +35,8 @@ def test_transport_status_and_time_to_scrap_semantics():
             p.tokens.clear()
 
     obs = env._build_obs()
-    tm_features = obs[1:5]
-    transport_complete, wafer_stay_over_long, wafer_stay_time_norm, distance_to_penalty_norm = tm_features
+    tm_features = obs[1:9]
+    transport_complete, wafer_stay_over_long, wafer_stay_time_norm, distance_to_penalty_norm = tm_features[:4]
 
     assert float(transport_complete) == 1.0
     assert float(wafer_stay_over_long) == 1.0

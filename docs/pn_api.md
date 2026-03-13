@@ -119,10 +119,10 @@ class BasedToken:
 **主要接口**
 - `reset()`：重置网状态
 - `_get_enable_t() -> List[int]`：内部使能判定（单机械手）
-- `get_enable_t() -> List[int]`：外部使能接口
+- `get_enable_t() -> List[int]`：兼容接口（建议主链改用 `action_mask`）
 - `get_enable_actions(wait_action_start=None) -> List[int]`：返回完整离散动作使能（`transition + wait`）
 - `get_action_mask(wait_action_start=None, n_actions=None) -> np.ndarray`：返回完整离散动作掩码（`transition + wait`）
-- `step(t=None, wait=None, with_reward=False, detailed_reward=False, ...)`：执行单步（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> done）
+- `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 的单设备事后追责，输出 `fire_log_index -> penalty`
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。

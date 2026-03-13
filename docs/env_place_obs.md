@@ -27,17 +27,15 @@
  - 其他 WAIT 仍按 `min(wait_duration, next_event_delta)` 推进，避免一次跳过多个关键决策点。
 - 观测维度随路线与设备模式变化：
  - LP: 1 维
- - TM: single 模式 4 维；cascade 模式 14 维（TM2 块 8 维 + TM3 块 6 维，含晶圆去向 one-hot）
- - `route_code=0`（single）：`PM1/PM3/PM4`，每个 9 维，总维度 `1 + 4 + 9*3 = 32`
- - `route_code=1`（single）：`PM1/PM3/PM4/PM6`，每个 9 维，总维度 `1 + 4 + 9*4 = 41`
+ - TM: single 模式 8 维（4 维时间 + 4 维去向 one-hot）；cascade 模式 14 维（TM2 块 8 维 + TM3 块 6 维，含晶圆去向 one-hot）
+ - `route_code=0`（single）：`PM1/PM3/PM4`，每个 9 维，总维度 `1 + 8 + 9*3 = 36`
+ - `route_code=1`（single）：`PM1/PM3/PM4/PM6`，每个 9 维，总维度 `1 + 8 + 9*4 = 45`
  - cascade：TM 14 维；PM 按 9 维、`LLC/LLD` 按 4 维，总维度 `1 + 14 + 9*len(PM*) + 4*len({LLC,LLD}∩chamber*)`
 - LP 特征：
  - `remaining_wafer_norm = clip(len(LP.tokens) / n_wafer, 0, 1)`
-- TM 特征（single 模式，4 维）：
- - `transport_complete`
- - `wafer_stay_over_long`
- - `wafer_stay_time_norm`
- - `distance_to_penalty_norm`
+- TM 特征（single 模式，8 维 = 4 维时间 + 4 维去向 one-hot）：
+ - 时间：`transport_complete`、`wafer_stay_over_long`、`wafer_stay_time_norm`、`distance_to_penalty_norm`
+ - 去向 one-hot（4 类）：往 PM1、往 PM3 或 PM4、往 PM6、往 LP_done
 - TM 特征（cascade 模式，14 维 = TM2 块 8 维 + TM3 块 6 维）：
  - TM2 块：上述 4 维时间特征 + 晶圆去向 one-hot（4 类：往 PM7/8、往 LLC、往 PM9/10、往 LP_done）
  - TM3 块：上述 4 维时间特征 + 晶圆去向 one-hot（2 类：往 PM1/2/3/4、往 LLD）
@@ -84,12 +82,12 @@
  - 在 `--device-mode single` 下传入后使用 `Env_PN_Single_PlaceObs`
 
 ## Examples
-- 正例：`route_code=0` 场景下，使用 32 维 place obs（`LP+TM+PM1/3/4`）。
-- 正例：`route_code=1` 场景下，使用 41 维 place obs（额外包含 `PM6` 9 维特征）。
+- 正例：`route_code=0` 场景下，使用 36 维 place obs（`LP+TM(8 维)+PM1/3/4`）。
+- 正例：`route_code=1` 场景下，使用 45 维 place obs（额外包含 `PM6` 9 维特征）。
 - 反例：需要把每片晶圆位置编码成 one-hot 序列时不应使用本环境。
 
 ## Edge Cases / Gotchas
-- TM 无晶圆时：single 模式 TM 特征回退为 `[0, 0, 0, 1]`；cascade 模式对应 TM 块的去向 one-hot 全为 0，时间特征同 single。
+- TM 无晶圆时：single 模式 TM 特征为 `[0, 0, 0, 1, 0, 0, 0, 0]`（时间回退 + 去向 one-hot 全 0）；cascade 模式对应 TM 块的去向 one-hot 全为 0，时间特征同 single。
 - PM 无晶圆时，工艺与超时相关特征置 0，仅保留清洗相关状态。
 - 归一化分母均设置下限 `>=1`，避免除零。
 - 若开启工序时间随机扰动，同一 episode 内工序时长固定；不同 episode 才会重新采样。

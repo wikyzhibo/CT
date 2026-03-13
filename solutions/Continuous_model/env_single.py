@@ -46,18 +46,18 @@ class Env_PN_Single(EnvBase):
         config = PetriEnvConfig().load(path=path)
         if reward_config:
             config.reward_config.update(reward_config)
-        config.single_device_mode = str(device_mode).lower()
+        config.device_mode = str(device_mode).lower()
         config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
         if route_code is not None:
-            config.single_route_code = int(route_code)
+            config.route_code = int(route_code)
         if process_time_map is not None:
-            config.single_process_time_map = {
+            config.process_time_map = {
                 str(chamber): int(value) for chamber, value in dict(process_time_map).items()
             }
         if proc_time_rand_enabled is not None:
             config.proc_rand_enabled = bool(proc_time_rand_enabled)
         if proc_time_rand_scale_map is not None:
-            config.single_proc_time_rand_scale_map = {
+            config.proc_time_rand_scale_map = {
                 str(chamber): {"min": float(bounds.get("min", 1.0)), "max": float(bounds.get("max", 1.0))}
                 for chamber, bounds in dict(proc_time_rand_scale_map).items()
             }
@@ -118,9 +118,9 @@ class Env_PN_Single(EnvBase):
         chamber_names = self._get_place_obs_pm_names()
         chamber_feature_dim = sum(self._get_place_obs_feature_dim(name) for name in chamber_names)
         # LP(1) + TM + 每个腔室特征（route 感知）
-        # single: TM=4 维；cascade: TM=14 维（TM2 8 维 + TM3 6 维，含去向 one-hot）
+        # single: TM=8 维（4 维时间 + 4 维去向 one-hot）；cascade: TM=14 维（TM2 8 维 + TM3 6 维）
         is_cascade = getattr(self.net, "single_device_mode", "single") == "cascade"
-        tm_dim = 14 if is_cascade else 4
+        tm_dim = 14 if is_cascade else 8
         obs_dim = 1 + tm_dim + chamber_feature_dim
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
@@ -175,7 +175,7 @@ class Env_PN_Single(EnvBase):
         if place_name == "TM":
             if getattr(self.net, "single_device_mode", "single") == "cascade":
                 return self._extract_tm_cascade_features()
-            return self._extract_tm_features()
+            return self._extract_tm_single_features()
         place = self.net._get_place(place_name)
         if place_name == "LP":
             remaining = float(len(place.tokens))
@@ -260,6 +260,27 @@ class Env_PN_Single(EnvBase):
             onehot[1] = 1.0
         return onehot
 
+    def _extract_wafer_dest_onehot_tm1(self) -> List[float]:
+        """d_TM1 队首晶圆去向 one-hot（4 类）：PM1 -> 0, PM3/PM4 -> 1, PM6 -> 2, LP_done -> 3"""
+        onehot = [0.0, 0.0, 0.0, 0.0]
+        if "d_TM1" not in self.net.id2p_name:
+            return onehot
+        place = self.net._get_place("d_TM1")
+        if len(place.tokens) == 0:
+            return onehot
+        target = getattr(place.head(), "_target_place", None)
+        if target is None:
+            return onehot
+        if target == "PM1":
+            onehot[0] = 1.0
+        elif target in {"PM3", "PM4"}:
+            onehot[1] = 1.0
+        elif target == "PM6":
+            onehot[2] = 1.0
+        elif target == "LP_done":
+            onehot[3] = 1.0
+        return onehot
+
     def _extract_tm_features_single_place(self, place_name: str) -> List[float]:
         """单个运输位（d_TM2 或 d_TM3）的 4 维时间特征"""
         penalty_time = max(1.0, float(getattr(self.net, "D_Residual_time", 10)))
@@ -287,6 +308,12 @@ class Env_PN_Single(EnvBase):
         tm3_time = self._extract_tm_features_single_place("d_TM3")
         tm3_onehot = self._extract_wafer_dest_onehot_tm3()
         return tm2_time + tm2_onehot + tm3_time + tm3_onehot
+
+    def _extract_tm_single_features(self) -> List[float]:
+        """single 模式：d_TM1 的 4 维时间 + 4 维去向 one-hot 共 8 维"""
+        tm1_time = self._extract_tm_features_single_place("d_TM1")
+        tm1_onehot = self._extract_wafer_dest_onehot_tm1()
+        return tm1_time + tm1_onehot
 
     def _extract_pm_features(self, place) -> List[float]:
         has_wafer = len(place.tokens) > 0
@@ -372,12 +399,6 @@ class Env_PN_Single(EnvBase):
             obs.extend(self._extract_place_features(pm_name))
         return np.array(obs, dtype=np.float32)
 
-    def get_enable_t(self) -> List[int]:
-        return [
-            int(a)
-            for a in self.net.get_enable_actions(wait_action_start=self.wait_action_start)
-        ]
-
     def _mask(self):
         return self.net.get_action_mask(
             wait_action_start=self.wait_action_start,
@@ -403,12 +424,12 @@ class Env_PN_Single(EnvBase):
         wait_duration = self.parse_wait_action(action)
         use_detailed_reward = self.eval_mode
         if wait_duration is not None:
-            done, reward_result, scrap = self.net.step(
+            done, reward_result, scrap, action_mask = self.net.step(
                 wait_duration=int(wait_duration), detailed_reward=use_detailed_reward
             )
         else:
             _, transition_idx = self._decode_action(action)
-            done, reward_result, scrap = self.net.step(
+            done, reward_result, scrap, action_mask = self.net.step(
                 a1=int(transition_idx), detailed_reward=use_detailed_reward
             )
         deadlock = bool(getattr(self.net, "_last_deadlock", False))
@@ -425,7 +446,7 @@ class Env_PN_Single(EnvBase):
         out = TensorDict(
             {
                 "observation": torch.as_tensor(self._build_obs(), dtype=torch.float32),
-                "action_mask": torch.as_tensor(self._mask(), dtype=torch.bool),
+                "action_mask": torch.as_tensor(action_mask, dtype=torch.bool),
                 "time": torch.tensor([self.net.time], dtype=torch.int64),
                 "finish": torch.tensor(bool(done and not scrap and not deadlock), dtype=torch.bool),
                 "scrap": torch.tensor(bool(scrap), dtype=torch.bool),
