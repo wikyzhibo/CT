@@ -87,9 +87,8 @@ class PetriEnvConfig:
 
     reward_config: Optional[Dict[str, int]] = None
 
-    single_robot_capacity: int = 1 # 单设备机械手容量（默认为1，训练简化版可设置为2或更高以加快训练）
-    # 单设备模式：single=原单设备路径，cascade=级联路径模板
-    device_mode: str = "single"
+    single_robot_capacity: int = 1 # 单设备机械手容量
+    device_mode: str = "single" # 单设备模式：single=原单设备路径，cascade=级联路径模板
     # 单设备清洗配置（训练简化版）
     cleaning_enabled: bool = True
     cleaning_targets: List[str] = field(default_factory=lambda: ["PM3", "PM4"])
@@ -107,16 +106,13 @@ class PetriEnvConfig:
     #   3: PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> LP_done
     route_code: int = 1
     # 单设备工序时间随机扰动（按 episode 固定）
-    single_proc_time_rand_enabled: bool = False
+    proc_rand_enabled: bool = False
     # 单设备工序时间随机扰动区间（按腔室独立配置）
     single_proc_time_rand_scale_map: Dict[str, Dict[str, float]] = field(
         default_factory=_default_single_proc_time_rand_scale_map
     )
     # 单设备 WAIT 动作档位（秒）
     single_wait_durations: List[int] = field(default_factory=_default_single_wait_durations)
-    # 兼容旧版统一随机区间（当 single_proc_time_rand_scale_map 缺失时回退使用）
-    single_proc_time_rand_min_scale: float = 1.0
-    single_proc_time_rand_max_scale: float = 1.0
 
     # 路线与晶圆分配（可选；无则用默认双路线）
     n_wafer_route1: Optional[int] = None
@@ -171,7 +167,7 @@ class PetriEnvConfig:
         if self.n_wafer_route1 is not None or self.n_wafer_route2 is not None:
             lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
-        lines.append(f"  单设备模式: {self.single_device_mode}")
+        lines.append(f"  单设备模式: {self.device_mode}")
         lines.append(f"  单设备路径代号: {self.route_code}")
         
         if self.end_place_name != "LP_done":
@@ -179,24 +175,7 @@ class PetriEnvConfig:
         
         if self.no_residence_place_names:
             lines.append(f"  无驻留腔室: {sorted(self.no_residence_place_names)}")
-        
-        # 性能优化
-        optimizations = []
-        if self.optimize_reward_calc:
-            optimizations.append("reward_calc")
-        if self.optimize_enable_check:
-            optimizations.append("enable_check")
-        if self.optimize_state_update:
-            optimizations.append("state_update")
-        if self.cache_indices:
-            optimizations.append("cache_indices")
-        if self.optimize_data_structures:
-            optimizations.append("data_structures")
-        if self.turbo_mode:
-            optimizations.append("turbo_mode")
-        
-        if optimizations:
-            lines.append(f"  性能优化: {', '.join(optimizations)}")
+
         
         # 奖励配置（仅显示非默认值）
         reward_non_default = {
@@ -314,6 +293,8 @@ class PetriEnvConfig:
             data["scrap_event_penalty"] = data["R_scrap"]
         if "idle_event_penalty" not in data and "idle_penalty" in data:
             data["idle_event_penalty"] = data["idle_penalty"]
+        if "proc_rand_enabled" not in data and "single_proc_time_rand_enabled" in data:
+            data["proc_rand_enabled"] = data["single_proc_time_rand_enabled"]
         # 列表/集合在 JSON 中为列表，需转换
         if "no_residence_place_names" in data and data["no_residence_place_names"] is not None:
             data["no_residence_place_names"] = set(data["no_residence_place_names"])

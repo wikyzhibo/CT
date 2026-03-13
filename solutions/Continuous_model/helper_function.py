@@ -1,22 +1,5 @@
 from typing import Dict, List, Tuple
 
-def _sanitize_scale_pair(min_scale: float, max_scale: float) -> Tuple[float, float]:
-    low = float(min_scale)
-    high = float(max_scale)
-    if low <= 0:
-        low = 1.0
-    if high <= 0:
-        high = 1.0
-    if low > high:
-        low, high = high, low
-    return low, high
-
-
-def _sanitize_default_random_scales(min_scale: float, max_scale: float) -> Tuple[float, float]:
-    """规范化默认随机比例边界。"""
-    return _sanitize_scale_pair(min_scale, max_scale)
-
-
 def _round_to_nearest_five(value: float) -> int:
     rounded = int(round(float(value) / 5.0) * 5)
     return max(5, rounded)

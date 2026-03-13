@@ -149,9 +149,7 @@ def train_single(
     checkpoint_path: str | None = None,
     device_mode: str = "single",
     proc_time_rand_enabled: bool | None = None,
-    proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None,
-    proc_time_rand_min_scale: float | None = None,
-    proc_time_rand_max_scale: float | None = None,
+    proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None
 ):
     assert config is not None, "training config must be provided"
 
@@ -165,8 +163,6 @@ def train_single(
         device_mode=device_mode,
         proc_time_rand_enabled=proc_time_rand_enabled,
         proc_time_rand_scale_map=proc_time_rand_scale_map,
-        proc_time_rand_min_scale=proc_time_rand_min_scale,
-        proc_time_rand_max_scale=proc_time_rand_max_scale,
     )
     print(f"  环境类型: {env.__class__.__name__}")
 
@@ -324,7 +320,10 @@ if __name__ == "__main__":
     path = root / "data" / "ppo_configs" / "s_train.json"
     cfg = PPOTrainingConfig.load(path)
     print(f"从 {path} 加载配置")
-    checkpoint_path = root / "models" / args.checkpoint
+    if args.checkpoint is not None:
+        checkpoint_path = root / "models" / args.checkpoint
+    else:
+        checkpoint_path = None
     train_single(
         config=cfg,
         checkpoint_path=checkpoint_path,

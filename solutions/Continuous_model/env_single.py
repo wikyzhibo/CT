@@ -33,8 +33,6 @@ class Env_PN_Single(EnvBase):
         process_time_map: Optional[Dict[str, int]] = None,
         proc_time_rand_enabled: Optional[bool] = None,
         proc_time_rand_scale_map: Optional[Dict[str, Dict[str, float]]] = None,
-        proc_time_rand_min_scale: Optional[float] = None,
-        proc_time_rand_max_scale: Optional[float] = None,
     ):
         super().__init__(device=device)
         self.detailed_reward = detailed_reward
@@ -56,16 +54,12 @@ class Env_PN_Single(EnvBase):
                 str(chamber): int(value) for chamber, value in dict(process_time_map).items()
             }
         if proc_time_rand_enabled is not None:
-            config.single_proc_time_rand_enabled = bool(proc_time_rand_enabled)
+            config.proc_rand_enabled = bool(proc_time_rand_enabled)
         if proc_time_rand_scale_map is not None:
             config.single_proc_time_rand_scale_map = {
                 str(chamber): {"min": float(bounds.get("min", 1.0)), "max": float(bounds.get("max", 1.0))}
                 for chamber, bounds in dict(proc_time_rand_scale_map).items()
             }
-        if proc_time_rand_min_scale is not None:
-            config.single_proc_time_rand_min_scale = float(proc_time_rand_min_scale)
-        if proc_time_rand_max_scale is not None:
-            config.single_proc_time_rand_max_scale = float(proc_time_rand_max_scale)
 
         self.net = ClusterTool(config=config)
         # 与 pn_single 保持同一份 wait 档位来源，避免 env/net 两处规则漂移。
@@ -153,7 +147,7 @@ class Env_PN_Single(EnvBase):
 
     def _get_place_obs_pm_names(self) -> List[str]:
         # 观测腔室列表与 pn_single 路线配置保持同源，避免 route 变更后维度漂移。
-        candidates = list(getattr(self.net, "_single_process_chambers", ("PM1", "PM3", "PM4")))
+        candidates = list(self.net.chambers)
         is_cascade = getattr(self.net, "single_device_mode", "single") == "cascade"
         if is_cascade and "LLC" not in candidates:
             candidates.append("LLC")

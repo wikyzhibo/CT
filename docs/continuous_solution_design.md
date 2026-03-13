@@ -104,7 +104,7 @@ flowchart TB
   - `2`（cascade 模式，新增模板）：`LP -> PM7/PM8(70s) -> LLC(0s) -> PM1/PM2(300s) -> LLD(70s) -> PM9/PM10(200s) -> LP_done`
   - `3`（cascade 模式，新增模板）：`LP -> PM7/PM8(70s) -> LLC(0s) -> PM1/PM2(300s) -> LLD(70s) -> LP_done`
 - 单设备工序时长支持配置：`single_process_time_map = {PM1, PM3, PM4, PM6}`；输入值会先预处理为最接近的 5 的倍数（最小 5）。
-- 单设备训练支持 episode 级工序时长随机扰动：`single_proc_time_rand_enabled` + `single_proc_time_rand_scale_map`（`PM1/PM3/PM4/PM6` 各自 `min/max`）；每个 episode 采样一次并固定整局生效。未配置单腔室时回退到统一 `single_proc_time_rand_min_scale/max_scale`。
+- 单设备训练支持 episode 级工序时长随机扰动：`proc_rand_enabled` + `single_proc_time_rand_scale_map`（`PM1/PM3/PM4/PM6` 各自 `min/max`）；每个 episode 采样一次并固定整局生效。未配置腔室时使用 `(1.0, 1.0)` 即不扰动。
 - `PM2` 仅用于界面占位展示；`PM5` 作为 UI 占位显示，不参与模型工艺流转。`PM6` 是否参与流转由 `single_route_code` 决定。
 - 执行链：`construct_single` 构网 -> `_get_enable_t` -> `step` -> `calc_reward`
 - 使能动作接口：`List[int]`（单机械手语义）

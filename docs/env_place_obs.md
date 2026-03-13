@@ -72,10 +72,8 @@
  - `single_process_time_map.PM1/PM3/PM4/PM6`（`route_code=1`）
  - 工序时间会在环境内部预处理为最接近的 5 的倍数（最小 5）
 - 单设备工序时间随机参数（episode 固定采样）：
- - `single_proc_time_rand_enabled`
- - `single_proc_time_rand_scale_map.<PM>.{min,max}`（`<PM>` 由路线下的加工腔室集合决定）
- - `single_proc_time_rand_min_scale`
- - `single_proc_time_rand_max_scale`
+ - `proc_rand_enabled`
+ - `single_proc_time_rand_scale_map.<PM>.{min,max}`（`<PM>` 由路线下的加工腔室集合决定，缺失时视为不扰动）
 - 训练脚本参数：
  - `solutions/Continuous_model/train_single.py` 支持 `--place-obs`
  - 支持 `--proc-time-rand-enabled`

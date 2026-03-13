@@ -218,7 +218,7 @@ python -m solutions.Continuous_model.export_inference_sequence \
   "device_mode": "single",
   "replay_env_overrides": {
     "single_process_time_map": {"PM1": 100, "PM3": 315, "PM4": 290},
-    "single_proc_time_rand_enabled": false
+    "proc_rand_enabled": false
   },
   "sequence": [
     {"step": 1, "time": 5, "action": "u_LP", "actions": ["u_LP"]}

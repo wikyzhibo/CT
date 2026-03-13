@@ -68,10 +68,9 @@ def build_adapter(
         robot_capacity=effective_robot_capacity,
         route_code=None if selected_route_code is None else int(selected_route_code),
         process_time_map=env_overrides.get("single_process_time_map"),
-        proc_time_rand_enabled=env_overrides.get("single_proc_time_rand_enabled"),
+        proc_time_rand_enabled=env_overrides.get("proc_rand_enabled")
+        or env_overrides.get("single_proc_time_rand_enabled"),
         proc_time_rand_scale_map=env_overrides.get("single_proc_time_rand_scale_map"),
-        proc_time_rand_min_scale=env_overrides.get("single_proc_time_rand_min_scale"),
-        proc_time_rand_max_scale=env_overrides.get("single_proc_time_rand_max_scale"),
     )
     return PetriSingleAdapter(env)
 

@@ -11,8 +11,6 @@ from solutions.Continuous_model.helper_function import (
     _normalize_wait_durations,
     _preprocess_process_time_map,
     _round_to_nearest_five,
-    _sanitize_default_random_scales,
-    _sanitize_scale_pair,
 )
 
 import numpy as np
@@ -171,21 +169,17 @@ class ClusterTool:
             self._system_entry_places = {"PM1"}
 
         self._ready_chambers: Tuple[str, ...] = tuple(self.chambers)
-        self.single_proc_time_rand_enabled = bool(config.single_proc_time_rand_enabled)
-        self.single_proc_time_rand_min_scale = float(config.single_proc_time_rand_min_scale)
-        self.single_proc_time_rand_max_scale = float(config.single_proc_time_rand_max_scale)
-        self._single_proc_time_rand_scale_map_raw = dict(config.single_proc_time_rand_scale_map or {})
-        self._sanitize_default_random_scales()
-        self._single_proc_time_rand_scale_map = self._build_chamber_random_scale_map()
-        raw_process_time_map = dict(config.single_process_time_map or {})
-        self._base_process_time_map = self._preprocess_process_time_map(raw_process_time_map)
-        self._episode_process_time_map = dict(self._base_process_time_map)
+        self.proc_rand_enabled = bool(config.proc_rand_enabled)
+        self._proc_rand_scale_map = dict(config.single_proc_time_rand_scale_map or {})
+        raw = dict(config.single_process_time_map or {})
+        self._base_proc_time_map = self._preprocess_process_time_map(raw)
+        self._episode_proc_time_map: Dict[str, int] = {}
 
         info = build_single_device_net(
             n_wafer=self.n_wafer,
             ttime=max(1, self.T_transport),
             robot_capacity=self.robot_capacity,
-            process_time_map=self._base_process_time_map,
+            process_time_map=self._base_proc_time_map,
             route_code=self.route_code,
             device_mode=self.device_mode,
         )
@@ -207,7 +201,7 @@ class ClusterTool:
 
         self.ori_marks: List[Place] = info["marks"]
         self.marks: List[Place] = self._clone_marks(self.ori_marks)
-        self._apply_episode_process_time_map()
+        self._refresh_episode_proc_time()
 
         self.time = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 50
@@ -380,8 +374,7 @@ class ClusterTool:
 
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
-        self._episode_process_time_map = self._build_episode_process_time_map()
-        self._apply_episode_process_time_map()
+        self._refresh_episode_proc_time()
         self.time = 0
         self.done_count = 0
         self.scrap_count = 0
@@ -665,26 +658,28 @@ class ClusterTool:
             },
         }
 
-    def _sanitize_default_random_scales(self) -> None:
-        min_scale, max_scale = _sanitize_default_random_scales(
-            self.single_proc_time_rand_min_scale,
-            self.single_proc_time_rand_max_scale,
-        )
-        self.single_proc_time_rand_min_scale = min_scale
-        self.single_proc_time_rand_max_scale = max_scale
-
-    def _build_chamber_random_scale_map(self) -> Dict[str, Tuple[float, float]]:
-        chamber_map: Dict[str, Tuple[float, float]] = {}
-        default_low = float(self.single_proc_time_rand_min_scale)
-        default_high = float(self.single_proc_time_rand_max_scale)
-        for chamber in self.chambers:
-            raw = self._single_proc_time_rand_scale_map_raw.get(chamber, {})
-            if not isinstance(raw, dict):
-                raw = {}
-            low = raw.get("min", default_low)
-            high = raw.get("max", default_high)
-            chamber_map[chamber] = _sanitize_scale_pair(low, high)
-        return chamber_map
+    def _refresh_episode_proc_time(self) -> None:
+        """生成本 episode 工序时长（随机+取整到5）并应用到 marks 与 ptime。"""
+        if self.proc_rand_enabled:
+            sampled: Dict[str, int] = {}
+            for chamber in self.chambers:
+                raw = self._proc_rand_scale_map.get(chamber, {})
+                if not isinstance(raw, dict):
+                    raw = {}
+                low = float(raw.get("min", 1.0))
+                high = float(raw.get("max", 1.0))
+                base_time = float(self._base_proc_time_map[chamber])
+                sampled_time = base_time * float(np.random.uniform(low, high))
+                sampled[chamber] = _round_to_nearest_five(sampled_time)
+            self._episode_proc_time_map = sampled
+        else:
+            self._episode_proc_time_map = dict(self._base_proc_time_map)
+        for p in self.marks:
+            if p.name in self._episode_proc_time_map:
+                p.processing_time = int(self._episode_proc_time_map[p.name])
+        for chamber_name, proc_time in self._episode_proc_time_map.items():
+            p_idx = self._get_place_index(chamber_name)
+            self.ptime[p_idx] = int(proc_time)
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
         if self.device_mode == "cascade":
@@ -707,25 +702,6 @@ class ClusterTool:
             chambers=self.chambers,
             defaults=defaults,
         )
-
-    def _build_episode_process_time_map(self) -> Dict[str, int]:
-        if not self.single_proc_time_rand_enabled:
-            return dict(self._base_process_time_map)
-        sampled: Dict[str, int] = {}
-        for chamber in self.chambers:
-            low, high = self._single_proc_time_rand_scale_map[chamber]
-            base_time = float(self._base_process_time_map[chamber])
-            sampled_time = base_time * float(np.random.uniform(low, high))
-            sampled[chamber] = _round_to_nearest_five(sampled_time)
-        return sampled
-
-    def _apply_episode_process_time_map(self) -> None:
-        for p in self.marks:
-            if p.name in self._episode_process_time_map:
-                p.processing_time = int(self._episode_process_time_map[p.name])
-        for chamber_name, proc_time in self._episode_process_time_map.items():
-            p_idx = self._get_place_index(chamber_name)
-            self.ptime[p_idx] = int(proc_time)
 
     @staticmethod
     def _clone_marks(marks: List[Place]) -> List[Place]:
