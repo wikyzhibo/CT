@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections import defaultdict
 from datetime import datetime
 
@@ -205,6 +206,7 @@ def train_single(
     model_prefix = "CT_single"
     best_model_path = Path(__file__).resolve().parents[2] / "models" / "tmp.pt"
     best_reward = float("-inf")
+    best_lp_forced_interval = int(max(0, int(getattr(env.net, "_lp_forced_emit_interval", 0))))
     log = defaultdict(list)
 
     with set_exploration_type(ExplorationType.RANDOM):
@@ -298,14 +300,39 @@ def train_single(
 
             if ep_reward > best_reward and finish_count > 0:
                 best_reward = ep_reward
+                best_lp_forced_interval = int(max(0, int(getattr(env.net, "_lp_forced_emit_interval", 0))))
                 torch.save(policy_module.state_dict(), best_model_path)
                 backup_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
                 torch.save(policy_module.state_dict(), backup_path)
-                print(f"  -> New best model! reward={ep_reward:.2f}")
+                print(
+                    f"  -> New best model! reward={ep_reward:.2f} "
+                    f"| best_lp_forced={best_lp_forced_interval}s"
+                )
 
     print(f"\nTraining done. Best reward: {best_reward:.2f}")
     final_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")
     torch.save(policy_module.state_dict(), final_path)
+
+    # 训练结束后将“最佳模型对应节拍”持久化到设备配置，供续训/评估自动加载。
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+        cfg_name = "cascade.json" if str(device_mode).lower() == "cascade" else "single.json"
+        cfg_path = project_root / "data" / "petri_configs" / cfg_name
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+            cfg_data["lp_forced_emit_interval"] = int(best_lp_forced_interval)
+            with cfg_path.open("w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            print(
+                f"[INFO] 已写回最佳节拍配置: {cfg_path} "
+                f"(lp_forced_emit_interval={int(best_lp_forced_interval)})"
+            )
+        else:
+            print(f"[WARN] 未找到配置文件，跳过节拍写回: {cfg_path}")
+    except Exception as e:
+        print(f"[WARN] 写回节拍配置失败: {e}")
+
     print(f"Final model: {final_path}")
     print(f"Best model: {best_model_path}")
     return log, policy_backbone

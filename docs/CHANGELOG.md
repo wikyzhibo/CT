@@ -2,6 +2,26 @@
 
 ## 2026-03-14
 
+### 单设备加载节拍时预填历史队列 (2026-03-14)
+- **What changed**：`pn_single.ClusterTool` 在读取配置 `lp_forced_emit_interval` 后，若值大于 0，会用该值预填满节拍历史队列（长度 4）。
+- **Why**：仅加载单值而历史队列为空时，后续 batch 重新聚合会快速稀释或覆盖节拍，导致加载后节拍控制在早期 batch 失效。
+- **Impact**：checkpoint 续训与评估加载后，`u_LP` 强制节拍在前几个 batch 保持稳定，并按既有更新规则平滑演化。
+
+### 单设备节拍持久化到设备配置 (2026-03-14)
+- **What changed**：新增配置项 `lp_forced_emit_interval`（`single.json/cascade.json`）；`pn_single.ClusterTool` 初始化时读取该值作为起始 `u_LP` 强制间隔；`train_single.py` 训练结束后会把当前节拍写回对应设备配置文件。
+- **Why**：原节拍控制仅存在于训练运行内存，训练结束后无法被 checkpoint 续训和评估导出复用。
+- **Impact**：`Env_PN_Single` 在续训与评估（含 `export_inference_sequence.py`）初始化时可自动加载最近持久化节拍；是否执行 `u_LP` 限制仍由 `limit_start` 控制。
+
+### 单设备节拍写回口径改为 best 模型 (2026-03-14)
+- **What changed**：`train_single.py` 的配置写回值由“训练结束时当前节拍”改为“best reward 对应节拍”。
+- **Why**：保证持久化节拍与最佳策略快照一致，避免最后阶段波动覆盖最佳状态。
+- **Impact**：续训与评估加载到的 `lp_forced_emit_interval` 与最佳模型对齐；仍保持“训练结束只写一次”的写回时机。
+
+### 单设备 u_LP 间隔队列无命中衰减 (2026-03-14)
+- **What changed**：`pn_single.blame_release_violations(batch_finalize=True)` 在“当前 batch 无命中追责样本”时，不再保持历史队列不变，改为对历史队列每个值执行 `*0.95` 衰减。
+- **Why**：避免强制发射间隔长期被旧批次高值锁定，在连续无命中阶段让限制逐步回落。
+- **Impact**：历史队列仍保持最多 4 项，且继续使用新到旧 `4:3:2:1` 加权平均；无命中 batch 下 `u_LP` 限制会平滑放松。
+
 ### 单设备 wait 截断新增运输完成事件 (2026-03-14)
 - **What changed**：`pn_single.get_next_event_delta()` 在保留“加工完成”事件的同时，新增 `d_TM*` 运输位“达到 `T_transport`”作为关键事件；`step(wait)` 的长 WAIT 现在会被运输完成时刻截断。
 - **Why**：当晶圆已在运输位停留接近运输完成时，继续整段长 WAIT 会跨过关键放片决策点，不利于调度策略及时响应。

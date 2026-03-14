@@ -184,7 +184,11 @@ class ClusterTool:
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._lp_trigger_interval_history: Deque[float] = deque(maxlen=4)
-        self._lp_forced_emit_interval: int = 0
+        self._lp_forced_emit_interval: int = max(0, int(getattr(config, "lp_forced_emit_interval", 0)))
+        if self._lp_forced_emit_interval > 0:
+            self._lp_trigger_interval_history.extend(
+                [float(self._lp_forced_emit_interval)] * self._lp_trigger_interval_history.maxlen
+            )
         self._last_u_lp_fire_time: Optional[int] = None
         self._pending_batch_trigger_intervals: List[float] = []
         self._last_batch_trigger_interval_avg: float = 0.0
@@ -907,14 +911,12 @@ class ClusterTool:
                 continue
 
             # 运输完成事件：d_TM* 队首停留达到 T_transport。
-            if place.name.startswith("d_TM"):
+            if place.type == DELIVERY_ROBOT:
                 head = place.head()
-                delta_tm = int(self.T_transport) - int(getattr(head, "stay_time", 0))
+                delta_tm = self.T_transport - head.stay_time
                 deltas.append(max(0, int(delta_tm)))
                 continue
 
-            if int(getattr(place, "processing_time", 0)) <= 0:
-                continue
             if int(place.type) not in (CHAMBER, 5):
                 continue
             head = place.head()
@@ -1139,6 +1141,12 @@ class ClusterTool:
                 batch_avg = float(sum(capped) / len(capped))
             if raw_intervals:
                 self._lp_trigger_interval_history.append(float(batch_avg))
+            elif self._lp_trigger_interval_history:
+                # 当前 batch 无命中时，对历史队列做衰减，避免强制间隔长期停留在旧高值。
+                self._lp_trigger_interval_history = deque(
+                    (float(v) * 0.95 for v in self._lp_trigger_interval_history),
+                    maxlen=4,
+                )
             self._last_batch_trigger_interval_avg = float(batch_avg)
             self._last_batch_trigger_interval_count = int(len(raw_intervals))
             if self._lp_trigger_interval_history:
