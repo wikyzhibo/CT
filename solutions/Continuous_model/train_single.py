@@ -211,6 +211,11 @@ def train_single(
         for batch_idx in range(config.total_batch):
             rollout, second_pass_events = collect_rollout_single(env, policy_backbone, config.frames_per_batch, device=device)
             rollout = rollout.to(device)
+            env.net.blame_release_violations(batch_finalize=True)
+            lp_batch_avg = float(getattr(env.net, "_last_batch_trigger_interval_avg", 0.0))
+            lp_batch_count = int(getattr(env.net, "_last_batch_trigger_interval_count", 0))
+            lp_history = [round(float(x), 2) for x in list(getattr(env.net, "_lp_trigger_interval_history", []))]
+            lp_forced_interval = int(getattr(env.net, "_lp_forced_emit_interval", 0))
 
             with torch.no_grad():
                 values = value_net(rollout["observation_f"]).squeeze(-1)
@@ -279,11 +284,16 @@ def train_single(
             log["deadlock"].append(deadlock_count)
             log["makespan"].append(avg_makespan)
             log["second_pass_events"].append(second_pass_events)
+            log["lp_trigger_interval_batch_avg"].append(lp_batch_avg)
+            log["lp_trigger_interval_batch_count"].append(lp_batch_count)
+            log["lp_trigger_interval_forced"].append(lp_forced_interval)
 
             print(
                 f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={int(finish_count)} "
                 f"| scrap={int(scrap_count)} | deadlock={int(deadlock_count)} "
-                f"| makespan={avg_makespan:.1f} | second_pass={second_pass_events}"
+                f"| makespan={avg_makespan:.1f} | second_pass={second_pass_events} "
+                f"| lp_int_batch_avg={lp_batch_avg:.2f}s(n={lp_batch_count}) "
+                f"| lp_int_hist={lp_history} | lp_forced={lp_forced_interval}s"
             )
 
             if ep_reward > best_reward and finish_count > 0:

@@ -115,6 +115,8 @@ class PetriEnvConfig:
     )
     # 单设备 WAIT 动作档位（秒）
     wait_durations: List[int] = field(default_factory=_default_wait_durations)
+    # 是否启用 u_LP 强制发射间隔限制（由 blame 历史队列生成）
+    limit_start: bool = True
 
     # 路线与晶圆分配（可选；无则用默认双路线）
     n_wafer_route1: Optional[int] = None
@@ -171,6 +173,7 @@ class PetriEnvConfig:
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
         lines.append(f"  单设备模式: {self.device_mode}")
         lines.append(f"  单设备路径代号: {self.route_code}")
+        lines.append(f"  启用u_LP间隔限制: {self.limit_start}")
         
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -249,6 +252,7 @@ class PetriEnvConfig:
             lines.append("  place_display_names: None")
 
         lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
+        lines.append(f"  limit_start: {self.limit_start}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")

@@ -41,6 +41,7 @@ REASON_DESC: Dict[str, str] = {
     "target_cleaning": "目标腔室清洗中",
     "dwell_time_not_met": "运输位停留时间未满足",
     "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
+    "lp_forced_emit_interval_not_met": "u_LP 未达到强制发射间隔",
 }
 
 
@@ -78,6 +79,7 @@ class ClusterTool:
         self.cleaning_trigger_wafers = config.cleaning_trigger_wafers
         self.cleaning_duration = max(0, int(config.cleaning_duration))
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
+        self.limit_start = bool(getattr(config, "limit_start", True))
         
         self.device_mode = config.device_mode
         self.route_code = config.route_code
@@ -181,6 +183,12 @@ class ClusterTool:
         self._last_deadlock = False
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
+        self._lp_trigger_interval_history: Deque[float] = deque(maxlen=4)
+        self._lp_forced_emit_interval: int = 0
+        self._last_u_lp_fire_time: Optional[int] = None
+        self._pending_batch_trigger_intervals: List[float] = []
+        self._last_batch_trigger_interval_avg: float = 0.0
+        self._last_batch_trigger_interval_count: int = 0
         self._init_cleaning_state()
         self._training = True
 
@@ -350,6 +358,7 @@ class ClusterTool:
         self._last_deadlock = False
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
+        self._last_u_lp_fire_time = None
         self._init_cleaning_state()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
@@ -461,6 +470,8 @@ class ClusterTool:
 
         if t_name.startswith("u_"):
             src = t_name[2:]
+            if t_name == "u_LP":
+                self._last_u_lp_fire_time = int(start_time)
             dst_level_targets = tuple(self._u_targets.get(src, []))
             setattr(tok, "_dst_level_targets", dst_level_targets)
             setattr(tok, "_dst_level_full_on_pick", self._is_dst_level_full(src))
@@ -589,6 +600,10 @@ class ClusterTool:
             t_name = self.id2t_name[t]
             if t_name.startswith("u_"):
                 src = t_name[2:]
+                if self.limit_start and t_name == "u_LP" and self._lp_forced_emit_interval > 0 and self._last_u_lp_fire_time is not None:
+                    elapsed = int(self.time) - int(self._last_u_lp_fire_time)
+                    if elapsed < int(self._lp_forced_emit_interval):
+                        continue
                 if not self._is_process_ready(src):
                     continue
                 if self._select_target_for_source(src) is None:
@@ -682,6 +697,11 @@ class ClusterTool:
             # Stage2
             if t_name.startswith("u_"):
                 src = t_name[2:]
+                if self.limit_start and t_name == "u_LP" and self._lp_forced_emit_interval > 0 and self._last_u_lp_fire_time is not None:
+                    elapsed = int(self.time) - int(self._last_u_lp_fire_time)
+                    if elapsed < int(self._lp_forced_emit_interval):
+                        disabled.append({"action": t, "name": t_name, "reason": "lp_forced_emit_interval_not_met"})
+                        continue
                 if not self._is_process_ready(src):
                     disabled.append({"action": t, "name": t_name, "reason": "process_not_ready"})
                     continue
@@ -1086,12 +1106,47 @@ class ClusterTool:
                     self._qtime_violated_tokens.add(token_id)
                     self.qtime_violation_count += 1
 
-    def blame_release_violations(self) -> Dict[int, float]:
+    def blame_release_violations(self, batch_finalize: bool = False) -> Dict[int, float]:
         """
         事后追责：基于当前 fire_log 与 _chamber_timeline，回溯可能导致下游容量冲突的 u_* 动作。
         单设备中会按路径代号聚合站点：s1=PM1，s2=PM3∪PM4；若 code=1 则新增 s3=PM6。
         返回 fire_log_index -> penalty。
         """
+        if batch_finalize:
+            raw_intervals = [float(x) for x in self._pending_batch_trigger_intervals if float(x) > 0.0]
+            batch_avg = 0.0
+            if raw_intervals:
+                mean_raw = sum(raw_intervals) / len(raw_intervals)
+                if mean_raw > 0:
+                    filtered = [
+                        x for x in raw_intervals
+                        if abs(x - mean_raw) / mean_raw <= 0.5
+                    ]
+                else:
+                    filtered = list(raw_intervals)
+                if not filtered:
+                    filtered = list(raw_intervals)
+                capped = [min(float(x), 500.0) for x in filtered]
+                batch_avg = float(sum(capped) / len(capped))
+            if raw_intervals:
+                self._lp_trigger_interval_history.append(float(batch_avg))
+            self._last_batch_trigger_interval_avg = float(batch_avg)
+            self._last_batch_trigger_interval_count = int(len(raw_intervals))
+            if self._lp_trigger_interval_history:
+                hist = list(self._lp_trigger_interval_history)
+                # 加权平均（新到旧权重 4:3:2:1）。
+                # deque 顺序是旧->新，因此映射为旧->新权重 1,2,3,4（按可用长度截断）。
+                base_weights = [1.0, 2.0, 3.0, 4.0]
+                weights = base_weights[-len(hist):]
+                weighted_sum = sum(v * w for v, w in zip(hist, weights))
+                weight_total = sum(weights)
+                weighted_mean = (weighted_sum / weight_total) if weight_total > 0 else 0.0
+                self._lp_forced_emit_interval = int(round(weighted_mean))
+            else:
+                self._lp_forced_emit_interval = 0
+            self._pending_batch_trigger_intervals.clear()
+            return {}
+
         blame: Dict[int, float] = {}
         assert len(self.fire_log) > 0, "fire_log is empty"
 
@@ -1173,6 +1228,18 @@ class ClusterTool:
 
             if violated:
                 blame[i] = penalty_coeff
+                if t_name == "u_LP":
+                    curr_t = int(log.get("t1", 0))
+                    prev_t = None
+                    for j in range(i - 1, -1, -1):
+                        prev_log = self.fire_log[j]
+                        if prev_log.get("t_name", "") == "u_LP":
+                            prev_t = int(prev_log.get("t1", 0))
+                            break
+                    if prev_t is not None:
+                        interval = curr_t - prev_t
+                        if interval > 0:
+                            self._pending_batch_trigger_intervals.append(float(interval))
         return blame
 
     def get_enable_actions(self, wait_action_start: Optional[int] = None) -> List[int]:
