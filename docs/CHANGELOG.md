@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-14
+
+### 单设备 wait 截断新增运输完成事件 (2026-03-14)
+- **What changed**：`pn_single.get_next_event_delta()` 在保留“加工完成”事件的同时，新增 `d_TM*` 运输位“达到 `T_transport`”作为关键事件；`step(wait)` 的长 WAIT 现在会被运输完成时刻截断。
+- **Why**：当晶圆已在运输位停留接近运输完成时，继续整段长 WAIT 会跨过关键放片决策点，不利于调度策略及时响应。
+- **Impact**：除 `WAIT_5s` 仍固定 5 秒外，其他 WAIT 的 `actual_wait=min(requested_wait,next_event_delta)` 中 `next_event_delta` 候选扩展为“加工完成 + 运输完成 + 清洗完成”，长 WAIT 截断会更及时。
+
 ## 2026-03-10
 
 ### 单设备 Q-Time 违规统计接入 (2026-03-10)

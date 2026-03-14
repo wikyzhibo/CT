@@ -899,14 +899,23 @@ class ClusterTool:
         计算当前时刻到下一个关键事件的时间差（秒）。
         关键事件至少覆盖：
         - 某加工完成（避免跨过关键取片决策点）
+        - 某运输位达到 T_transport（运输完成，避免跨过关键放片决策点）
         """
         deltas: List[int] = []
         for place in self.marks:
-            if len(place.tokens) == 0 or int(getattr(place, "processing_time", 0)) <= 0:
+            if len(place.tokens) == 0:
+                continue
+
+            # 运输完成事件：d_TM* 队首停留达到 T_transport。
+            if place.name.startswith("d_TM"):
+                head = place.head()
+                delta_tm = int(self.T_transport) - int(getattr(head, "stay_time", 0))
+                deltas.append(max(0, int(delta_tm)))
+                continue
+
+            if int(getattr(place, "processing_time", 0)) <= 0:
                 continue
             if int(place.type) not in (CHAMBER, 5):
-                continue
-            if place.name.startswith("d_"):
                 continue
             head = place.head()
             delta = int(place.processing_time) - int(getattr(head, "stay_time", 0))

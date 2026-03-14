@@ -54,6 +54,32 @@ def test_wait_uses_min_of_requested_and_next_event_delta():
     assert int(td_after["time"].item()) == 10
 
 
+def test_wait_is_capped_by_transport_complete_event():
+    config = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        wait_durations=[5, 20, 100],
+    )
+    net = ClusterTool(config=config)
+    net.reset()
+
+    for place in net.marks:
+        place.tokens.clear()
+        if place.name.startswith("PM"):
+            place.is_cleaning = False
+            place.cleaning_remaining = 0
+
+    d_tm = net._get_place("d_TM1")
+    tok = net.ori_marks[net._get_place_index("LP")].tokens[0].clone()
+    tok.stay_time = int(net.T_transport) - 3
+    d_tm.tokens.append(tok)
+    net.m[net._get_place_index("d_TM1")] = 1
+
+    assert net.get_next_event_delta() == 3
+    _, _, _, _, _ = net.step(detailed_reward=True, wait_duration=20)
+    assert net.time == 3
+
+
 def test_wait_fallback_when_no_future_event():
     config = PetriEnvConfig(
         n_wafer=1,
