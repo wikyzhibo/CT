@@ -24,6 +24,7 @@ from solutions.Continuous_model.construct_single import (
     parse_route,
 )
 from solutions.Continuous_model.pn import Place
+from solutions.Continuous_model.takt_cycle_analyzer import analyze_cycle
 
 CHAMBER = 1
 DELIVERY_ROBOT = 2
@@ -41,6 +42,7 @@ REASON_DESC: Dict[str, str] = {
     "target_cleaning": "目标腔室清洗中",
     "dwell_time_not_met": "运输位停留时间未满足",
     "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
+    "takt_release_limit": "节拍限制：距上次发片间隔未达当前周期节拍",
 }
 
 
@@ -90,6 +92,7 @@ class ClusterTool:
             ROUTE_SPECS[("single", 0)],
         )
         route_meta = parse_route(stages, BUFFER_NAMES)
+        self._route_stages: List[List[str]] = list(stages)  # 用于节拍分析器
         self.chambers = tuple(route_meta["chambers"])
         self._timeline_chambers = tuple(route_meta["timeline_chambers"])
         self._u_targets = dict(route_meta["u_targets"])
@@ -182,6 +185,10 @@ class ClusterTool:
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
+        self._takt_result: Optional[Dict[str, Any]] = self._compute_takt_result()
+        print(self._takt_result)
+        self._last_u_LP_fire_time: int = 0
+        self._u_LP_release_count: int = 0
         self._training = True
 
     def train(self):
@@ -351,6 +358,9 @@ class ClusterTool:
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
+        self._takt_result = self._compute_takt_result()
+        self._last_u_LP_fire_time = 0
+        self._u_LP_release_count = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         return None, self.get_enable_t()
@@ -505,6 +515,9 @@ class ClusterTool:
         pst_place_idx = int(pst_places[0])
         self.m[pre_place_idx] -= 1
         self.m[pst_place_idx] += 1
+        if t_name == "u_LP":
+            self._last_u_LP_fire_time = int(start_time)
+            self._u_LP_release_count += 1
         return {
             "t_name": t_name,
             "t1": int(start_time),
@@ -603,6 +616,17 @@ class ClusterTool:
                 if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
                     continue
             stage2_enabled.append(t)
+            # 节拍限制：u_LP 发片间隔不得小于当前周期节拍
+            if self._takt_result and t_name == "u_LP":
+                takt = self._takt_result
+                cycle_takts = takt["cycle_takts"]
+                cycle_len = takt["cycle_length"]
+                if self._u_LP_release_count >= 1:
+                    required = cycle_takts[self._u_LP_release_count % cycle_len]
+                    if isinstance(required, float):
+                        required = int(round(required))
+                    if (self.time - self._last_u_LP_fire_time) < required:
+                        stage2_enabled.pop()
         return stage2_enabled
 
     def get_enable_actions_with_reasons(
@@ -699,6 +723,19 @@ class ClusterTool:
                 if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
                     disabled.append({"action": t, "name": t_name, "reason": "dwell_time_not_met"})
                     continue
+
+            # 节拍限制：u_LP 发片间隔不得小于当前周期节拍
+            if self._takt_result and t_name == "u_LP":
+                takt = self._takt_result
+                cycle_takts = takt["cycle_takts"]
+                cycle_len = takt["cycle_length"]
+                if self._u_LP_release_count >= 1:
+                    required = cycle_takts[self._u_LP_release_count % cycle_len]
+                    if isinstance(required, float):
+                        required = int(round(required))
+                    if (self.time - self._last_u_LP_fire_time) < required:
+                        disabled.append({"action": t, "name": t_name, "reason": "takt_release_limit"})
+                        continue
 
             enabled.append(t)
 
@@ -802,6 +839,35 @@ class ClusterTool:
             defaults=defaults,
         )
 
+    # 节拍分析时每道工序有效加工时间 = 工序处理时间 + 运输时间（用于与真实流动一致）
+    _TRANSPORT_TIME_FOR_TAKT: int = 20
+
+    def _compute_takt_result(self) -> Optional[Dict[str, Any]]:
+        """
+        根据当前加工配方（路线 + 工序时长 + 清洗参数）调用节拍分析器，
+        每道工序的处理时间按「工序时长 + 运输时间」计入节拍。失败或无可分析工序时返回 None。
+        """
+        transport = int(getattr(self, "_TRANSPORT_TIME_FOR_TAKT", 20))
+        analyzer_stages: List[Dict[str, Any]] = []
+        for i, stage in enumerate(self._route_stages):
+            if not stage:
+                continue
+            base_p = int(self._episode_proc_time_map.get(stage[0], 0) or 0)
+            if base_p <= 0:
+                continue
+            p = base_p + transport
+            m = len(stage)
+            any_cleaning = any(c in self.cleaning_targets for c in stage)
+            q = self.cleaning_trigger_wafers if (any_cleaning and self.cleaning_enabled) else None
+            d = int(self.cleaning_duration) if any_cleaning else 0
+            analyzer_stages.append({"name": f"s{i+1}", "p": p, "m": m, "q": q, "d": d})
+        if not analyzer_stages:
+            return None
+        try:
+            return analyze_cycle(analyzer_stages, max_parts=10000)
+        except Exception:
+            return None
+
     @staticmethod
     def _clone_marks(marks: List[Place]) -> List[Place]:
         cloned: List[Place] = []
@@ -879,6 +945,7 @@ class ClusterTool:
         计算当前时刻到下一个关键事件的时间差（秒）。
         关键事件至少覆盖：
         - 某加工完成（避免跨过关键取片决策点）
+        - u_LP 到达节拍（下一次允许 u_LP 发片的时刻，用于截断长 wait 以便在节拍点重新决策）
         """
         deltas: List[int] = []
         for place in self.marks:
@@ -891,6 +958,18 @@ class ClusterTool:
             head = place.head()
             delta = int(place.processing_time) - int(getattr(head, "stay_time", 0))
             deltas.append(max(0, int(delta)))
+        # u_LP 节拍使能时刻：下一次允许 u_LP 发片的时刻也作为关键事件，截断长 wait
+        if self._takt_result and self._u_LP_release_count >= 1:
+            takt = self._takt_result
+            cycle_takts = takt["cycle_takts"]
+            cycle_len = takt["cycle_length"]
+            required = cycle_takts[self._u_LP_release_count % cycle_len]
+            if isinstance(required, float):
+                required = int(round(required))
+            next_takt_time = self._last_u_LP_fire_time + required
+            delta_takt = next_takt_time - self.time
+            if delta_takt > 0:
+                deltas.append(int(delta_takt))
         if not deltas:
             return None
         min_delta = int(min(deltas))

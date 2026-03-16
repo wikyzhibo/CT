@@ -29,7 +29,7 @@ def _build_stage_takt_cycle(stage: Dict[str, Any], fast_takt: float) -> List[flo
     """
     构造单工序节拍周期：
     - q is None: 恒为 [fast_takt]
-    - q 有值: 周期长度 q*m，前 q*m-m 项为 fast_takt，后 m 项为 slow_takt=(p+d)/m
+    - q 有值: 周期长度 q*m+m，前 q*m 项为 fast_takt，后 m 项为 slow_takt=(p+d)/m
     """
     p = float(stage["p"])
     m = int(stage["m"])
@@ -43,9 +43,8 @@ def _build_stage_takt_cycle(stage: Dict[str, Any], fast_takt: float) -> List[flo
     if q <= 0:
         raise ValueError("q 若提供，必须 > 0。")
 
-    cycle_len = q * m
     slow_takt = (p + d) / m
-    fast_count = cycle_len - m
+    fast_count = q * m
     return [float(fast_takt)] * fast_count + [float(slow_takt)] * m
 
 
@@ -145,9 +144,9 @@ def analyze_cycle(stages: List[Dict[str, Any]], max_parts: int = 10000) -> Dict[
 
 if __name__ == "__main__":
     stages = [
-        {"name": "s1", "p": 100, "m": 1, "q": 4, "d": 200},
-        {"name": "s2", "p": 300, "m": 2, "q": 3, "d": 200},
-        {"name": "s3", "p": 130, "m": 1, "q": None, "d": 0},
+        {"name": "s1", "p": 100, "m": 1, "q": None, "d": 200},
+        {"name": "s2", "p": 300, "m": 2, "q": 2, "d": 200},
+        {"name": "s3", "p": 200, "m": 1, "q": None, "d": 0},
     ]
 
     result = analyze_cycle(stages, max_parts=10000)

@@ -118,6 +118,7 @@ flowchart TB
 - 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。
 - 单设备清洗（训练简化版）默认仅作用于 `PM3/PM4`：单腔累计处理 2 片后进入 150s 清洗态；清洗期间目标 `t_*` 在 Stage2 禁用（不参与 Stage1 死锁判定），并记录 `fire_log` 清洗事件（`cleaning_start/cleaning_end`）。
 - 单设备 `u_LP` 不再使用 Stage2 反推边界拦截，改为仅遵循通用使能条件（加工完成、目标可达、清洗过滤与运输位停留约束）。该变更用于减少特例裁剪，统一单设备动作语义。
+- **wait 截断与关键事件**：长 wait 会被最近的关键事件截断（`actual_dt = min(requested_wait, next_event_delta)`）。关键事件除「某加工完成」外，还包括 **u_LP 到达节拍**（下一次允许 u_LP 发片的时刻）；长 wait 会在上述最近关键事件处截断，以便在节拍点重新决策是否发片。
 - 单设备观测向量更新为 float32，并按“合法 `(place_idx, where)` 对全集 one-hot”编码位置（静态规则枚举，不是 `P×W` 笛卡尔积）。单片晶圆特征改为 `present + one_hot(valid_pair_idx) + status_one_hot + remaining_processing_norm + time_to_scrap_norm`：`status_one_hot` 顺序为 `processing/done_waiting_pick/moving/waiting`；其中 `waiting` 定义为“位于运输位且 `stay_time > D_Residual_time`”。`remaining_processing_norm` 用剩余加工量归一化（`0` 表示可取）；`time_to_scrap_norm` 先按阈值 30 裁剪再归一化，且运输位晶圆固定为 `1`。不足 `MAX_WAFERS` 时按单片特征长度补零；末尾追加 9 维清洗状态特征（`PM1/PM3/PM4` 各 `is_cleaning + clean_remaining_time_norm + remaining_runs_before_clean_norm`），不再追加腔室处理计数。
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
 - 单设备新增独立 `_check_qtime_violation` 检测：在时间推进后检查运输位（type=2）是否 `stay_time > D_Residual_time`；仅用于统计 `qtime_violation_count`（同一 wafer 仅首次违规计数 1 次），不新增 reward 惩罚项。
@@ -369,11 +370,19 @@ python -m solutions.Continuous_model.export_inference_sequence \
 - 节拍构造规则（当前口径）：
   1. 快节拍：`fast_takt = max_i(p[i] / m[i])`；
   2. 工序慢节拍：`slow_i = (p[i] + d[i]) / m[i]`（仅当 `q[i]` 非空）；
-  3. 工序周期长度：`q[i] * m[i]`；
-  4. 工序周期序列：前 `q[i]*m[i]-m[i]` 个为 `fast_takt`，最后 `m[i]` 个为 `slow_i`；
+  3. 工序周期长度：`q[i] * m[i] + m[i]`；
+  4. 工序周期序列：前 `q[i]*m[i]` 个为 `fast_takt`，最后 `m[i]` 个为 `slow_i`；
   5. 全线周期长度为各工序周期长度的最小公倍数（LCM），逐位取 `max` 得到 `cycle_takts`；
   6. 峰值慢节拍集合为 `cycle_takts` 中严格大于 `fast_takt` 的去重升序值。
 - `max_parts` 作为循环长度上限：若 LCM 周期长度大于 `max_parts`，函数抛出异常。
 - 口径说明：实现已从“事件仿真+状态签名重复”调整为“工序周期叠加+逐位 max”。
 - 示例运行：
   - `python -m solutions.Continuous_model.takt_cycle_analyzer`
+
+### 单设备 u_LP 节拍发片限制（pn_single 集成）
+- **What**：单设备 `ClusterTool` 在初始化与每次 `reset` 时根据当前加工配方（路线、工序时长、清洗参数）调用 `analyze_cycle`，将得到的 `cycle_takts` 用于限制从 LP 的发片节奏。
+- **工序时长**：节拍分析时每道工序的有效加工时间 = 工序处理时间 + 运输时间（默认 20，由 `ClusterTool._TRANSPORT_TIME_FOR_TAKT` 控制），与真实流动一致。
+- **规则**：仅当“距上次 u_LP 发射的时间”不小于当前周期内对应位置的节拍值时，才允许再次发射 u_LP；首片不受限。
+- **取位偏移**：当首片已发射后，第一次进入节拍限制时从循环第 2 个元素开始取值（即跳过第 1 个元素）。
+- **实现**：`_compute_takt_result()` 根据 `_route_stages`、`_episode_proc_time_map`、`cleaning_targets`/`cleaning_trigger_wafers`/`cleaning_duration` 构建分析用 stages（p 含运输时间）并调用 `takt_cycle_analyzer.analyze_cycle`；`get_enable_t` / `get_enable_actions_with_reasons` 在 u_LP 使能判断中增加节拍间隔检查；原因码 `takt_release_limit` 表示因节拍限制未使能。
+- **影响**：若节拍分析失败或无可分析工序（如全为缓冲站），`_takt_result` 为 None，不施加发片限制。
