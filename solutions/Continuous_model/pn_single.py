@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import deque
+from time import perf_counter
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from solutions.Continuous_model.helper_function import (
     _normalize_wait_durations,
@@ -203,6 +204,15 @@ class ClusterTool:
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
         self._training = True
+        self._step_profile = {
+            "count": 0,
+            "total_s": 0.0,
+            "get_enable_t_s": 0.0,
+            "fire_s": 0.0,
+            "build_obs_s": 0.0,
+            "reward_s": 0.0,
+            "other_s": 0.0,
+        }
 
     def train(self):
         """训练模式"""
@@ -221,6 +231,11 @@ class ClusterTool:
         """
         DONE = False
         SCRAPE = False
+        step_start = perf_counter()
+        reward_s = 0.0
+        fire_s = 0.0
+        get_enable_t_s = 0.0
+        build_obs_s = 0.0
 
         self._last_deadlock = False
         # ======超出最大运行时间直接判定为超时结束，避免“原地等待”导致的无效步骤======
@@ -228,11 +243,22 @@ class ClusterTool:
             timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
             DONE = True
             SCRAPE = True
+            t_mask = perf_counter()
             action_mask = self.get_action_mask(
                 wait_action_start=int(self.T),
                 n_actions=int(self.T + len(self.wait_durations)),
             )
+            get_enable_t_s += perf_counter() - t_mask
+            t_obs = perf_counter()
             obs = self.get_obs()
+            build_obs_s += perf_counter() - t_obs
+            self._record_step_profile(
+                total_s=perf_counter() - step_start,
+                get_enable_t_s=get_enable_t_s,
+                fire_s=fire_s,
+                build_obs_s=build_obs_s,
+                reward_s=reward_s,
+            )
             return DONE, timeout_reward, SCRAPE, action_mask, obs
 
         action = a1
@@ -275,7 +301,9 @@ class ClusterTool:
             assert  actual_dt > 0, f"actual_dt ({actual_dt}) should be positive"
 
             t2 = t1 + actual_dt
+            t_reward = perf_counter()
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
+            reward_s += perf_counter() - t_reward
             self.advance_time(actual_dt, event_reason=wait_reason)
             self._check_qtime_violation()
             self._consecutive_wait_time += (t2 - t1)
@@ -292,10 +320,14 @@ class ClusterTool:
             self._consecutive_wait_time = 0
 
             t2 = t1 + self.ttime
+            t_reward = perf_counter()
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
+            reward_s += perf_counter() - t_reward
             self.advance_time(self.ttime, event_reason="fire_transition")
             self._check_qtime_violation()
+            t_fire = perf_counter()
             log_entry = self._fire(int(action), start_time=t1, end_time=t2)
+            fire_s += perf_counter() - t_fire
             self.fire_log.append(log_entry)
 
             if self._per_wafer_reward > 0:
@@ -321,11 +353,22 @@ class ClusterTool:
             if self.stop_on_scrap:
                 DONE = True
                 SCRAPE = True
+                t_mask = perf_counter()
                 action_mask = self.get_action_mask(
                     wait_action_start=int(self.T),
                     n_actions=int(self.T + len(self.wait_durations)),
                 )
+                get_enable_t_s += perf_counter() - t_mask
+                t_obs = perf_counter()
                 obs = self.get_obs()
+                build_obs_s += perf_counter() - t_obs
+                self._record_step_profile(
+                    total_s=perf_counter() - step_start,
+                    get_enable_t_s=get_enable_t_s,
+                    fire_s=fire_s,
+                    build_obs_s=build_obs_s,
+                    reward_s=reward_s,
+                )
                 return DONE, reward_result, SCRAPE, action_mask, obs
 
         # ===== 任务完成奖励 ======
@@ -336,11 +379,22 @@ class ClusterTool:
             else:
                 reward_result += float(self.finish_event_reward)
             SCRAPE = False
+        t_mask = perf_counter()
         action_mask = self.get_action_mask(
             wait_action_start=int(self.T),
             n_actions=int(self.T + len(self.wait_durations)),
         )
+        get_enable_t_s += perf_counter() - t_mask
+        t_obs = perf_counter()
         obs = self.get_obs()
+        build_obs_s += perf_counter() - t_obs
+        self._record_step_profile(
+            total_s=perf_counter() - step_start,
+            get_enable_t_s=get_enable_t_s,
+            fire_s=fire_s,
+            build_obs_s=build_obs_s,
+            reward_s=reward_s,
+        )
         return bool(finish), reward_result, SCRAPE, action_mask, obs
 
     def reset(self):
@@ -413,6 +467,44 @@ class ClusterTool:
             if name in self.id2p_name
         )
 
+    def _record_step_profile(
+        self,
+        total_s: float,
+        get_enable_t_s: float,
+        fire_s: float,
+        build_obs_s: float,
+        reward_s: float,
+    ) -> None:
+        tracked = get_enable_t_s + fire_s + build_obs_s + reward_s
+        other_s = max(0.0, float(total_s) - float(tracked))
+        self._step_profile["count"] += 1
+        self._step_profile["total_s"] += float(total_s)
+        self._step_profile["get_enable_t_s"] += float(get_enable_t_s)
+        self._step_profile["fire_s"] += float(fire_s)
+        self._step_profile["build_obs_s"] += float(build_obs_s)
+        self._step_profile["reward_s"] += float(reward_s)
+        self._step_profile["other_s"] += float(other_s)
+
+    def get_step_profile_summary(self) -> Dict[str, Any]:
+        count = int(self._step_profile.get("count", 0))
+        total_s = float(self._step_profile.get("total_s", 0.0))
+        summary: Dict[str, Any] = {
+            "count": count,
+            "total_ms": total_s * 1000.0,
+            "avg_ms": (total_s * 1000.0 / count) if count > 0 else 0.0,
+            "segments": {},
+        }
+        keys = ("get_enable_t", "fire", "build_obs", "reward", "other")
+        for key in keys:
+            segment_total_s = float(self._step_profile.get(f"{key}_s", 0.0))
+            ratio_pct = (segment_total_s / total_s * 100.0) if total_s > 0 else 0.0
+            summary["segments"][key] = {
+                "total_ms": segment_total_s * 1000.0,
+                "avg_ms": (segment_total_s * 1000.0 / count) if count > 0 else 0.0,
+                "ratio_pct": ratio_pct,
+            }
+        return summary
+
     def calc_reward(self, t1: int, t2: int, detailed: bool = False):
         dt = max(0, t2 - t1)
         parts = {
@@ -476,8 +568,7 @@ class ClusterTool:
             return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
 
         tok = pre_place.pop_head()
-        wafer_id = int(getattr(tok, "token_id", -1))
-        where_before = int(getattr(tok, "where", 0))
+        wafer_id = tok.token_id
         self._track_leave(tok, pre_place.name)
         tok.enter_time = self.time
         tok.stay_time = 0

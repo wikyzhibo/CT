@@ -299,6 +299,27 @@ def train_single(
                 print(f"  -> New best model! reward={ep_reward:.2f}")
 
     print(f"\nTraining done. Best reward: {best_reward:.2f}")
+    step_profile = env.net.get_step_profile_summary()
+    if int(step_profile.get("count", 0)) > 0:
+        print(
+            f"[Step Time Profile] steps={int(step_profile['count'])} "
+            f"| total={float(step_profile['total_ms']):.2f}ms "
+            f"| avg_step={float(step_profile['avg_ms']):.4f}ms"
+        )
+        ordered_segments = [
+            ("get_enable_t", "get_enable_t"),
+            ("fire", "_fire"),
+            ("build_obs", "build_obs"),
+            ("reward", "calc_reward"),
+            ("other", "other"),
+        ]
+        for key, label in ordered_segments:
+            seg = step_profile["segments"][key]
+            print(
+                f"  {label:<12} total={float(seg['total_ms']):.2f}ms "
+                f"| avg={float(seg['avg_ms']):.4f}ms "
+                f"| ratio={float(seg['ratio_pct']):.2f}%"
+            )
     final_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")
     torch.save(policy_module.state_dict(), final_path)
     print(f"Final model: {final_path}")
