@@ -136,8 +136,8 @@ flowchart TB
 ### Impact
 - 设备模式统一为 `--device single/cascade`，可视化 `cascade` 不再依赖 `pn.py`，统一走 `pn_single/env_single`。
 - 单设备逻辑集中在 `Continuous_model` 新文件中，便于后续独立迭代。
-- 单设备训练已支持两阶段：阶段1收集轨迹（step 不施加 release 惩罚），阶段2执行 `blame_release_violations` 回填奖励。
-- 训练入口 `train_single.py` 仅保留随机开关参数：`--proc-time-rand-enabled`。开启后按配置中的随机区间执行（不再提供 CLI 最小/最大覆盖）。
+- 单设备训练已支持两阶段：阶段1收集轨迹（step 不施加 release 惩罚），阶段2在开启时可执行 `blame_release_violations` 回填奖励。二次追责由 `--blame` 控制：传入 `--blame` 时在 episode 结束后执行回填；不传则不进行二次追责。
+- 训练入口 `train_single.py` 支持：`--proc-time-rand-enabled`（开启后按配置中的随机区间执行）、`--blame`（开启二次追责）。
 - 单设备训练权重保存格式与并发训练统一：保存 `policy_module.state_dict()`（不再仅保存 backbone）。
 - 单设备动作 ID 与旧版 `u_src_dst` 不再一一对应；历史动作序列与旧策略权重需重训或显式映射迁移。
 
@@ -385,7 +385,8 @@ python -m solutions.Continuous_model.export_inference_sequence \
 ### 单设备 u_LP 节拍发片限制（pn_single 集成）
 - **What**：单设备 `ClusterTool` 在初始化与每次 `reset` 时根据当前加工配方（路线、工序时长、清洗参数）调用 `analyze_cycle`，将得到的 `cycle_takts` 用于限制从 LP 的发片节奏。
 - **工序时长**：`_compute_takt_result()` 传入工序原始处理时间 `p`，运输时间常量 `20` 由 `takt_cycle_analyzer.analyze_cycle` 统一计入。
+- **级联配置样式统一**：`cascade.json` 已与 `single.json` 对齐为 `chambers` 集成块风格；每个腔室在 `chambers.<name>` 下统一配置 `process_time / cleaning_duration / cleaning_trigger_wafers / proc_rand_scale`，由 `PetriEnvConfig` 归一化为 `process_time_map` 与 `cleaning_*_map`。
 - **规则**：仅当“距上次 u_LP 发射的时间”不小于当前周期内对应位置的节拍值时，才允许再次发射 u_LP；首片不受限。
 - **取位偏移**：当首片已发射后，第一次进入节拍限制时从循环第 2 个元素开始取值（即跳过第 1 个元素）。
-- **实现**：`_compute_takt_result()` 根据 `_route_stages`、`_episode_proc_time_map`、`cleaning_targets` 与 per-chamber 的 `_cleaning_trigger_map`/`_cleaning_duration_map` 构建分析用 stages（p 为原始工序时长），每 stage 取该 stage 内第一个参与清洁的腔室的 q、d，并调用 `takt_cycle_analyzer.analyze_cycle`；`get_enable_t` / `get_enable_actions_with_reasons` 在 u_LP 使能判断中增加节拍间隔检查；原因码 `takt_release_limit` 表示因节拍限制未使能。腔室级清洁与工序参数可由配置中的 `chambers` 集成块提供（见 pn_api.md）。
+- **实现**：`_compute_takt_result()` 根据 `_route_stages`、`_episode_proc_time_map`、`cleaning_targets` 与 per-chamber 的 `_cleaning_trigger_map`/`_cleaning_duration_map` 构建分析用 stages（p 为原始工序时长）；并行 stage 的 `p` 采用该层瓶颈值（`max`），`q/d` 取该层最可能形成慢节拍的腔室（按 `p+d` 最大）后调用 `takt_cycle_analyzer.analyze_cycle`；`get_enable_t` / `get_enable_actions_with_reasons` 在 u_LP 使能判断中增加节拍间隔检查；原因码 `takt_release_limit` 表示因节拍限制未使能。腔室级清洁与工序参数可由配置中的 `chambers` 集成块提供（见 pn_api.md）。
 - **影响**：若节拍分析失败或无可分析工序（如全为缓冲站），`_takt_result` 为 None，不施加发片限制。

@@ -2,6 +2,11 @@
 
 ## 2026-03-10
 
+### train_single 新增 --blame 参数 (2026-03-16)
+- **What changed**：`train_single.py` 新增命令行参数 `--blame`。传入时在 episode 结束后执行二次追责（`blame_release_violations` 回填惩罚）；不传则不进行二次追责。
+- **Why**：支持按需开启或关闭二次追责，便于对比实验与调试。
+- **Impact**：默认不传 `--blame` 时不执行追责；需与旧版“始终追责”行为一致时请显式加上 `--blame`。
+
 ### 单设备 Q-Time 违规统计接入 (2026-03-10)
 - **What changed**：`pn_single` 新增 `_check_qtime_violation`，在 `step()` 的 wait/fire 两条时间推进路径后检查运输位（type=2）超时，并更新 `qtime_violation_count`。
 - **Why**：可视化面板已提供 `Q-TIME` 指标卡片，需要单设备后端提供稳定一致的违规计数来源。

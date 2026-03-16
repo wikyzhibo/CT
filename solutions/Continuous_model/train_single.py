@@ -62,11 +62,12 @@ def collect_rollout_single(
     policy_backbone: MaskedPolicyHead,
     n_steps: int,
     device: str = "cpu",
+    blame_enabled: bool = False,
 ):
     """
     两阶段采样：
     1) 收集轨迹（step 不施加 release 惩罚）
-    2) episode 结束后 blame_release_violations 回填奖励
+    2) 若 blame_enabled，episode 结束后 blame_release_violations 回填奖励
     """
     data = {
         "observation": [],
@@ -125,14 +126,15 @@ def collect_rollout_single(
         data["next_observation_f"].append(next_obs.float().cpu())
 
         if bool(terminated.item() if hasattr(terminated, "item") else terminated):
-            blame = env.net.blame_release_violations()
-            if blame:
-                for fire_idx, penalty in blame.items():
-                    for step_idx, (fstart, fend) in enumerate(fire_log_ranges):
-                        if fstart <= fire_idx < fend:
-                            data["reward"][step_idx] = data["reward"][step_idx] - float(penalty)
-                            second_pass_events += 1
-                            break
+            if blame_enabled:
+                blame = env.net.blame_release_violations()
+                if blame:
+                    for fire_idx, penalty in blame.items():
+                        for step_idx, (fstart, fend) in enumerate(fire_log_ranges):
+                            if fstart <= fire_idx < fend:
+                                data["reward"][step_idx] = data["reward"][step_idx] - float(penalty)
+                                second_pass_events += 1
+                                break
             td = env.reset()
             fire_log_ranges = []
         else:
@@ -147,7 +149,8 @@ def train_single(
     checkpoint_path: str | None = None,
     device_mode: str = "single",
     proc_time_rand_enabled: bool | None = None,
-    proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None
+    proc_time_rand_scale_map: dict[str, dict[str, float]] | None = None,
+    blame_enabled: bool = False,
 ):
     assert config is not None, "training config must be provided"
 
@@ -209,7 +212,9 @@ def train_single(
 
     with set_exploration_type(ExplorationType.RANDOM):
         for batch_idx in range(config.total_batch):
-            rollout, second_pass_events = collect_rollout_single(env, policy_backbone, config.frames_per_batch, device=device)
+            rollout, second_pass_events = collect_rollout_single(
+                env, policy_backbone, config.frames_per_batch, device=device, blame_enabled=blame_enabled
+            )
             rollout = rollout.to(device)
 
             with torch.no_grad():
@@ -312,6 +317,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint 路径")
     parser.add_argument("--proc-time-rand-enabled", action="store_true", help="开启单设备工序时间随机扰动")
+    parser.add_argument("--blame", action="store_true", help="开启二次追责（episode 结束后 blame_release_violations 回填惩罚）")
     args = parser.parse_args()
 
     root = Path(__file__).parents[2]
@@ -327,4 +333,5 @@ if __name__ == "__main__":
         checkpoint_path=checkpoint_path,
         device_mode=args.device,
         proc_time_rand_enabled=True if args.proc_time_rand_enabled else None,
+        blame_enabled=args.blame,
     )
