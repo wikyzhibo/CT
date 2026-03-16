@@ -347,3 +347,33 @@ python -m solutions.Continuous_model.export_inference_sequence \
 - 环境入口与训练接口不变，仍使用 `Env_PN_Concurrent` 的双动作通道；
 - 观测中的 `place_idx` 编码会随库所集合变化而变化，旧模型权重不保证与新编码完全一致；
 - `check_release_penalty.py` 的既有 `wrong_seq/corr_seq` 在 `n_wafer_route2=0` 配置下首步可能不可执行，验证时需使用与当前配置匹配的动作序列。
+
+---
+
+## 11. 生产线节拍独特循环识别（独立脚本）
+
+### What changed
+- 新增独立脚本：`solutions/Continuous_model/takt_cycle_analyzer.py`。
+- 脚本提供 `analyze_cycle(stages, max_parts=10000)`，用于串行生产线节拍循环识别，输出：
+  - `fast_takt`
+  - `peak_slow_takts`
+  - `cycle_length`
+  - `cycle_takts`
+
+### Why
+- 需要按业务口径给出“快节拍 + 峰值慢节拍 + 独特循环序列”，而不是平均节拍。
+- 需要把维护触发带来的慢节拍显式建模为工序级周期，再合成为整线节拍。
+
+### How to use / Impact
+- 输入 `stages` 支持每道工序参数：`p`（单件加工时间）、`m`（并行机台数）、`q`（维护触发件数，`None` 表示无维护）、`d`（维护时长）。
+- 节拍构造规则（当前口径）：
+  1. 快节拍：`fast_takt = max_i(p[i] / m[i])`；
+  2. 工序慢节拍：`slow_i = (p[i] + d[i]) / m[i]`（仅当 `q[i]` 非空）；
+  3. 工序周期长度：`q[i] * m[i]`；
+  4. 工序周期序列：前 `q[i]*m[i]-m[i]` 个为 `fast_takt`，最后 `m[i]` 个为 `slow_i`；
+  5. 全线周期长度为各工序周期长度的最小公倍数（LCM），逐位取 `max` 得到 `cycle_takts`；
+  6. 峰值慢节拍集合为 `cycle_takts` 中严格大于 `fast_takt` 的去重升序值。
+- `max_parts` 作为循环长度上限：若 LCM 周期长度大于 `max_parts`，函数抛出异常。
+- 口径说明：实现已从“事件仿真+状态签名重复”调整为“工序周期叠加+逐位 max”。
+- 示例运行：
+  - `python -m solutions.Continuous_model.takt_cycle_analyzer`
