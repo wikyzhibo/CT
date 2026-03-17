@@ -43,6 +43,90 @@ ROUTE_SPECS: Dict[Tuple[str, int], List[List[str]]] = {
 }
 BUFFER_NAMES: Set[str] = {"LLC"}
 
+# t_* 路由码常量（仅用于 token 队头门控）
+T_ROUTE_CODES_SINGLE: Dict[str, int] = {
+    "t_PM1": 1,
+    "t_PM3": 2,
+    "t_PM4": 3,
+    "t_PM6": 4,
+    "t_LP_done": 5,
+}
+T_ROUTE_CODES_CASCADE: Dict[str, int] = {
+    "t_PM7": 1,
+    "t_PM8": 2,
+    "t_LLC": 3,
+    "t_PM1": 4,
+    "t_PM2": 5,
+    "t_PM3": 6,
+    "t_PM4": 7,
+    "t_LLD": 8,
+    "t_PM9": 9,
+    "t_PM10": 10,
+    "t_LP_done": 11,
+}
+
+
+def _build_token_route_queue_and_t_code_map(
+    mode: str,
+    route_code: int,
+) -> Tuple[Tuple[object, ...], Dict[str, int]]:
+    """
+    返回 token 路由队列模板与 t_* 路由码映射。
+    约定：
+    - 仅 t_* 需要路由门控，u_* 不做门控；
+    - 但 token 每次 fire 都推进队头，因此 u_* 位置使用 -1 占位。
+    """
+    if mode == "cascade":
+        t_codes = dict(T_ROUTE_CODES_CASCADE)
+        if route_code == 1:
+            queue = (
+                -1, (t_codes["t_PM7"], t_codes["t_PM8"]),
+                -1, t_codes["t_LLC"],
+                -1, (t_codes["t_PM1"], t_codes["t_PM2"], t_codes["t_PM3"], t_codes["t_PM4"]),
+                -1, t_codes["t_LLD"],
+                -1, (t_codes["t_PM9"], t_codes["t_PM10"]),
+                -1, t_codes["t_LP_done"],
+            )
+            valid_t = {"t_PM7", "t_PM8", "t_LLC", "t_PM1", "t_PM2", "t_PM3", "t_PM4", "t_LLD", "t_PM9", "t_PM10", "t_LP_done"}
+        elif route_code == 2:
+            queue = (
+                -1, (t_codes["t_PM7"], t_codes["t_PM8"]),
+                -1, t_codes["t_LLC"],
+                -1, (t_codes["t_PM1"], t_codes["t_PM2"]),
+                -1, t_codes["t_LLD"],
+                -1, (t_codes["t_PM9"], t_codes["t_PM10"]),
+                -1, t_codes["t_LP_done"],
+            )
+            valid_t = {"t_PM7", "t_PM8", "t_LLC", "t_PM1", "t_PM2", "t_LLD", "t_PM9", "t_PM10", "t_LP_done"}
+        else:
+            queue = (
+                -1, (t_codes["t_PM7"], t_codes["t_PM8"]),
+                -1, t_codes["t_LLC"],
+                -1, (t_codes["t_PM1"], t_codes["t_PM2"]),
+                -1, t_codes["t_LLD"],
+                -1, t_codes["t_LP_done"],
+            )
+            valid_t = {"t_PM7", "t_PM8", "t_LLC", "t_PM1", "t_PM2", "t_LLD", "t_LP_done"}
+        return queue, {k: v for k, v in t_codes.items() if k in valid_t}
+
+    t_codes = dict(T_ROUTE_CODES_SINGLE)
+    if route_code == 1:
+        queue = (
+            -1, t_codes["t_PM1"],
+            -1, (t_codes["t_PM3"], t_codes["t_PM4"]),
+            -1, t_codes["t_PM6"],
+            -1, t_codes["t_LP_done"],
+        )
+        valid_t = {"t_PM1", "t_PM3", "t_PM4", "t_PM6", "t_LP_done"}
+    else:
+        queue = (
+            -1, t_codes["t_PM1"],
+            -1, (t_codes["t_PM3"], t_codes["t_PM4"]),
+            -1, t_codes["t_LP_done"],
+        )
+        valid_t = {"t_PM1", "t_PM3", "t_PM4", "t_LP_done"}
+    return queue, {k: v for k, v in t_codes.items() if k in valid_t}
+
 
 def parse_route(
     stages: List[List[str]],
@@ -175,6 +259,11 @@ def build_single_device_net(
       - route_code=1: LP -> PM7/8 -> LLC -> PM1/2/3/4 -> LLD -> PM9/10 -> LP_done
       - route_code=2: LP -> PM7/8 -> LLC -> PM1/2 -> LLD -> PM9/10 -> LP_done
       - route_code=3: LP -> PM7/8 -> LLC -> PM1/2 -> LLD -> LP_done
+
+    返回 dict 除 pre/pst/m0/md/marks/id2p_name/id2t_name 等外，还包含预计算索引（供 get_enable_t/_fire 复用）：
+    - pre_place_indices: List[np.ndarray]，pre_place_indices[t] 为变迁 t 的前置库所下标
+    - pst_place_indices: List[np.ndarray]，pst_place_indices[t] 为变迁 t 的后置库所下标
+    - transport_pre_place_idx: List[int]，transport_pre_place_idx[t] 为变迁 t 的运输位前置库所下标（无则为 -1）
     """
     mode = str(device_mode).lower()
     if mode not in {"single", "cascade"}:
@@ -311,7 +400,7 @@ def build_single_device_net(
             add_arc("PM6", "u_PM6", "d_TM1")
         add_arc("d_TM1", "t_LP_done", "LP_done")
 
-    # color-aware 前置矩阵（color 维对应 token.where）
+    # color-aware 前置矩阵（兼容保留；路由门控已迁移到 token.route_queue）
     max_where = 13 if mode == "cascade" else (9 if route_code == 1 else 7)
     pre_color = np.zeros((P, T, max_where + 1), dtype=int)
     for t_name, tid in t_idx.items():
@@ -380,6 +469,11 @@ def build_single_device_net(
     scrap_clip = float(ctx.get("scrap_clip_threshold", 20.0))
 
     marks: List[Place] = []
+    token_route_queue, t_route_code_map = _build_token_route_queue_and_t_code_map(
+        mode=mode,
+        route_code=route_code,
+    )
+
     for name in id2p_name:
         spec = modules[name]
         if name.startswith("LP"):
@@ -448,7 +542,17 @@ def build_single_device_net(
 
         if name == "LP":
             for tok_id in range(n_wafer):
-                place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=1, step=0, where=0))
+                place.append(
+                    BasedToken(
+                        enter_time=0,
+                        token_id=tok_id,
+                        route_type=1,
+                        step=0,
+                        where=0,
+                        route_queue=token_route_queue,
+                        route_head_idx=0,
+                    )
+                )
         marks.append(place)
 
     # 从路线解析路由元数据
@@ -458,12 +562,32 @@ def build_single_device_net(
         stages = ROUTE_SPECS.get((mode, 1 if mode == "cascade" else 0), ROUTE_SPECS[("single", 0)])
     route_meta = parse_route(stages, BUFFER_NAMES)
 
+    # 预计算每个变迁的 pre/pst 库所索引与运输位索引，供运行时复用
+    T = pre.shape[1]
+    pre_place_indices: List[np.ndarray] = [
+        np.flatnonzero(pre[:, t] > 0) for t in range(T)
+    ]
+    pst_place_indices: List[np.ndarray] = [
+        np.flatnonzero(pst[:, t] > 0) for t in range(T)
+    ]
+    transport_pre_place_idx: List[int] = []
+    for t in range(T):
+        indices = pre_place_indices[t]
+        found = next(
+            (int(idx) for idx in indices if id2p_name[int(idx)].startswith("d_")),
+            -1,
+        )
+        transport_pre_place_idx.append(int(found))
+
     return {
         "m0": m0,
         "md": md,
         "pre": pre,
         "pre_color": pre_color,
         "pst": pst,
+        "pre_place_indices": pre_place_indices,
+        "pst_place_indices": pst_place_indices,
+        "transport_pre_place_idx": transport_pre_place_idx,
         "ptime": ptime,
         "ttime": ttime_arr,
         "capacity": capacity,
@@ -477,4 +601,6 @@ def build_single_device_net(
         "single_route_code": route_code,
         "single_device_mode": mode,
         "route_meta": route_meta,
+        "t_route_code_map": t_route_code_map,
+        "token_route_queue_template": token_route_queue,
     }

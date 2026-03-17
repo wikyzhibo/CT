@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union, Set, Optional
+from typing import Any, Dict, List, Tuple, Union, Set, Optional
 from solutions.model.pn_models import Place
 
 # 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
@@ -17,11 +17,21 @@ class BasedToken:
     route_type: int = 0 # 路线类型：0=未分配, 1=路线1, 2=路线2
     step: int = 0       # 当前工序步骤索引（0-based）
     where: int = 0      # 单设备颜色/阶段索引
+    route_queue: Tuple[Any, ...] = ()
+    route_head_idx: int = 0
 
     def clone(self):
-        return BasedToken(enter_time=self.enter_time, stay_time=self.stay_time, 
-                          token_id=self.token_id, machine=self.machine, 
-                          route_type=self.route_type, step=self.step, where=self.where)
+        return BasedToken(
+            enter_time=self.enter_time,
+            stay_time=self.stay_time,
+            token_id=self.token_id,
+            machine=self.machine,
+            route_type=self.route_type,
+            step=self.step,
+            where=self.where,
+            route_queue=tuple(self.route_queue),
+            route_head_idx=int(self.route_head_idx),
+        )
 
 @dataclass
 class RobotSpec:

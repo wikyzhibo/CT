@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-16
+
+### 单设备 t_* 路由改为 token 队列门控 (2026-03-16)
+- **What changed**：`pn_single/construct_single` 新增 token 路由队列模板（`route_queue + route_head_idx`）与 `t_*` 路由码映射；`pn_single.get_enable_t` 与 `get_enable_actions_with_reasons` 的路由判定改为读取运输位队首 token 的当前队头门控。
+- **Why**：`get_enable_t` 是热路径，原 `where + pre_color` 的颜色切片判定在每步都有额外矩阵开销；改为队头码匹配可减少分支与切片成本，并保持路径语义。
+- **Impact**：仅 `t_*` 受路由门控（支持 `-1` 通配、单码、多码集合）；`u_*` 不再做路由门控，但 token 每次 fire 仍推进一次队头（`u_*` 步通常对应 `-1` 占位）。
+
 ## 2026-03-14
 
 ### 单设备 wait 截断新增运输完成事件 (2026-03-14)

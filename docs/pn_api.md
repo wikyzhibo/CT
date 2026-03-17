@@ -108,7 +108,7 @@ class BasedToken:
 
 **构网来源**
 - `solutions/Continuous_model/construct_single.py`
-- 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`
+- 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`；构网同时返回 `pre_place_indices`、`pst_place_indices`、`transport_pre_place_idx`（每变迁的 pre/pst 库所索引及运输位 pre 索引），供 `get_enable_t`、`_fire`、`get_enable_actions_with_reasons` 复用以减少检索
 - `d_TM1` 在构网中设置 `processing_time=5s`（默认），用于约束“运输位停留后才能 `t_*` 进入腔室”
 - 通过 `PetriEnvConfig.single_robot_capacity` 控制 `d_TM1` 容量：
   - `1`：Single Arm（单臂）
@@ -126,6 +126,10 @@ class BasedToken:
 - `single_route_code=1`（single 模式）：`LP -> PM1(100s) -> PM3/PM4(300s) -> PM6(300s) -> LP_done`
 - 双臂模式约束：`u_*` 仅在可解析到有效目标腔室时才允许发射；若下游层满导致目标不可解析，则该 `u_*` 必须禁用，避免出现 `LP -> d_TM1 -> LP_done` 的非法短路。
 - 上述约束同样适用于 `d_TM1` 为空时：双臂“可任意取片”不等于可忽略目标可达性，目标不可解析时必须禁用 `u_*`。
+- 单/级联模式路由门控统一改为 token 队列：`route_queue + route_head_idx`。
+  - 仅 `t_*` 使用路由门控码（如 `t_PM7=1, t_PM8=2, t_LLC=3 ...`）。
+  - `u_*` 不做路由门控；但 token 每次 fire 都会推进一次队头，用 `-1` 作为 `u_*` 占位通配符。
+  - 示例：`[-1, (1,2), -1, 3, ...]` 表示 `u_*` 后到达并行 `t_PM7/t_PM8` 阶段，再进入 `t_LLC` 阶段。
 
 **主要接口**
 - `reset()`：重置网状态
@@ -164,6 +168,10 @@ class BasedToken:
 - 使能计算分为两阶段：
   - Stage1：`pre/pst` + 容量 + 防死锁规则（用于死锁判定，`u_*` 在该阶段忽略清洗目标过滤）
   - Stage2：加工完成、目标可达与 dwell/清洗过滤（`get_enable_t()` 最终返回）
+- 路由判定规则：仅 `t_*` 读取运输位队首 token 的 `route_queue[route_head_idx]`。
+  - 队头为 `-1`：该步对 `t_*` 路由不设限；
+  - 队头为 `int`：仅允许匹配该码的 `t_*`；
+  - 队头为集合（tuple/list/set）：允许集合内任意码的 `t_*`。
 - WAIT 掩码规则（单设备）：
   - 默认启用所有 wait 档位；
   - 若当前路径任一加工腔室存在 token 满足 `stay_time >= processing_time`（加工完成待取片），禁用 `WAIT>5s`，仅保留 `WAIT_5s`。

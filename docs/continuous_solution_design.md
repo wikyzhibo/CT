@@ -87,7 +87,7 @@ flowchart TB
 - 新增单设备 Petri 模型（1 机械手、单动作、8 腔体命名：`LP/LP_done/PM1-6`）。
 - 单设备在可视化菜单中可被真实切换，不再仅 UI 占位。
 - 单设备 `u-d-t` 子网的卸载命名由 `u_src_dst` 简化为 `u_src`，例如 `u_PM1_PM3/u_PM1_PM4 -> u_PM1`。
-- 单设备构网新增 `pre_color(place, transition, color)` 三维前置约束，`color` 由 token 的 `where` 驱动。
+- 单设备路由门控改为 token 队列机制：`route_queue + route_head_idx`，仅 `t_*` 使用路由码进行放行判定。
 - **路由元数据由路径解析生成**：`construct_single.py` 中的 `parse_route(stages, buffer_names)` 从路线阶段序列（如 `[["PM1"], ["PM3","PM4"], ["PM6"]]`）解析出 `chambers`、`step_map`、`u_targets`、`release_station_aliases`、`system_entry_places`、`release_chain_by_u`、`timeline_chambers`，`ClusterTool` 不再维护硬编码分支。
 
 ### Why
@@ -113,8 +113,8 @@ flowchart TB
 - 释放追责站点按路径代号聚合：`s1=PM1`，`s2=PM3∪PM4`；当 `single_route_code=1` 时新增 `s3=PM6`，`u_LP` 链路检查扩展为 `s1->s2->s3`。
 - `u_src` 发射前会检查“至少一个候选目标可接收”，并在发射时确定 `_target_place`。
 - `single` 模式下当 `u_PM1` 目标层为并行 `PM3/PM4` 且两者均可接收时，采用轮换分配（round-robin），避免长期偏置到单一腔室。
-- `t_*` 使能在 `d_TM1` 侧额外受 `pre_color[:,:,where]` 限制：只有当前 `where` 对应颜色截面允许的目标才可放行。
-- 每次晶圆被变迁移动后执行 `where += 1`，用于推进 color 截面判定。
+- `t_*` 使能在运输位侧读取队首 token 的路由队头进行判定（`-1` 通配、`int` 单目标、`tuple/list` 多目标）。
+- `u_*` 不使用路由门控；token 仍在每次 fire 后推进一次队头，`u_*` 步通常对应队列中的 `-1` 占位。
 - 双臂模式下（`single_robot_capacity=2`），只要 `d_TM1` 队首有晶圆，后续 `u_*` 仅允许来自该队首晶圆 `dst` 层的来源；不再依赖“dst 层是否已满”触发。
 - 单设备清洗（训练简化版）默认仅作用于 `PM3/PM4`：单腔累计处理 2 片后进入 150s 清洗态；清洗期间目标 `t_*` 在 Stage2 禁用（不参与 Stage1 死锁判定），并记录 `fire_log` 清洗事件（`cleaning_start/cleaning_end`）。
 - 单设备 `u_LP` 不再使用 Stage2 反推边界拦截，改为仅遵循通用使能条件（加工完成、目标可达、清洗过滤与运输位停留约束）。该变更用于减少特例裁剪，统一单设备动作语义。

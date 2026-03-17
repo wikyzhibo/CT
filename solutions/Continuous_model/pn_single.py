@@ -149,10 +149,42 @@ class ClusterTool:
         self.k: np.ndarray = info["capacity"]
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
+        self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
+        self._t_route_code_by_idx: List[int] = [
+            int(self._t_route_code_map.get(name, -1)) for name in self.id2t_name
+        ]
         self.idle_idx: Dict[str, int] = info["idle_idx"]
         self.P = self.pre.shape[0]
         self.T = self.pre.shape[1]
         self.ttime = int(np.max(info["ttime"])) if len(info["ttime"]) > 0 else 5
+
+        # 预计算的 pre/pst 库所索引与运输位索引（构网返回或本地计算以兼容旧版）
+        self._pre_place_indices: List[np.ndarray] = info.get("pre_place_indices")
+        self._pst_place_indices: List[np.ndarray] = info.get("pst_place_indices")
+        self._transport_pre_place_idx: List[int] = info.get("transport_pre_place_idx")
+        if (
+            self._pre_place_indices is None
+            or self._pst_place_indices is None
+            or self._transport_pre_place_idx is None
+        ):
+            self._pre_place_indices = [
+                np.flatnonzero(self.pre[:, t] > 0) for t in range(self.T)
+            ]
+            self._pst_place_indices = [
+                np.flatnonzero(self.pst[:, t] > 0) for t in range(self.T)
+            ]
+            self._transport_pre_place_idx = []
+            for t in range(self.T):
+                indices = self._pre_place_indices[t]
+                found = next(
+                    (
+                        int(idx)
+                        for idx in indices
+                        if self.id2p_name[int(idx)].startswith("d_")
+                    ),
+                    -1,
+                )
+                self._transport_pre_place_idx.append(found)
 
         self.ori_marks: List[Place] = info["marks"]
         self.marks: List[Place] = self._clone_marks(self.ori_marks)
@@ -558,8 +590,8 @@ class ClusterTool:
 
     def _fire(self, t_idx: int, start_time: int, end_time: int) -> Dict[str, Any]:
         t_name = self.id2t_name[t_idx]
-        pre_places = np.flatnonzero(self.pre[:, t_idx] > 0)
-        pst_places = np.flatnonzero(self.pst[:, t_idx] > 0)
+        pre_places = self._pre_place_indices[t_idx]
+        pst_places = self._pst_place_indices[t_idx]
         if pre_places.size == 0 or pst_places.size == 0:
             return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
         pre_place = self.marks[int(pre_places[0])]
@@ -613,7 +645,7 @@ class ClusterTool:
                 self._chamber_timeline[target].append((end_time, None, wafer_id))
                 self._chamber_active[target][wafer_id] = idx
 
-        tok.where = int(getattr(tok, "where", 0)) + 1
+        self._advance_token_route_head(tok)
         pst_place.append(tok)
         pre_place_idx = int(pre_places[0])
         pst_place_idx = int(pst_places[0])
@@ -629,46 +661,80 @@ class ClusterTool:
             "token_id": wafer_id,
         }
 
+    @staticmethod
+    def _token_route_gate(tok: BasedToken) -> object:
+        queue = tuple(getattr(tok, "route_queue", ()))
+        if not queue:
+            return -1
+        idx = int(getattr(tok, "route_head_idx", 0))
+        if idx < 0:
+            idx = 0
+        if idx >= len(queue):
+            idx = len(queue) - 1
+        return queue[idx]
+
+    @staticmethod
+    def _advance_token_route_head(tok: BasedToken) -> None:
+        queue = tuple(getattr(tok, "route_queue", ()))
+        if not queue:
+            return
+        idx = int(getattr(tok, "route_head_idx", 0))
+        next_idx = idx + 1
+        if next_idx >= len(queue):
+            next_idx = len(queue) - 1
+        tok.route_head_idx = int(max(0, next_idx))
+
+    @staticmethod
+    def _route_gate_allows_t(gate: object, t_code: int) -> bool:
+        if int(t_code) < 0:
+            return True
+        if gate == -1:
+            return True
+        if isinstance(gate, int):
+            return int(gate) == int(t_code)
+        if isinstance(gate, (list, tuple, set)):
+            return int(t_code) in {int(x) for x in gate}
+        return True
+
     def get_enable_t(self) -> List[int]:
         """
         Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
         """
 
-        # step 1: 若为双臂，预先锁定一些u_*变迁
-        stage1_enabled: List[int] = []
-        d_tm = self._get_place("d_TM1") if ("d_TM1" in self.id2p_name and self.device_mode != "cascade") else None
-        head_tok = d_tm.head() if (d_tm is not None and len(d_tm.tokens) > 0) else None
-
         # 机器手容量为2时，如果 d_TM1 队首有晶圆，则锁定后续 u_* 来源到该晶圆的 dst 层，直到该晶圆离开 d_TM1。
+        """
+        
+        if ("d_TM1" in self.id2p_name and self.device_mode != "cascade"):
+            d_tm = self._get_place("d_TM1") 
+        else:
+            d_tm = None
+        if (d_tm is not None and len(d_tm.tokens) > 0):
+            head_tok = d_tm.head() 
+        else:
+            head_tok = None
+
         locked_sources: set[str] = set()
         if self.robot_capacity == 2 and self.device_mode != "cascade" and head_tok is not None:
             locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
+        """
 
-        # step2: 遍历变迁，结构性使能
+        stage1_enabled: List[int] = []
+        # step2: 遍历变迁，结构性使能（使用缓存的 pre/pst 索引）
         # =====self.m >= self.pre[:, t]=======
         # =====self.m + self.pst[:, t] <= self.k=======
         for t in range(self.T):
-            base_pre = self.pre[:, t]
-            base_pre_idx = np.flatnonzero(base_pre > 0)
-            if base_pre_idx.size == 0:
-                continue
             t_name = self.id2t_name[t]
-            color_pre = base_pre
-            head_where = 0
-            color_idx = 0
-            transport_pre_idx = np.flatnonzero(
-                (base_pre > 0) & np.array([name.startswith("d_") for name in self.id2p_name], dtype=bool)
-            )
-            if transport_pre_idx.size > 0:
-                tp_idx = int(transport_pre_idx[0])
-                tp = self.marks[tp_idx]
-                tp_head = tp.head() if len(tp.tokens) > 0 else None
-                head_where = int(getattr(tp_head, "where", 0)) if tp_head is not None else 0
-                color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
-                color_pre = self.pre_color[:, t, color_idx]
-            if np.any((base_pre > 0) & (color_pre <= 0)):
-                continue
-            if np.any(self.m[base_pre_idx] < color_pre[base_pre_idx]):
+            # 发片限制：u_LP 受节拍限制，需额外检查是否允许发片。
+            if t_name == "u_LP":
+                if self._allow_start():
+                    continue
+                else:
+                    stage1_enabled.append(t)
+                    continue
+
+            base_pre_idx = self._pre_place_indices[t]
+
+            if np.any(self.m[base_pre_idx] < self.pre[base_pre_idx, t]):
                 continue
             if np.any(self.m + self.net[:, t] > self.k):
                 continue
@@ -676,8 +742,8 @@ class ClusterTool:
                 src = t_name[2:]
                 if self.robot_capacity == 2 and self.device_mode != "cascade":
                     # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
-                    if d_tm is not None and len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
-                        continue
+                    #if d_tm is not None and len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
+                    #    continue
                     # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
                     # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
                     if self._select_target_for_source(src, ignore_cleaning=True) is None:
@@ -687,6 +753,14 @@ class ClusterTool:
                     if self._select_target_for_source(src, ignore_cleaning=True) is None:
                         continue
             elif t_name.startswith("t_"):
+                t_code = self._t_route_code_by_idx[t]
+                tp_idx = self._transport_pre_place_idx[t]
+                if tp_idx >= 0:
+                    tp_head = self.marks[tp_idx].head() if len(self.marks[tp_idx].tokens) > 0 else None
+                    if tp_head is not None:
+                        gate = self._token_route_gate(tp_head)
+                        if not self._route_gate_allows_t(gate, t_code):
+                            continue
                 # t_*类型变迁，取队首token._target_place进行目标检查
                 target = t_name[2:]
                 transport_name = self._transport_for_t_target(target)
@@ -721,17 +795,23 @@ class ClusterTool:
                     continue
             stage2_enabled.append(t)
             # 节拍限制：u_LP 发片间隔不得小于当前周期节拍
-            if self._takt_result and t_name == "u_LP":
-                takt = self._takt_result
-                cycle_takts = takt["cycle_takts"]
-                cycle_len = takt["cycle_length"]
-                if self._u_LP_release_count >= 1:
-                    required = cycle_takts[self._u_LP_release_count % cycle_len]
-                    if isinstance(required, float):
-                        required = int(round(required))
-                    if (self.time - self._last_u_LP_fire_time) < required:
-                        stage2_enabled.pop()
+
         return stage2_enabled
+
+    def _allow_start(self):
+        takt = self._takt_result
+        cycle_takts = takt["cycle_takts"]
+        cycle_len = takt["cycle_length"]
+        if self._u_LP_release_count >= 1:
+            required = cycle_takts[self._u_LP_release_count % cycle_len]
+            if isinstance(required, float):
+                required = int(round(required))
+            if (self.time - self._last_u_LP_fire_time) < required:
+                return True
+            else:
+                return False
+        else:
+            return True
 
     def get_enable_actions_with_reasons(
         self,
@@ -752,32 +832,16 @@ class ClusterTool:
         enabled: List[int] = []
         disabled: List[Dict[str, Any]] = []
 
-        # 遍历变迁
+        # 遍历变迁（使用缓存的 pre/pst 索引）
         for t in range(self.T):
-            base_pre = self.pre[:, t]
-            base_pre_idx = np.flatnonzero(base_pre > 0)
+            base_pre_idx = self._pre_place_indices[t]
             t_name = self.id2t_name[t]
 
             if base_pre_idx.size == 0:
                 disabled.append({"action": t, "name": t_name, "reason": "pre_color_mismatch"})
                 continue
 
-            color_pre = base_pre
-            transport_pre_idx = np.flatnonzero(
-                (base_pre > 0) & np.array([name.startswith("d_") for name in self.id2p_name], dtype=bool)
-            )
-            if transport_pre_idx.size > 0:
-                tp_idx = int(transport_pre_idx[0])
-                tp = self.marks[tp_idx]
-                tp_head = tp.head() if len(tp.tokens) > 0 else None
-                head_where = int(getattr(tp_head, "where", 0)) if tp_head is not None else 0
-                color_idx = int(np.clip(head_where, 0, self.pre_color.shape[2] - 1))
-                color_pre = self.pre_color[:, t, color_idx]
-
-            if np.any((base_pre > 0) & (color_pre <= 0)):
-                disabled.append({"action": t, "name": t_name, "reason": "pre_color_mismatch"})
-                continue
-            if np.any(self.m[base_pre_idx] < color_pre[base_pre_idx]):
+            if np.any(self.m[base_pre_idx] < self.pre[base_pre_idx, t]):
                 disabled.append({"action": t, "name": t_name, "reason": "insufficient_tokens"})
                 continue
             if np.any(self.m + self.net[:, t] > self.k):
@@ -798,6 +862,15 @@ class ClusterTool:
                         disabled.append({"action": t, "name": t_name, "reason": "no_receiving_target"})
                         continue
             elif t_name.startswith("t_"):
+                t_code = self._t_route_code_by_idx[t]
+                tp_idx = self._transport_pre_place_idx[t]
+                if tp_idx >= 0:
+                    tp_head = self.marks[tp_idx].head() if len(self.marks[tp_idx].tokens) > 0 else None
+                    if tp_head is not None:
+                        gate = self._token_route_gate(tp_head)
+                        if not self._route_gate_allows_t(gate, t_code):
+                            disabled.append({"action": t, "name": t_name, "reason": "pre_color_mismatch"})
+                            continue
                 target = t_name[2:]
                 transport_name = self._transport_for_t_target(target)
                 tp = self._get_place(transport_name)
