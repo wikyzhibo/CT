@@ -35,7 +35,7 @@ TM3_TRANSITIONS = frozenset({
 })
 
 
-@dataclass(slots=False)  # 不能使用 slots=True，因为 tokens 是可变字段（deque）
+@dataclass(slots=True)
 class Place:
     """
     Petri 网库所。
@@ -53,22 +53,24 @@ class Place:
     - tokens: token 队列（FIFO）
     - last_machine: 上次分配的机器编号（type=1 使用）
     """
-    # 注意：不能使用 __slots__，因为 tokens 是可变字段（deque）
-    # 但可以通过其他方式优化属性访问（如使用局部变量缓存）
     name: str
     capacity: int
     processing_time: int
-    type: int  # 1 manipulator place, 2 delivery place, 3 idle place, 4 source/other
+    type: int
     tokens: Deque[BasedToken] = field(default_factory=deque)
-    # 上次分配的机器编号（仅 type=1 使用），用于轮换分配机器
     last_machine: int = -1
-    # 清洗相关状态（默认关闭，供单设备扩展使用）
     processed_wafer_count: int = 0
     idle_time: int = 0
     last_proc_type: str = ""
     is_cleaning: bool = False
     cleaning_remaining: int = 0
     cleaning_reason: str = ""
+    is_pm: bool = field(init=False, default=False)
+    is_dtm: bool = field(init=False, default=False)
+
+    def __post_init__(self):
+        self.is_pm = self.name.startswith("PM")
+        self.is_dtm = self.name.startswith("d_TM")
 
     def clone(self) -> "Place":
         cloned = Place(
@@ -132,6 +134,10 @@ class Place:
         buffer[offset: offset + length] = values
         return length
 
+    def write_obs_fast(self, buffer: np.ndarray, offset: int) -> int:
+        """Pre-zeroed buffer variant; subclasses override for speed."""
+        return self.write_obs(buffer, offset)
+
 
 # ---------- Place 子类（单设备观测用）----------
 # SR=Source, TM=Transport, PM=Process Module, LL=Load Lock
@@ -139,6 +145,8 @@ class Place:
 
 class SR(Place):
     """源/汇聚库所（LP、LP_done），LP 返回 1 维 remaining_norm，LP_done 不进观测。"""
+    __slots__ = ('_n_wafer', '_inv_n_wafer')
+
     def __init__(self, name: str, capacity: int, processing_time: int, type: int = 3, n_wafer: int = 1, **kwargs):
         super().__init__(name=name, capacity=capacity, processing_time=processing_time, type=type, **kwargs)
         self._n_wafer = max(1, n_wafer)
@@ -166,6 +174,8 @@ class SR(Place):
         buffer[offset] = remaining_norm
         return 1
 
+    write_obs_fast = write_obs
+
     def clone(self) -> "SR":
         cloned = SR(
             name=self.name,
@@ -173,13 +183,13 @@ class SR(Place):
             processing_time=self.processing_time,
             type=self.type,
             n_wafer=self._n_wafer,
-            last_machine=getattr(self, "last_machine", -1),
-            processed_wafer_count=getattr(self, "processed_wafer_count", 0),
-            idle_time=getattr(self, "idle_time", 0),
-            last_proc_type=getattr(self, "last_proc_type", ""),
-            is_cleaning=getattr(self, "is_cleaning", False),
-            cleaning_remaining=getattr(self, "cleaning_remaining", 0),
-            cleaning_reason=getattr(self, "cleaning_reason", ""),
+            last_machine=self.last_machine,
+            processed_wafer_count=self.processed_wafer_count,
+            idle_time=self.idle_time,
+            last_proc_type=self.last_proc_type,
+            is_cleaning=self.is_cleaning,
+            cleaning_remaining=self.cleaning_remaining,
+            cleaning_reason=self.cleaning_reason,
         )
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned
@@ -187,6 +197,8 @@ class SR(Place):
 
 class TM(Place):
     """运输位（d_TM1/d_TM2/d_TM3），返回 4 维时间 + onehot_dim 维去向 one-hot。"""
+    __slots__ = ('_D_Residual_time', '_target_onehot_map', '_onehot_dim', '_obs_dim')
+
     def __init__(
         self,
         name: str,
@@ -213,18 +225,24 @@ class TM(Place):
         return self._obs_dim
 
     def write_obs(self, buffer: np.ndarray, offset: int) -> int:
-        end = offset + self._obs_dim
-        buffer[offset:end] = 0.0
+        obs_dim = self._obs_dim
+        buffer[offset:offset + obs_dim] = 0.0
+        return self._write_obs_inner(buffer, offset, obs_dim)
+
+    def write_obs_fast(self, buffer: np.ndarray, offset: int) -> int:
+        return self._write_obs_inner(buffer, offset, self._obs_dim)
+
+    def _write_obs_inner(self, buffer: np.ndarray, offset: int, obs_dim: int) -> int:
         penalty_time = float(self._D_Residual_time)
-        dwell_time = float(self.processing_time if self.processing_time > 0 else 1.0)
+        dwell_time = float(self.processing_time) if self.processing_time > 0 else 1.0
 
-        token_count = len(self.tokens)
-        if token_count == 0:
+        tokens = self.tokens
+        if len(tokens) == 0:
             buffer[offset + 3] = 1.0
-            return self._obs_dim
+            return obs_dim
 
-        head = self.tokens[0]
-        stay_time = float(getattr(head, "stay_time", 0.0))
+        head = tokens[0]
+        stay_time = float(head.stay_time)
         buffer[offset] = 1.0 if stay_time >= dwell_time else 0.0
         buffer[offset + 1] = 1.0 if stay_time > penalty_time else 0.0
 
@@ -244,12 +262,12 @@ class TM(Place):
             min_distance_norm = 1.0
         buffer[offset + 3] = min_distance_norm
 
-        target = getattr(head, "_target_place", None)
+        target = head._target_place
         if target is not None:
             idx = self._target_onehot_map.get(target, -1)
             if 0 <= idx < self._onehot_dim:
                 buffer[offset + 4 + idx] = 1.0
-        return self._obs_dim
+        return obs_dim
 
     def clone(self) -> "TM":
         cloned = TM(
@@ -260,7 +278,7 @@ class TM(Place):
             D_Residual_time=self._D_Residual_time,
             target_onehot_map=dict(self._target_onehot_map),
             onehot_dim=self._onehot_dim,
-            last_machine=getattr(self, "last_machine", -1),
+            last_machine=self.last_machine,
         )
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned
@@ -268,6 +286,12 @@ class TM(Place):
 
 class PM(Place):
     """加工腔室（PM1/PM3/PM4/PM6 等），返回 9 维特征。"""
+    __slots__ = (
+        '_P_Residual_time', '_cleaning_duration', '_cleaning_trigger_wafers',
+        '_scrap_clip_threshold', '_inv_cleaning_duration', '_inv_cleaning_trigger',
+        '_inv_scrap_clip', '_obs_dim',
+    )
+
     def __init__(
         self,
         name: str,
@@ -299,17 +323,21 @@ class PM(Place):
         return self._obs_dim
 
     def write_obs(self, buffer: np.ndarray, offset: int) -> int:
-        end = offset + self._obs_dim
-        buffer[offset:end] = 0.0
+        buffer[offset:offset + 9] = 0.0
+        return self._write_obs_inner(buffer, offset)
 
-        has_wafer = len(self.tokens) > 0
+    def write_obs_fast(self, buffer: np.ndarray, offset: int) -> int:
+        return self._write_obs_inner(buffer, offset)
+
+    def _write_obs_inner(self, buffer: np.ndarray, offset: int) -> int:
+        tokens = self.tokens
+        has_wafer = len(tokens) > 0
         buffer[offset] = 1.0 if has_wafer else 0.0
-        proc_time = float(self.processing_time if self.processing_time > 0 else 1.0)
+        proc_time = float(self.processing_time) if self.processing_time > 0 else 1.0
         p_residual = float(self._P_Residual_time)
 
         if has_wafer:
-            head = self.tokens[0]
-            stay_time = float(getattr(head, "stay_time", 0.0))
+            stay_time = float(tokens[0].stay_time)
             is_processing = stay_time < proc_time
             buffer[offset + 1] = 1.0 if is_processing else 0.0
             buffer[offset + 2] = 0.0 if is_processing else 1.0
@@ -336,8 +364,8 @@ class PM(Place):
                 time_to_scrap = self._scrap_clip_threshold
             buffer[offset + 5] = time_to_scrap * self._inv_scrap_clip
 
-        buffer[offset + 6] = 1.0 if bool(getattr(self, "is_cleaning", False)) else 0.0
-        clean_remaining = float(getattr(self, "cleaning_remaining", 0.0))
+        buffer[offset + 6] = 1.0 if self.is_cleaning else 0.0
+        clean_remaining = float(self.cleaning_remaining)
         if clean_remaining < 0.0:
             clean_remaining = 0.0
         clean_remaining_time_norm = clean_remaining * self._inv_cleaning_duration
@@ -345,7 +373,7 @@ class PM(Place):
             clean_remaining_time_norm = 1.0
         buffer[offset + 7] = clean_remaining_time_norm
 
-        processed_count = float(getattr(self, "processed_wafer_count", 0.0))
+        processed_count = float(self.processed_wafer_count)
         if processed_count < 0.0:
             processed_count = 0.0
         remaining_runs = float(self._cleaning_trigger_wafers) - processed_count
@@ -355,7 +383,7 @@ class PM(Place):
         if remaining_runs_norm > 1.0:
             remaining_runs_norm = 1.0
         buffer[offset + 8] = remaining_runs_norm
-        return self._obs_dim
+        return 9
 
     def clone(self) -> "PM":
         cloned = PM(
@@ -367,13 +395,13 @@ class PM(Place):
             cleaning_duration=self._cleaning_duration,
             cleaning_trigger_wafers=self._cleaning_trigger_wafers,
             scrap_clip_threshold=self._scrap_clip_threshold,
-            last_machine=getattr(self, "last_machine", -1),
-            processed_wafer_count=getattr(self, "processed_wafer_count", 0),
-            idle_time=getattr(self, "idle_time", 0),
-            last_proc_type=getattr(self, "last_proc_type", ""),
-            is_cleaning=getattr(self, "is_cleaning", False),
-            cleaning_remaining=getattr(self, "cleaning_remaining", 0),
-            cleaning_reason=getattr(self, "cleaning_reason", ""),
+            last_machine=self.last_machine,
+            processed_wafer_count=self.processed_wafer_count,
+            idle_time=self.idle_time,
+            last_proc_type=self.last_proc_type,
+            is_cleaning=self.is_cleaning,
+            cleaning_remaining=self.cleaning_remaining,
+            cleaning_reason=self.cleaning_reason,
         )
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned
@@ -381,6 +409,8 @@ class PM(Place):
 
 class LL(Place):
     """Load Lock 缓冲（LLC/LLD），返回 4 维特征。"""
+    __slots__ = ()
+
     def get_obs(self) -> List[float]:
         out = np.zeros(self.get_obs_dim(), dtype=np.float32)
         self.write_obs(out, 0)
@@ -391,6 +421,12 @@ class LL(Place):
 
     def write_obs(self, buffer: np.ndarray, offset: int) -> int:
         buffer[offset: offset + 4] = 0.0
+        return self._write_obs_inner(buffer, offset)
+
+    def write_obs_fast(self, buffer: np.ndarray, offset: int) -> int:
+        return self._write_obs_inner(buffer, offset)
+
+    def _write_obs_inner(self, buffer: np.ndarray, offset: int) -> int:
         has_wafer = len(self.tokens) > 0
         buffer[offset] = 1.0 if has_wafer else 0.0
         if not has_wafer:
@@ -401,15 +437,14 @@ class LL(Place):
             buffer[offset + 2] = 1.0
             return 4
 
-        proc_time = raw_proc_time
-        stay_time = float(getattr(self.tokens[0], "stay_time", 0.0))
-        is_processing = stay_time < proc_time
+        stay_time = float(self.tokens[0].stay_time)
+        is_processing = stay_time < raw_proc_time
         buffer[offset + 1] = 1.0 if is_processing else 0.0
         buffer[offset + 2] = 0.0 if is_processing else 1.0
-        remaining_proc = proc_time - stay_time
+        remaining_proc = raw_proc_time - stay_time
         if remaining_proc < 0.0:
             remaining_proc = 0.0
-        remaining_norm = remaining_proc / proc_time
+        remaining_norm = remaining_proc / raw_proc_time
         if remaining_norm > 1.0:
             remaining_norm = 1.0
         buffer[offset + 3] = remaining_norm
@@ -421,13 +456,13 @@ class LL(Place):
             capacity=self.capacity,
             processing_time=self.processing_time,
             type=self.type,
-            last_machine=getattr(self, "last_machine", -1),
-            processed_wafer_count=getattr(self, "processed_wafer_count", 0),
-            idle_time=getattr(self, "idle_time", 0),
-            last_proc_type=getattr(self, "last_proc_type", ""),
-            is_cleaning=getattr(self, "is_cleaning", False),
-            cleaning_remaining=getattr(self, "cleaning_remaining", 0),
-            cleaning_reason=getattr(self, "cleaning_reason", ""),
+            last_machine=self.last_machine,
+            processed_wafer_count=self.processed_wafer_count,
+            idle_time=self.idle_time,
+            last_proc_type=self.last_proc_type,
+            is_cleaning=self.is_cleaning,
+            cleaning_remaining=self.cleaning_remaining,
+            cleaning_reason=self.cleaning_reason,
         )
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned

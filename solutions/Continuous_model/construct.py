@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Union, Set, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
 from solutions.model.pn_models import Place
 
 # 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
@@ -8,17 +8,21 @@ Stage = Union[str, List[str]]
 
 INF = 10 ** 9
 
-@dataclass
+@dataclass(slots=True)
 class BasedToken:
     enter_time: int
     stay_time: int = 0
-    token_id: int = -1  # wafer 唯一标识，-1 表示未分配
-    machine: int = -1   # 分配的机器编号，-1 表示未分配
-    route_type: int = 0 # 路线类型：0=未分配, 1=路线1, 2=路线2
-    step: int = 0       # 当前工序步骤索引（0-based）
-    where: int = 0      # 单设备颜色/阶段索引
+    token_id: int = -1
+    machine: int = -1
+    route_type: int = 0
+    step: int = 0
+    where: int = 0
     route_queue: Tuple[Any, ...] = ()
     route_head_idx: int = 0
+    _target_place: Optional[str] = None
+    _dst_level_targets: Optional[Tuple[str, ...]] = None
+    _dst_level_full_on_pick: bool = False
+    _place_idx: int = -1
 
     def clone(self):
         return BasedToken(
