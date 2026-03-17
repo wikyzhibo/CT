@@ -43,6 +43,7 @@ def test_wait_uses_min_of_requested_and_next_event_delta():
     tok = env.net.ori_marks[env.net._get_place_index("LP")].tokens[0].clone()
     tok.stay_time = max(0, int(pm3.processing_time) - 10)
     pm3.tokens.append(tok)
+    env.net._rebuild_token_pool()  # get_next_event_delta 扫描 _token_pool，手动改 marks 后需同步
 
     max_wait = int(max(env.wait_durations))
     wait_100_action = next(idx for idx in range(env.n_actions) if env.parse_wait_action(idx) == max_wait)
@@ -74,6 +75,7 @@ def test_wait_is_capped_by_transport_complete_event():
     tok.stay_time = int(net.T_transport) - 3
     d_tm.tokens.append(tok)
     net.m[net._get_place_index("d_TM1")] = 1
+    net._rebuild_token_pool()  # get_next_event_delta 扫描 _token_pool，手动改 marks 后需同步
 
     assert net.get_next_event_delta() == 3
     _, _, _, _, _ = net.step(detailed_reward=True, wait_duration=20)

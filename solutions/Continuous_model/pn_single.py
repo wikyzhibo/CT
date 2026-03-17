@@ -490,7 +490,7 @@ class ClusterTool:
                 self.k[idx] = 1
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._rebuild_token_pool()
-        return None, self.get_enable_t()
+        return None, self._get_enable_t()
 
     def _get_obs_place_order(self) -> List[str]:
         """返回观测顺序：LP + 运输位 + 腔室。"""
@@ -745,7 +745,8 @@ class ClusterTool:
             return int(t_code) in {int(x) for x in gate}
         return True
 
-    def get_enable_t(self) -> List[int]:
+    def _get_enable_t(self) -> List[int]:
+        """返回当前使能的变迁索引列表（仅 transition，供 reset 等使用）。"""
         enabled: set[int] = set()
 
         # 按你的要求保持优先级：u_LP 最先检查（受 _allow_start 节拍门控）。
@@ -1182,32 +1183,34 @@ class ClusterTool:
     def get_next_event_delta(self) -> Optional[int]:
         """
         计算当前时刻到下一个关键事件的时间差（秒）。
+        通过扫描 _token_pool，按 token 所在库所（运输 d_TM* / 加工腔室）用不同规则计算；
+        节拍为「下一节拍时刻 - 当前时间」。
         关键事件至少覆盖：
         - 某加工完成（避免跨过关键取片决策点）
-        - u_LP 到达节拍（下一次允许 u_LP 发片的时刻，用于截断长 wait 以便在节拍点重新决策）
+        - 运输位达到 T_transport
+        - u_LP 到达节拍（下一次允许 u_LP 发片的时刻，用于截断长 wait）
         """
         deltas: List[int] = []
-        for place in self.marks:
-            if len(place.tokens) == 0:
+        n_places = len(self.marks)
+        for tok in self._token_pool:
+            place_idx = int(getattr(tok, "_place_idx", -1))
+            if place_idx < 0 or place_idx >= n_places:
                 continue
+            place = self.marks[place_idx]
 
-            # 运输完成事件：d_TM* 队首停留达到 T_transport。
+            # 运输库所 d_TM*：停留达到 T_transport 即关键事件。
             if place.name.startswith("d_TM"):
-                head = place.head()
-                delta_tm = int(self.T_transport) - int(getattr(head, "stay_time", 0))
+                delta_tm = int(self.T_transport) - int(getattr(tok, "stay_time", 0))
                 deltas.append(max(0, int(delta_tm)))
                 continue
 
-            if int(getattr(place, "processing_time", 0)) <= 0:
-                continue
-            if int(place.type) not in (CHAMBER, 5):
-                continue
-            if place.name.startswith("d_"):
-                continue
-            head = place.head()
-            delta = int(place.processing_time) - int(getattr(head, "stay_time", 0))
-            deltas.append(max(0, int(delta)))
-        # u_LP 节拍使能时刻：下一次允许 u_LP 发片的时刻也作为关键事件，截断长 wait
+            # 加工库所（腔室）：type in (CHAMBER, 5) 且 processing_time > 0 且非 d_*。
+            if int(place.type) in (CHAMBER, 5) and not place.name.startswith("d_"):
+                ptime = int(getattr(place, "processing_time", 0))
+                if ptime > 0:
+                    delta = ptime - int(getattr(tok, "stay_time", 0))
+                    deltas.append(max(0, int(delta)))
+        # u_LP 节拍使能时刻：下一节拍时刻 - 当前时间（节拍间隔 - 当前未发片时间）
         if self._takt_result and self._u_LP_release_count >= 1:
             takt = self._takt_result
             cycle_takts = takt["cycle_takts"]
@@ -1221,8 +1224,7 @@ class ClusterTool:
                 deltas.append(int(delta_takt))
         if not deltas:
             return None
-        min_delta = int(min(deltas))
-        return min_delta
+        return int(min(deltas))
 
     def _has_ready_chamber_wafers(self) -> bool:
         """
@@ -1412,6 +1414,8 @@ class ClusterTool:
         return False, None
 
     def _check_qtime_violation(self) -> None:
+        if self._training:
+            return
         """检查运输位 Q-Time 超时并按 wafer 去重累计，不施加惩罚。"""
         qtime_limit = int(self.D_Residual_time)
         for place in self.marks:
@@ -1515,38 +1519,77 @@ class ClusterTool:
                 blame[i] = penalty_coeff
         return blame
 
-    def get_enable_actions(self, wait_action_start: Optional[int] = None) -> List[int]:
-        """
-        返回完整离散动作可用索引（transition + wait）。
-        wait 规则：
-        - 默认启用所有 wait 档位；
-        - 若存在加工完成待取片晶圆，仅启用 <=5s 的 wait。
-        """
-        start = int(self.T if wait_action_start is None else wait_action_start)
-        enabled = [int(t) for t in self.get_enable_t()]
-        restrict_long_wait = self._has_ready_chamber_wafers()
-        for offset, duration in enumerate(self.wait_durations):
-            if restrict_long_wait and int(duration) > 5:
-                continue
-            enabled.append(start + int(offset))
-        return enabled
-
     def get_action_mask(
         self,
         wait_action_start: Optional[int] = None,
         n_actions: Optional[int] = None,
     ) -> np.ndarray:
         """
-        返回完整离散动作掩码（transition + wait）。
+        返回完整离散动作掩码（transition + wait）。判定使能时直接写入 mask，不先生成动作 id 列表。
         """
         start = int(self.T if wait_action_start is None else wait_action_start)
         total_actions = int(
             n_actions if n_actions is not None else (start + len(self.wait_durations))
         )
         mask = np.zeros(total_actions, dtype=bool)
-        for action in self.get_enable_actions(wait_action_start=start):
-            if 0 <= int(action) < total_actions:
-                mask[int(action)] = True
+
+        # Transition 部分：与 _get_enable_t 逻辑一致，判定一个写一个。
+        u_lp_idx = self._u_transition_by_source.get("LP")
+        if u_lp_idx is not None and self._allow_start():
+            if self._transition_structurally_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
+                t_idx = int(u_lp_idx)
+                if 0 <= t_idx < total_actions:
+                    mask[t_idx] = True
+
+        for tok in self._token_pool:
+            place_idx = int(getattr(tok, "_place_idx", -1))
+            if place_idx < 0 or place_idx >= len(self.id2p_name):
+                continue
+            place_name = self.id2p_name[place_idx]
+            if place_name in {"LP", "LP_done"}:
+                continue
+            if self._token_remaining_time(tok, place_idx) > 0:
+                continue
+
+            if place_name.startswith("d_TM"):
+                for t_idx in self._t_transitions_by_transport.get(place_name, []):
+                    t_name = self.id2t_name[t_idx]
+                    target = t_name[2:]
+                    target_hint = getattr(tok, "_target_place", None)
+                    if target_hint is not None and target_hint != target:
+                        continue
+                    if not self._route_gate_allows_t(self._token_route_gate(tok), self._t_route_code_by_idx[t_idx]):
+                        continue
+                    target_place = self._get_place(target)
+                    if bool(getattr(target_place, "is_cleaning", False)):
+                        continue
+                    if not self._transition_structurally_enabled(t_idx):
+                        continue
+                    ti = int(t_idx)
+                    if 0 <= ti < total_actions:
+                        mask[ti] = True
+                continue
+
+            u_idx = self._u_transition_by_source.get(place_name)
+            if u_idx is None:
+                continue
+            if self._select_target_for_source(place_name) is None:
+                continue
+            if not self._transition_structurally_enabled(u_idx):
+                continue
+            ui = int(u_idx)
+            if 0 <= ui < total_actions:
+                mask[ui] = True
+
+        # Wait 部分：默认启用所有 wait；存在加工完成待取片时仅启用 <=5s 的 wait。
+        restrict_long_wait = self._has_ready_chamber_wafers()
+        for offset, duration in enumerate(self.wait_durations):
+            if restrict_long_wait and int(duration) > 5:
+                continue
+            idx = start + int(offset)
+            if 0 <= idx < total_actions:
+                mask[idx] = True
+
         return mask
 
     def _track_enter(self, token: BasedToken, place_name: str) -> None:

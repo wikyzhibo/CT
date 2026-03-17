@@ -108,7 +108,7 @@ class BasedToken:
 
 **构网来源**
 - `solutions/Continuous_model/construct_single.py`
-- 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`；构网同时返回 `pre_place_indices`、`pst_place_indices`、`transport_pre_place_idx`（每变迁的 pre/pst 库所索引及运输位 pre 索引），供 `get_enable_t`、`_fire`、`get_enable_actions_with_reasons` 复用以减少检索
+- 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`；构网同时返回 `pre_place_indices`、`pst_place_indices`、`transport_pre_place_idx`（每变迁的 pre/pst 库所索引及运输位 pre 索引），供 `get_action_mask`/`_get_enable_t`、`_fire`、`get_enable_actions_with_reasons` 复用以减少检索
 - `d_TM1` 在构网中设置 `processing_time=5s`（默认），用于约束“运输位停留后才能 `t_*` 进入腔室”
 - 通过 `PetriEnvConfig.single_robot_capacity` 控制 `d_TM1` 容量：
   - `1`：Single Arm（单臂）
@@ -133,14 +133,13 @@ class BasedToken:
 
 **主要接口**
 - `reset()`：重置网状态
-- `_get_enable_t() -> List[int]`：内部使能判定（单机械手）
-- `get_enable_t() -> List[int]`：兼容接口（建议主链改用 `action_mask`）
-- `get_enable_actions(wait_action_start=None) -> List[int]`：返回完整离散动作使能（`transition + wait`）
-- `get_action_mask(wait_action_start=None, n_actions=None) -> np.ndarray`：返回完整离散动作掩码（`transition + wait`）
+- `_get_enable_t() -> List[int]`：内部使能判定（仅 transition 索引列表，供 `reset()` 返回值等使用）
+- `get_action_mask(wait_action_start=None, n_actions=None) -> np.ndarray`：返回完整离散动作掩码（`transition + wait`）。使能与 wait 规则在此统一完成；实现为判定每个 transition/wait 使能时直接写 `mask[idx]=True`，不先生成动作 id 列表再写入。
 - `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）
+- `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。通过扫描 `_token_pool` 按 token 所在库所（运输 d_TM* / 加工腔室）用不同规则计算；节拍为「下一节拍时刻 − 当前时间」。用于 wait 时截断推进量，避免跨过取片或发片决策点。
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`
-- `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`，以及 `get_enable_t / fire / build_obs / reward / other` 的 `total_ms / avg_ms / ratio_pct`
+- `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `other` 的 `total_ms / avg_ms / ratio_pct`
   - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`cleaning_targets` 内腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - `single_route_code=0`：追责站点 `s1=PM1`，`s2=PM3∪PM4`，`u_LP` 链路按 `s1 -> s2` 判定
@@ -152,7 +151,7 @@ class BasedToken:
 **临时执行模式（2026-03-17）**
 - `pn_single` 当前默认按“单臂 + 非 FIFO + token 扫描使能”执行：
   - `robot_capacity` 固定为 1（暂不考虑双臂死锁锁定规则）；
-  - `get_enable_t()` 改为先检查 `u_LP`，再扫描系统内 token 生成候选 `u_*/t_*`；
+  - `get_action_mask()` 内部使能判定先检查 `u_LP`，再扫描系统内 token 生成候选 `u_*/t_*` 并直接写 mask；
   - 运行时除 `LP/LP_done` 外库所按 unit-capacity（1）约束；
   - `check_scrap` 判定改为基于 token 剩余时间：`remaining < -P_Residual_time` 视为驻留违规。
 
@@ -174,7 +173,7 @@ class BasedToken:
 - `t_*` 始终遵循 FIFO 队首目标约束（队首 `_target_place`）与 `d_TM1` dwell 时间约束。
 - 使能计算分为两阶段：
   - Stage1：`pre/pst` + 容量 + 防死锁规则（用于死锁判定，`u_*` 在该阶段忽略清洗目标过滤）
-  - Stage2：加工完成、目标可达与 dwell/清洗过滤（`get_enable_t()` 最终返回）
+  - Stage2：加工完成、目标可达与 dwell/清洗过滤（`get_action_mask` 内部使能判定最终采用）
 - 路由判定规则：仅 `t_*` 读取运输位队首 token 的 `route_queue[route_head_idx]`。
   - 队头为 `-1`：该步对 `t_*` 路由不设限；
   - 队头为 `int`：仅允许匹配该码的 `t_*`；

@@ -77,7 +77,7 @@ obs = [
 
 这样可避免一次跨越多个关键决策点。
 
-**动作掩码**：通过 `get_enable_t()` 计算当前可用变迁（满足前置条件且容量未满）；单设备下 WAIT 档位默认进入掩码，但当存在“加工完成待取片”晶圆（`PM1/PM3/PM4` 中有 token 满足 `stay_time >= processing_time`）时，仅保留 `WAIT_5s`。该规则由 `pn_single` 统一生成，`env_single` 与可视化仅消费掩码结果。
+**动作掩码**：通过 `get_action_mask()` 计算当前可用变迁（满足前置条件且容量未满）并直接写 mask；单设备下 WAIT 档位默认进入掩码，但当存在“加工完成待取片”晶圆（`PM1/PM3/PM4` 中有 token 满足 `stay_time >= processing_time`）时，仅保留 `WAIT_5s`。该规则由 `pn_single` 统一生成，`env_single` 与可视化仅消费掩码结果。
 
 **使能条件**：
 

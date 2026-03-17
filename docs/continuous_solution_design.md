@@ -107,7 +107,7 @@ flowchart TB
 - 单设备工序时长支持配置：`single_process_time_map = {PM1, PM3, PM4, PM6}`；输入值会先预处理为最接近的 5 的倍数（最小 5）。
 - 单设备训练支持 episode 级工序时长随机扰动：`proc_rand_enabled` + `single_proc_time_rand_scale_map`（`PM1/PM3/PM4/PM6` 各自 `min/max`）；每个 episode 采样一次并固定整局生效。未配置腔室时使用 `(1.0, 1.0)` 即不扰动。
 - `PM2` 仅用于界面占位展示；`PM5` 作为 UI 占位显示，不参与模型工艺流转。`PM6` 是否参与流转由 `single_route_code` 决定。
-- 执行链：`construct_single` 构网 -> `_get_enable_t` -> `step` -> `calc_reward`
+- 执行链：`construct_single` 构网 -> `get_action_mask`（使能）-> `step` -> `calc_reward`
 - 使能动作接口：`List[int]`（单机械手语义）
 - 释放追责：支持 `blame_release_violations()`，利用单设备 `_chamber_timeline` 做 second-pass 回填
 - 释放追责站点按路径代号聚合：`s1=PM1`，`s2=PM3∪PM4`；当 `single_route_code=1` 时新增 `s3=PM6`，`u_LP` 链路检查扩展为 `s1->s2->s3`。
@@ -388,5 +388,5 @@ python -m solutions.Continuous_model.export_inference_sequence \
 - **级联配置样式统一**：`cascade.json` 已与 `single.json` 对齐为 `chambers` 集成块风格；每个腔室在 `chambers.<name>` 下统一配置 `process_time / cleaning_duration / cleaning_trigger_wafers / proc_rand_scale`，由 `PetriEnvConfig` 归一化为 `process_time_map` 与 `cleaning_*_map`。
 - **规则**：仅当“距上次 u_LP 发射的时间”不小于当前周期内对应位置的节拍值时，才允许再次发射 u_LP；首片不受限。
 - **取位偏移**：当首片已发射后，第一次进入节拍限制时从循环第 2 个元素开始取值（即跳过第 1 个元素）。
-- **实现**：`_compute_takt_result()` 根据 `_route_stages`、`_episode_proc_time_map`、`cleaning_targets` 与 per-chamber 的 `_cleaning_trigger_map`/`_cleaning_duration_map` 构建分析用 stages（p 为原始工序时长）；并行 stage 的 `p` 采用该层瓶颈值（`max`），`q/d` 取该层最可能形成慢节拍的腔室（按 `p+d` 最大）后调用 `takt_cycle_analyzer.analyze_cycle`；`get_enable_t` / `get_enable_actions_with_reasons` 在 u_LP 使能判断中增加节拍间隔检查；原因码 `takt_release_limit` 表示因节拍限制未使能。腔室级清洁与工序参数可由配置中的 `chambers` 集成块提供（见 pn_api.md）。
+- **实现**：`_compute_takt_result()` 根据 `_route_stages`、`_episode_proc_time_map`、`cleaning_targets` 与 per-chamber 的 `_cleaning_trigger_map`/`_cleaning_duration_map` 构建分析用 stages（p 为原始工序时长）；并行 stage 的 `p` 采用该层瓶颈值（`max`），`q/d` 取该层最可能形成慢节拍的腔室（按 `p+d` 最大）后调用 `takt_cycle_analyzer.analyze_cycle`；`get_action_mask` / `get_enable_actions_with_reasons` 在 u_LP 使能判断中增加节拍间隔检查；原因码 `takt_release_limit` 表示因节拍限制未使能。腔室级清洁与工序参数可由配置中的 `chambers` 集成块提供（见 pn_api.md）。
 - **影响**：若节拍分析失败或无可分析工序（如全为缓冲站），`_takt_result` 为 None，不施加发片限制。
