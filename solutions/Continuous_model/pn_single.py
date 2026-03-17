@@ -74,7 +74,8 @@ class ClusterTool:
         self.stop_on_scrap = bool(config.stop_on_scrap)
         
         self.reward_config = dict(config.reward_config)
-        self.robot_capacity = 2 if int(config.single_robot_capacity) == 2 else 1
+        # 临时执行策略：固定单臂，不启用双臂分支。
+        self.robot_capacity = 1
 
         self.cleaning_enabled = bool(config.cleaning_enabled)
         self.cleaning_targets = set(config.cleaning_targets)
@@ -188,6 +189,11 @@ class ClusterTool:
 
         self.ori_marks: List[Place] = info["marks"]
         self.marks: List[Place] = self._clone_marks(self.ori_marks)
+        # 临时执行策略：除 LP/LP_done 外全部按 unit-capacity 运行。
+        for idx, p in enumerate(self.marks):
+            if p.name not in {"LP", "LP_done"}:
+                p.capacity = 1
+                self.k[idx] = 1
         self._refresh_episode_proc_time()
 
         self.time = 0
@@ -209,6 +215,9 @@ class ClusterTool:
         self._cascade_round_robin_next: Dict[str, str] = {}
         self._single_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
         self._single_round_robin_next: Dict[str, str] = {}
+        self._u_transition_by_source: Dict[str, int] = {}
+        self._t_transitions_by_transport: Dict[str, List[int]] = {}
+        self._token_pool: List[BasedToken] = []
         if self.device_mode == "cascade":
             self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
             if self.route_code == 1:
@@ -245,6 +254,8 @@ class ClusterTool:
             "reward_s": 0.0,
             "other_s": 0.0,
         }
+        self._build_transition_index()
+        self._rebuild_token_pool()
 
     def train(self):
         """训练模式"""
@@ -461,7 +472,12 @@ class ClusterTool:
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
+        for idx, p in enumerate(self.marks):
+            if p.name not in {"LP", "LP_done"}:
+                p.capacity = 1
+                self.k[idx] = 1
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
+        self._rebuild_token_pool()
         return None, self.get_enable_t()
 
     def _get_obs_place_order(self) -> List[str]:
@@ -649,6 +665,7 @@ class ClusterTool:
         pst_place.append(tok)
         pre_place_idx = int(pre_places[0])
         pst_place_idx = int(pst_places[0])
+        setattr(tok, "_place_idx", pst_place_idx)
         self.m[pre_place_idx] -= 1
         self.m[pst_place_idx] += 1
         if t_name == "u_LP":
@@ -697,108 +714,58 @@ class ClusterTool:
         return True
 
     def get_enable_t(self) -> List[int]:
-        """
-        Stage1: 基础使能（pre/pst + 容量 + 防死锁规则），不做“加工完成”就绪检查。
-        """
+        enabled: set[int] = set()
 
-        # 机器手容量为2时，如果 d_TM1 队首有晶圆，则锁定后续 u_* 来源到该晶圆的 dst 层，直到该晶圆离开 d_TM1。
-        """
-        
-        if ("d_TM1" in self.id2p_name and self.device_mode != "cascade"):
-            d_tm = self._get_place("d_TM1") 
-        else:
-            d_tm = None
-        if (d_tm is not None and len(d_tm.tokens) > 0):
-            head_tok = d_tm.head() 
-        else:
-            head_tok = None
+        # 按你的要求保持优先级：u_LP 最先检查（受 _allow_start 节拍门控）。
+        u_lp_idx = self._u_transition_by_source.get("LP")
+        if u_lp_idx is not None and (self._allow_start()):
+            if self._transition_structurally_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
+                enabled.add(int(u_lp_idx))
 
-        locked_sources: set[str] = set()
-        if self.robot_capacity == 2 and self.device_mode != "cascade" and head_tok is not None:
-            locked_sources = set(getattr(head_tok, "_dst_level_targets", ()))
-        """
-
-        stage1_enabled: List[int] = []
-        # step2: 遍历变迁，结构性使能（使用缓存的 pre/pst 索引）
-        # =====self.m >= self.pre[:, t]=======
-        # =====self.m + self.pst[:, t] <= self.k=======
-        for t in range(self.T):
-            t_name = self.id2t_name[t]
-            # 发片限制：u_LP 受节拍限制，需额外检查是否允许发片。
-            if t_name == "u_LP":
-                if self._allow_start():
-                    continue
-                else:
-                    stage1_enabled.append(t)
-                    continue
-
-            base_pre_idx = self._pre_place_indices[t]
-
-            if np.any(self.m[base_pre_idx] < self.pre[base_pre_idx, t]):
+        for tok in self._token_pool:
+            place_idx = int(getattr(tok, "_place_idx", -1))
+            if place_idx < 0 or place_idx >= len(self.id2p_name):
                 continue
-            if np.any(self.m + self.net[:, t] > self.k):
+            place_name = self.id2p_name[place_idx]
+            if place_name in {"LP", "LP_done"}:
                 continue
-            if t_name.startswith("u_"):
-                src = t_name[2:]
-                if self.robot_capacity == 2 and self.device_mode != "cascade":
-                    # 双臂规则2（更新）：只要 d_TM1 队首有晶圆，就锁定后续 u_* 来源到该晶圆的 dst 层。
-                    #if d_tm is not None and len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
-                    #    continue
-                    # 关键约束：无论 d_TM1 是否为空、是否触发锁定，都必须有可解析目标。
-                    # 否则会出现 u_* 发射后 _target_place 缺失，进而误放行 t_LP_done 的非法路径。
-                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
+
+            # 剩余加工/停留时间 > 0 则不可放行。
+            if self._token_remaining_time(tok, place_idx) > 0:
+                continue
+
+            # 运输位 token：尝试 t_*
+            if place_name.startswith("d_TM"):
+                for t_idx in self._t_transitions_by_transport.get(place_name, []):
+                    t_name = self.id2t_name[t_idx]
+                    target = t_name[2:]
+                    target_hint = getattr(tok, "_target_place", None)
+                    if target_hint is not None and target_hint != target:
                         continue
-                else:
-                    # 单臂保持原规则：下游可接收才允许取片。
-                    if self._select_target_for_source(src, ignore_cleaning=True) is None:
+                    if not self._route_gate_allows_t(self._token_route_gate(tok), self._t_route_code_by_idx[t_idx]):
                         continue
-            elif t_name.startswith("t_"):
-                t_code = self._t_route_code_by_idx[t]
-                tp_idx = self._transport_pre_place_idx[t]
-                if tp_idx >= 0:
-                    tp_head = self.marks[tp_idx].head() if len(self.marks[tp_idx].tokens) > 0 else None
-                    if tp_head is not None:
-                        gate = self._token_route_gate(tp_head)
-                        if not self._route_gate_allows_t(gate, t_code):
-                            continue
-                # t_*类型变迁，取队首token._target_place进行目标检查
-                target = t_name[2:]
-                transport_name = self._transport_for_t_target(target)
-                tp = self._get_place(transport_name)
-                tp_head = tp.head() if len(tp.tokens) > 0 else None
-                tp_head_target = getattr(tp_head, "_target_place", None) if tp_head is not None else None
-                if tp_head_target is not None and tp_head_target != target:
-                    continue
-            stage1_enabled.append(t)
+                    target_place = self._get_place(target)
+                    if bool(getattr(target_place, "is_cleaning", False)):
+                        continue
+                    if not self._transition_structurally_enabled(t_idx):
+                        continue
+                    enabled.add(int(t_idx))
+                continue
 
+            # 加工腔/缓冲位 token：尝试 u_*
+            u_idx = self._u_transition_by_source.get(place_name)
+            if u_idx is None:
+                continue
+            if self._select_target_for_source(place_name) is None:
+                continue
+            if not self._transition_structurally_enabled(u_idx):
+                continue
+            enabled.add(int(u_idx))
 
-        """
-        Stage2: 在 Stage1 基础上做就绪过滤（加工完成 + 运输位 dwell）。
-        """
-        stage2_enabled: List[int] = []
-        for t in stage1_enabled:
-            t_name = self.id2t_name[t]
-            if t_name.startswith("u_"):
-                src = t_name[2:]
-                if not self._is_process_ready(src):
-                    continue
-                if self._select_target_for_source(src) is None:
-                    continue
-            elif t_name.startswith("t_"):
-                target = t_name[2:]
-                target_place = self._get_place(target)
-                if bool(getattr(target_place, "is_cleaning", False)):
-                    continue
-                d_place = self._get_place(self._transport_for_t_target(target))
-                dwell_time = max(0, int(getattr(d_place, "processing_time", self.T_transport)))
-                if len(d_place.tokens) > 0 and d_place.head().stay_time < dwell_time:
-                    continue
-            stage2_enabled.append(t)
-            # 节拍限制：u_LP 发片间隔不得小于当前周期节拍
-
-        return stage2_enabled
+        return sorted(enabled)
 
     def _allow_start(self):
+        """returns True if u_LP can fire now, based on takt and release count."""
         takt = self._takt_result
         cycle_takts = takt["cycle_takts"]
         cycle_len = takt["cycle_length"]
@@ -807,11 +774,44 @@ class ClusterTool:
             if isinstance(required, float):
                 required = int(round(required))
             if (self.time - self._last_u_LP_fire_time) < required:
-                return True
-            else:
                 return False
+            else:
+                return True
         else:
             return True
+
+    def _build_transition_index(self) -> None:
+        self._u_transition_by_source = {}
+        self._t_transitions_by_transport = {}
+        for t_idx, t_name in enumerate(self.id2t_name):
+            if t_name.startswith("u_"):
+                self._u_transition_by_source[t_name[2:]] = int(t_idx)
+            elif t_name.startswith("t_"):
+                target = t_name[2:]
+                transport = self._transport_for_t_target(target)
+                self._t_transitions_by_transport.setdefault(transport, []).append(int(t_idx))
+
+    def _rebuild_token_pool(self) -> None:
+        pool: List[BasedToken] = []
+        for place_idx, place in enumerate(self.marks):
+            for tok in place.tokens:
+                setattr(tok, "_place_idx", int(place_idx))
+                pool.append(tok)
+        self._token_pool = pool
+
+    def _token_remaining_time(self, tok: BasedToken, place_idx: int) -> int:
+        place = self.marks[place_idx]
+        if int(place.type) in (CHAMBER, 5, DELIVERY_ROBOT):
+            return int(getattr(place, "processing_time", 0)) - int(getattr(tok, "stay_time", 0))
+        return 0
+
+    def _transition_structurally_enabled(self, t_idx: int) -> bool:
+        pre_idx = self._pre_place_indices[t_idx]
+        if pre_idx.size > 0 and np.any(self.m[pre_idx] < self.pre[pre_idx, t_idx]):
+            return False
+        if np.any(self.m + self.net[:, t_idx] > self.k):
+            return False
+        return True
 
     def get_enable_actions_with_reasons(
         self,
@@ -1359,12 +1359,16 @@ class ClusterTool:
         return True
 
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
-        for p in self.marks:
-            if p.type != CHAMBER or len(p.tokens) == 0:
+        for tok in self._token_pool:
+            place_idx = int(getattr(tok, "_place_idx", -1))
+            if place_idx < 0 or place_idx >= len(self.marks):
                 continue
-            tok = p.head()
-            overtime = int(tok.stay_time - (p.processing_time + self.P_Residual_time))
-            if overtime > 0:
+            p = self.marks[place_idx]
+            if p.type != CHAMBER:
+                continue
+            remaining = int(p.processing_time) - int(getattr(tok, "stay_time", 0))
+            if remaining < -int(self.P_Residual_time):
+                overtime = int(-remaining - int(self.P_Residual_time))
                 return True, {
                     "token_id": int(getattr(tok, "token_id", -1)),
                     "place": p.name,

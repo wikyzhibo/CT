@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-17
+
+### 单设备使能判定切到 token 扫描快路径 (2026-03-17)
+- **What changed**：`pn_single.get_enable_t` 从“逐变迁两阶段扫描”改为“先检查 `u_LP`，再扫描 token 生成 `u_*/t_*` 候选”；新增运行时 token 池与变迁索引缓存；`_check_scrap` 改为按 token 剩余时间判定（`remaining < -P_Residual_time`）。
+- **Why**：`get_enable_t` 是 `step` 热路径，逐变迁做重复结构性判断与目标解析开销较高；token 扫描在单臂场景下可减少无效判定。
+- **Impact**：单设备当前按“单臂 + 非 FIFO + unit-capacity（除 LP/LP_done 外）”临时策略运行；双臂锁定规则不再作为默认路径。
+
 ## 2026-03-16
 
 ### 单设备 t_* 路由改为 token 队列门控 (2026-03-16)

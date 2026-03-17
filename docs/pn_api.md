@@ -149,6 +149,13 @@ class BasedToken:
 - `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
 - 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
 
+**临时执行模式（2026-03-17）**
+- `pn_single` 当前默认按“单臂 + 非 FIFO + token 扫描使能”执行：
+  - `robot_capacity` 固定为 1（暂不考虑双臂死锁锁定规则）；
+  - `get_enable_t()` 改为先检查 `u_LP`，再扫描系统内 token 生成候选 `u_*/t_*`；
+  - 运行时除 `LP/LP_done` 外库所按 unit-capacity（1）约束；
+  - `check_scrap` 判定改为基于 token 剩余时间：`remaining < -P_Residual_time` 视为驻留违规。
+
 **事后追责相关字段**
 - `_chamber_timeline/_chamber_active`：按路径代号记录加工腔体进入离开时间线（`code=0` 为 PM1/PM3/PM4；`code=1` 额外包含 PM6），供 episode 结束后 `blame_release_violations` 使用
 - `blame_release_violations` 将 `fire_log` 中的 `cleaning_start` 转为清洁占位区间，与晶圆区间一并计入下游站点容量，故 PM3/PM4 同时清洁时对 s2 的释放会被正确追责
