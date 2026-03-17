@@ -166,13 +166,21 @@ def train_single(
 
     torch.manual_seed(config.seed)
     device = config.device
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            print(f"  警告: 请求 {device} 但 CUDA 不可用，回退到 cpu", flush=True)
+            device = "cpu"
+        else:
+            torch.cuda.manual_seed_all(config.seed)
     env = Env_PN_Single(
+        device="cpu",
         detailed_reward=True,
         device_mode=device_mode,
         proc_time_rand_enabled=proc_time_rand_enabled,
         proc_time_rand_scale_map=proc_time_rand_scale_map,
     )
-    print(f"  环境类型: {env.__class__.__name__}")
+    print(f"  计算设备: {device}", flush=True)
+    print(f"  环境类型: {env.__class__.__name__}", flush=True)
 
     n_obs = env.observation_spec["observation"].shape[0]
     n_actions = env.n_actions
@@ -318,7 +326,8 @@ def train_single(
                 f"| scrap={int(scrap_count)} | deadlock={int(deadlock_count)} "
                 f"| makespan={avg_makespan:.1f}"
                 f" | rollout={rollout_time:.2f}s update={update_time:.2f}s"
-                f" | steps/s={steps_per_sec:.0f} ETA={eta_str}"
+                f" | steps/s={steps_per_sec:.0f} ETA={eta_str}",
+                flush=True,
             )
 
             if ep_reward > best_reward and finish_count > 0:
@@ -326,7 +335,7 @@ def train_single(
                 torch.save(policy_module.state_dict(), best_model_path)
                 backup_path = os.path.join(backup_dir, f"{model_prefix}_best.pt")
                 torch.save(policy_module.state_dict(), backup_path)
-                print(f"  -> New best model! reward={ep_reward:.2f}")
+                print(f"  -> New best model! reward={ep_reward:.2f}", flush=True)
 
     total_training_time = perf_counter() - training_start
     total_steps = config.total_batch * config.frames_per_batch
@@ -339,16 +348,17 @@ def train_single(
     rollout_pct = (avg_rollout / avg_batch * 100) if avg_batch > 0 else 0
     update_pct = (avg_update / avg_batch * 100) if avg_batch > 0 else 0
 
-    print(f"\n[Training Summary]")
-    print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)")
-    print(f"  总 env steps: {total_steps}")
+    print(f"\n[Training Summary]", flush=True)
+    print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
+    print(f"  总 env steps: {total_steps}", flush=True)
     print(
         f"  平均 batch: {avg_batch:.2f}s "
         f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
-        f"| update={avg_update:.2f}s [{update_pct:.0f}%])"
+        f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
+        flush=True,
     )
-    print(f"  平均 steps/sec: {overall_sps:.0f}")
-    print(f"  Best reward: {best_reward:.2f}")
+    print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
+    print(f"  Best reward: {best_reward:.2f}", flush=True)
 
     step_profile = env.net.get_step_profile_summary()
     if int(step_profile.get("count", 0)) > 0:
@@ -375,8 +385,8 @@ def train_single(
             )
     final_path = os.path.join(backup_dir, f"{model_prefix}_final.pt")
     torch.save(policy_module.state_dict(), final_path)
-    print(f"Final model: {final_path}")
-    print(f"Best model: {best_model_path}")
+    print(f"Final model: {final_path}", flush=True)
+    print(f"Best model: {best_model_path}", flush=True)
     return log, policy_backbone
 
 
@@ -388,7 +398,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="单设备单动作 PPO 训练（两阶段 release 回填）")
-    parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式")
+    parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式（single/cascade）")
+    parser.add_argument("--compute-device", type=str, default=None, help="计算设备：cpu / cuda / cuda:0；未指定时：有 CUDA 则用 cuda，否则用配置文件中的 device")
     parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint 路径")
     parser.add_argument("--proc-time-rand-enabled", action="store_true", help="开启单设备工序时间随机扰动")
     parser.add_argument("--blame", action="store_true", help="开启二次追责（episode 结束后 blame_release_violations 回填惩罚）")
@@ -397,7 +408,11 @@ if __name__ == "__main__":
     root = Path(__file__).parents[2]
     path = root / "data" / "ppo_configs" / "s_train.json"
     cfg = PPOTrainingConfig.load(path)
-    print(f"从 {path} 加载配置")
+    if args.compute_device is not None:
+        cfg.device = args.compute_device.strip()
+    elif torch.cuda.is_available():
+        cfg.device = "cuda"
+    print(f"从 {path} 加载配置", flush=True)
     if args.checkpoint is not None:
         checkpoint_path = root / "models" / args.checkpoint
     else:

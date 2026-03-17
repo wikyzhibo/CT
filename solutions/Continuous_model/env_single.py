@@ -1,5 +1,8 @@
 """
 单设备单动作 TorchRL 环境封装。
+
+训练时请使用 device="cpu"：环境内部为 NumPy/CPU，_step 返回的 TensorDict 均在 CPU，
+由 train_single 在 CPU 上采集 rollout 后再 .to(device) 送入 GPU 计算。
 """
 
 from __future__ import annotations
@@ -20,6 +23,9 @@ _FALSE_T = torch.tensor(False)
 
 
 class Env_PN_Single(EnvBase):
+    """
+    单设备 Petri 网 RL 环境。训练时应传入 device="cpu"（与 train_single 约定一致）。
+    """
     metadata = {"render.modes": ["human", "rgb_array"], "reder_fps": 30}
     batch_locked = False
 
