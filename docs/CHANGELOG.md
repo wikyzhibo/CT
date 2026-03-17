@@ -2,6 +2,11 @@
 
 ## 2026-03-17
 
+### 可视化模型推理切换到 `env.net.get_obs()` 直连 (2026-03-17)
+- **What changed**：`visualization/main.py` 的 Model 推理入口（单动作/并发）统一改为直接读取 `env.net.get_obs()`，移除对 `Env_PN_Single._build_obs()` 的依赖。
+- **Why**：单设备观测已统一由 `pn_single` 构网层输出，继续依赖环境私有方法会导致接口漂移与运行时错误。
+- **Impact**：可视化界面的 `Model Step/Auto` 在 single/cascade 模式下不再触发 `_build_obs` 缺失报错；外部脚本若仍调用 `_build_obs()` 需迁移到 `env.net.get_obs()`。
+
 ### train_single 收敛为 Ultra-only 并修复 CPU 卡顿路径 (2026-03-17)
 - **What changed**：`train_single.py` 移除 `single collector`、`blame`、`benchmark` 相关训练入口与代码分支，训练主循环固定为 ultra rollout；GAE 在 CPU 上强制走 eager（仅 CUDA 尝试 compile）。
 - **Why**：简化分支可降低维护成本；同时避免本地 CPU 训练触发 compile 首次编译开销，出现“卡住/长时间无响应”。

@@ -181,7 +181,7 @@ def load_model(model_path: str, adapter: PetriSingleAdapter):
             """使用模型预测动作"""
             try:
                 # 获取观察和动作掩码
-                obs = adapter.env._build_obs()
+                obs = adapter.env.net.get_obs()
                 # 单设备多档 wait 下，直接复用 env 输出的离散动作掩码。
                 action_mask = torch.as_tensor(adapter.env._mask(), dtype=torch.bool)
                 
@@ -269,7 +269,7 @@ def load_concurrent_model(model_path: str, adapter: PetriSingleAdapter):
         def get_model_actions():
             """返回 (a1, a2) 双动作（Petri 网变迁索引，-1 表示 WAIT）"""
             try:
-                obs = adapter.env._build_obs()
+                obs = adapter.env.net.get_obs()
                 tm2_enabled, tm3_enabled = adapter.net.get_enable_t()
                 tm2_enabled_set = set(tm2_enabled)
                 tm3_enabled_set = set(tm3_enabled)
