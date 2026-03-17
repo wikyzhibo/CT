@@ -89,6 +89,7 @@ flowchart TB
 - 单设备 `u-d-t` 子网的卸载命名由 `u_src_dst` 简化为 `u_src`，例如 `u_PM1_PM3/u_PM1_PM4 -> u_PM1`。
 - 单设备路由门控改为 token 队列机制：`route_queue + route_head_idx`，仅 `t_*` 使用路由码进行放行判定。
 - **路由元数据由路径解析生成**：`construct_single.py` 中的 `parse_route(stages, buffer_names)` 从路线阶段序列（如 `[["PM1"], ["PM3","PM4"], ["PM6"]]`）解析出 `chambers`、`step_map`、`u_targets`、`release_station_aliases`、`system_entry_places`、`release_chain_by_u`、`timeline_chambers`，`ClusterTool` 不再维护硬编码分支。
+- 单设备 step 热路径优化：`_get_enable_t/get_action_mask` 增加单步结构判定缓存；`_transition_structurally_enabled` 的容量判定改为仅检查后置库所索引（不再全量扫描所有 place）。
 
 ### Why
 - 需要在不破坏现有 `pn.py`/并发训练流程的前提下，快速试验单设备工艺。
@@ -122,6 +123,8 @@ flowchart TB
 - 单设备观测向量更新为 float32，并按“合法 `(place_idx, where)` 对全集 one-hot”编码位置（静态规则枚举，不是 `P×W` 笛卡尔积）。单片晶圆特征改为 `present + one_hot(valid_pair_idx) + status_one_hot + remaining_processing_norm + time_to_scrap_norm`：`status_one_hot` 顺序为 `processing/done_waiting_pick/moving/waiting`；其中 `waiting` 定义为“位于运输位且 `stay_time > D_Residual_time`”。`remaining_processing_norm` 用剩余加工量归一化（`0` 表示可取）；`time_to_scrap_norm` 先按阈值 30 裁剪再归一化，且运输位晶圆固定为 `1`。不足 `MAX_WAFERS` 时按单片特征长度补零；末尾追加 9 维清洗状态特征（`PM1/PM3/PM4` 各 `is_cleaning + clean_remaining_time_norm + remaining_runs_before_clean_norm`），不再追加腔室处理计数。
 - 单设备奖励已对齐并发模型运输位规则：`d_TM1`（type=2）中晶圆停留超过 `D_Residual_time` 后按超时时长施加线性惩罚（开关：`reward_config.transport_penalty`，系数：`transport_overtime_coef`）。
 - 单设备新增独立 `_check_qtime_violation` 检测：在时间推进后检查运输位（type=2）是否 `stay_time > D_Residual_time`；仅用于统计 `qtime_violation_count`（同一 wafer 仅首次违规计数 1 次），不新增 reward 惩罚项。
+- 单设备时间推进优化：`advance_time()` 在推进后同步完成 `scrap/qtime` 扫描，step 内不再重复做同一批 token 的二次遍历。
+- 单设备 step profile 新增吞吐指标 `steps_per_sec`，并额外分段统计 `next_event_delta/advance_time/check_scrap`，用于定位 `other` 构成。
 
 ### 训练模式与评估模式
 

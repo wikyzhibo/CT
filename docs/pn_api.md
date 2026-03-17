@@ -135,11 +135,11 @@ class BasedToken:
 - `reset()`：重置网状态
 - `_get_enable_t() -> List[int]`：内部使能判定（仅 transition 索引列表，供 `reset()` 返回值等使用）
 - `get_action_mask(wait_action_start=None, n_actions=None) -> np.ndarray`：返回完整离散动作掩码（`transition + wait`）。使能与 wait 规则在此统一完成；实现为判定每个 transition/wait 使能时直接写 `mask[idx]=True`，不先生成动作 id 列表再写入。
-- `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）
+- `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）；`advance_time()` 内会同步完成 `scrap/qtime` 状态扫描，减少重复 token 遍历
 - `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。通过扫描 `_token_pool` 按 token 所在库所（运输 d_TM* / 加工腔室）用不同规则计算；节拍为「下一节拍时刻 − 当前时间」。用于 wait 时截断推进量，避免跨过取片或发片决策点。
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`
-- `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `other` 的 `total_ms / avg_ms / ratio_pct`
+- `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`、`steps_per_sec`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `next_event_delta` / `advance_time` / `check_scrap` / `other` 的 `total_ms / avg_ms / ratio_pct`
   - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`cleaning_targets` 内腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - `single_route_code=0`：追责站点 `s1=PM1`，`s2=PM3∪PM4`，`u_LP` 链路按 `s1 -> s2` 判定

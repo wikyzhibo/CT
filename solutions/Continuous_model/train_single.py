@@ -19,6 +19,7 @@ from solutions.Continuous_model.env_single import Env_PN_Single
 from solutions.PPO.network.models import MaskedPolicyHead
 from pathlib import Path
 
+
 class SingleActionPolicyModule(nn.Module):
     """
     单动作策略模块包装器。
@@ -304,13 +305,17 @@ def train_single(
         print(
             f"[Step Time Profile] steps={int(step_profile['count'])} "
             f"| total={float(step_profile['total_ms']):.2f}ms "
-            f"| avg_step={float(step_profile['avg_ms']):.4f}ms"
+            f"| avg_step={float(step_profile['avg_ms']):.4f}ms "
+            f"| steps_per_sec={float(step_profile.get('steps_per_sec', 0.0)):.2f}"
         )
         ordered_segments = [
             ("get_enable_t", "get_enable_t"),
             ("fire", "_fire"),
             ("build_obs", "build_obs"),
             ("reward", "calc_reward"),
+            ("next_event_delta", "next_event"),
+            ("advance_time", "advance_time"),
+            ("check_scrap", "check_scrap"),
             ("other", "other"),
         ]
         for key, label in ordered_segments:

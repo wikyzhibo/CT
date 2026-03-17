@@ -180,3 +180,15 @@ def test_wait_5_does_not_use_event_capping():
     _, reward_result, _, _, _ = net.step(detailed_reward=True, wait_duration=5)
 
     assert net.time == 5
+
+
+def test_step_profile_summary_contains_steps_per_sec():
+    net = ClusterTool(config=PetriEnvConfig())
+    net.reset()
+
+    for _ in range(3):
+        net.step(detailed_reward=False, wait_duration=5)
+
+    summary = net.get_step_profile_summary()
+    assert "steps_per_sec" in summary
+    assert float(summary["steps_per_sec"]) >= 0.0

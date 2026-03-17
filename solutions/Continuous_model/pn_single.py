@@ -252,8 +252,12 @@ class ClusterTool:
             "fire_s": 0.0,
             "build_obs_s": 0.0,
             "reward_s": 0.0,
+            "next_event_delta_s": 0.0,
+            "advance_time_s": 0.0,
+            "check_scrap_s": 0.0,
             "other_s": 0.0,
         }
+        self._last_state_scan: Dict[str, Any] = {}
         self._place_by_name: Dict[str, Place] = {}
         self._obs_place_names: List[str] = []
         self._obs_places: List[Place] = []
@@ -289,6 +293,9 @@ class ClusterTool:
         fire_s = 0.0
         get_enable_t_s = 0.0
         build_obs_s = 0.0
+        next_event_delta_s = 0.0
+        advance_time_s = 0.0
+        check_scrap_s = 0.0
 
         self._last_deadlock = False
         # ======超出最大运行时间直接判定为超时结束，避免“原地等待”导致的无效步骤======
@@ -311,11 +318,15 @@ class ClusterTool:
                 fire_s=fire_s,
                 build_obs_s=build_obs_s,
                 reward_s=reward_s,
+                next_event_delta_s=next_event_delta_s,
+                advance_time_s=advance_time_s,
+                check_scrap_s=check_scrap_s,
             )
             return DONE, timeout_reward, SCRAPE, action_mask, obs
 
         action = a1
         do_wait = (wait_duration is not None) or action is None
+        scan_info: Dict[str, Any] = {}
 
         t1 = self.time
 
@@ -335,7 +346,9 @@ class ClusterTool:
                 wait_reason = "fixed_5s"
                 actual_dt = requested_wait
             else:
+                t_next_event = perf_counter()
                 next_event_delta = self.get_next_event_delta()
+                next_event_delta_s += perf_counter() - t_next_event
                 if next_event_delta is None:
                     # 没有可预见关键事件时，按请求时长推进，避免“原地空转”。
                     actual_dt = requested_wait
@@ -357,8 +370,9 @@ class ClusterTool:
             t_reward = perf_counter()
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
             reward_s += perf_counter() - t_reward
-            self.advance_time(actual_dt, event_reason=wait_reason)
-            self._check_qtime_violation()
+            t_advance = perf_counter()
+            scan_info = self.advance_time(actual_dt, event_reason=wait_reason)
+            advance_time_s += perf_counter() - t_advance
             self._consecutive_wait_time += (t2 - t1)
 
             # 停滞惩罚
@@ -376,8 +390,9 @@ class ClusterTool:
             t_reward = perf_counter()
             reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
             reward_s += perf_counter() - t_reward
-            self.advance_time(self.ttime, event_reason="fire_transition")
-            self._check_qtime_violation()
+            t_advance = perf_counter()
+            scan_info = self.advance_time(self.ttime, event_reason="fire_transition")
+            advance_time_s += perf_counter() - t_advance
             t_fire = perf_counter()
             log_entry = self._fire(int(action), start_time=t1, end_time=t2)
             fire_s += perf_counter() - t_fire
@@ -393,7 +408,13 @@ class ClusterTool:
 
         finish = len(self._get_place("LP_done").tokens) >= self.n_wafer
         # ====== 违反驻留时间约束 ======
-        is_scrap, scrap_info = self._check_scrap()
+        t_check_scrap = perf_counter()
+        scan = scan_info if isinstance(scan_info, dict) else {}
+        is_scrap = bool(scan.get("is_scrap", False))
+        scrap_info = scan.get("scrap_info")
+        if scrap_info is None:
+            is_scrap, scrap_info = self._check_scrap()
+        check_scrap_s += perf_counter() - t_check_scrap
         if is_scrap:
             self.scrap_count += 1
             self.resident_violation_count += 1
@@ -421,6 +442,9 @@ class ClusterTool:
                     fire_s=fire_s,
                     build_obs_s=build_obs_s,
                     reward_s=reward_s,
+                    next_event_delta_s=next_event_delta_s,
+                    advance_time_s=advance_time_s,
+                    check_scrap_s=check_scrap_s,
                 )
                 return DONE, reward_result, SCRAPE, action_mask, obs
 
@@ -447,6 +471,9 @@ class ClusterTool:
             fire_s=fire_s,
             build_obs_s=build_obs_s,
             reward_s=reward_s,
+            next_event_delta_s=next_event_delta_s,
+            advance_time_s=advance_time_s,
+            check_scrap_s=check_scrap_s,
         )
         return bool(finish), reward_result, SCRAPE, action_mask, obs
 
@@ -490,6 +517,7 @@ class ClusterTool:
                 self.k[idx] = 1
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._rebuild_token_pool()
+        self._last_state_scan = {}
         return None, self._get_enable_t()
 
     def _get_obs_place_order(self) -> List[str]:
@@ -554,8 +582,19 @@ class ClusterTool:
         fire_s: float,
         build_obs_s: float,
         reward_s: float,
+        next_event_delta_s: float = 0.0,
+        advance_time_s: float = 0.0,
+        check_scrap_s: float = 0.0,
     ) -> None:
-        tracked = get_enable_t_s + fire_s + build_obs_s + reward_s
+        tracked = (
+            get_enable_t_s
+            + fire_s
+            + build_obs_s
+            + reward_s
+            + next_event_delta_s
+            + advance_time_s
+            + check_scrap_s
+        )
         other_s = max(0.0, float(total_s) - float(tracked))
         self._step_profile["count"] += 1
         self._step_profile["total_s"] += float(total_s)
@@ -563,6 +602,9 @@ class ClusterTool:
         self._step_profile["fire_s"] += float(fire_s)
         self._step_profile["build_obs_s"] += float(build_obs_s)
         self._step_profile["reward_s"] += float(reward_s)
+        self._step_profile["next_event_delta_s"] += float(next_event_delta_s)
+        self._step_profile["advance_time_s"] += float(advance_time_s)
+        self._step_profile["check_scrap_s"] += float(check_scrap_s)
         self._step_profile["other_s"] += float(other_s)
 
     def get_step_profile_summary(self) -> Dict[str, Any]:
@@ -572,9 +614,19 @@ class ClusterTool:
             "count": count,
             "total_ms": total_s * 1000.0,
             "avg_ms": (total_s * 1000.0 / count) if count > 0 else 0.0,
+            "steps_per_sec": (count / total_s) if total_s > 0 else 0.0,
             "segments": {},
         }
-        keys = ("get_enable_t", "fire", "build_obs", "reward", "other")
+        keys = (
+            "get_enable_t",
+            "fire",
+            "build_obs",
+            "reward",
+            "next_event_delta",
+            "advance_time",
+            "check_scrap",
+            "other",
+        )
         for key in keys:
             segment_total_s = float(self._step_profile.get(f"{key}_s", 0.0))
             ratio_pct = (segment_total_s / total_s * 100.0) if total_s > 0 else 0.0
@@ -748,11 +800,20 @@ class ClusterTool:
     def _get_enable_t(self) -> List[int]:
         """返回当前使能的变迁索引列表（仅 transition，供 reset 等使用）。"""
         enabled: set[int] = set()
+        struct_enabled_cache: Dict[int, bool] = {}
+
+        def _is_struct_enabled(t_idx: int) -> bool:
+            cached = struct_enabled_cache.get(int(t_idx))
+            if cached is not None:
+                return bool(cached)
+            result = bool(self._transition_structurally_enabled(int(t_idx)))
+            struct_enabled_cache[int(t_idx)] = result
+            return result
 
         # 按你的要求保持优先级：u_LP 最先检查（受 _allow_start 节拍门控）。
         u_lp_idx = self._u_transition_by_source.get("LP")
         if u_lp_idx is not None and (self._allow_start()):
-            if self._transition_structurally_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
+            if _is_struct_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
                 enabled.add(int(u_lp_idx))
 
         for tok in self._token_pool:
@@ -780,7 +841,7 @@ class ClusterTool:
                     target_place = self._get_place(target)
                     if bool(getattr(target_place, "is_cleaning", False)):
                         continue
-                    if not self._transition_structurally_enabled(t_idx):
+                    if not _is_struct_enabled(t_idx):
                         continue
                     enabled.add(int(t_idx))
                 continue
@@ -791,7 +852,7 @@ class ClusterTool:
                 continue
             if self._select_target_for_source(place_name) is None:
                 continue
-            if not self._transition_structurally_enabled(u_idx):
+            if not _is_struct_enabled(u_idx):
                 continue
             enabled.add(int(u_idx))
 
@@ -842,7 +903,10 @@ class ClusterTool:
         pre_idx = self._pre_place_indices[t_idx]
         if pre_idx.size > 0 and np.any(self.m[pre_idx] < self.pre[pre_idx, t_idx]):
             return False
-        if np.any(self.m + self.net[:, t_idx] > self.k):
+        pst_idx = self._pst_place_indices[t_idx]
+        if pst_idx.size > 0 and np.any(
+            self.m[pst_idx] + self.net[pst_idx, t_idx] > self.k[pst_idx]
+        ):
             return False
         return True
 
@@ -1241,13 +1305,69 @@ class ClusterTool:
                     return True
         return False
 
-    def advance_time(self, dt: int, event_reason: str = "") -> None:
+    def _scan_runtime_state(self) -> Dict[str, Any]:
+        """
+        扫描当前 token 状态并返回 scrap 与 qtime 统计结果。
+        该扫描在 step 内由 advance_time 调用，避免重复遍历 token。
+        """
+        scrap_info: Optional[Dict[str, Any]] = None
+        is_scrap = False
+        qtime_new_violations: List[int] = []
+        n_places = len(self.marks)
+        qtime_limit = int(self.D_Residual_time)
+
+        for tok in self._token_pool:
+            place_idx = int(getattr(tok, "_place_idx", -1))
+            if place_idx < 0 or place_idx >= n_places:
+                continue
+            place = self.marks[place_idx]
+            stay_time = int(getattr(tok, "stay_time", 0))
+
+            if (not is_scrap) and place.type == CHAMBER:
+                remaining = int(place.processing_time) - stay_time
+                if remaining < -int(self.P_Residual_time):
+                    overtime = int(-remaining - int(self.P_Residual_time))
+                    scrap_info = {
+                        "token_id": int(getattr(tok, "token_id", -1)),
+                        "place": place.name,
+                        "stay_time": stay_time,
+                        "proc_time": int(place.processing_time),
+                        "overtime": overtime,
+                        "type": "resident",
+                    }
+                    is_scrap = True
+
+            if self._training:
+                continue
+            if place.type != DELIVERY_ROBOT:
+                continue
+            token_id = int(getattr(tok, "token_id", -1))
+            if token_id < 0 or token_id in self._qtime_violated_tokens:
+                continue
+            if stay_time > qtime_limit:
+                qtime_new_violations.append(token_id)
+
+        return {
+            "is_scrap": is_scrap,
+            "scrap_info": scrap_info,
+            "qtime_new_violations": qtime_new_violations,
+        }
+
+    def advance_time(self, dt: int, event_reason: str = "") -> Dict[str, Any]:
         """推进时间并更新相关状态"""
         _ = event_reason  # 预留参数，便于后续追踪不同推进原因。
         safe_dt = max(0, int(dt))
         self.time += safe_dt
         self._update_stay_times(safe_dt)
         self._advance_cleaning_and_idle(safe_dt)
+        scan_info = self._scan_runtime_state()
+        for token_id in scan_info.get("qtime_new_violations", []):
+            if token_id in self._qtime_violated_tokens:
+                continue
+            self._qtime_violated_tokens.add(token_id)
+            self.qtime_violation_count += 1
+        self._last_state_scan = scan_info
+        return scan_info
 
     def _on_processing_unload(self, source_name: str) -> None:
         if not self.cleaning_enabled:
@@ -1414,9 +1534,9 @@ class ClusterTool:
         return False, None
 
     def _check_qtime_violation(self) -> None:
+        """检查运输位 Q-Time 超时并按 wafer 去重累计，不施加惩罚。"""
         if self._training:
             return
-        """检查运输位 Q-Time 超时并按 wafer 去重累计，不施加惩罚。"""
         qtime_limit = int(self.D_Residual_time)
         for place in self.marks:
             if place.type != DELIVERY_ROBOT or len(place.tokens) == 0:
@@ -1532,11 +1652,20 @@ class ClusterTool:
             n_actions if n_actions is not None else (start + len(self.wait_durations))
         )
         mask = np.zeros(total_actions, dtype=bool)
+        struct_enabled_cache: Dict[int, bool] = {}
+
+        def _is_struct_enabled(t_idx: int) -> bool:
+            cached = struct_enabled_cache.get(int(t_idx))
+            if cached is not None:
+                return bool(cached)
+            result = bool(self._transition_structurally_enabled(int(t_idx)))
+            struct_enabled_cache[int(t_idx)] = result
+            return result
 
         # Transition 部分：与 _get_enable_t 逻辑一致，判定一个写一个。
         u_lp_idx = self._u_transition_by_source.get("LP")
         if u_lp_idx is not None and self._allow_start():
-            if self._transition_structurally_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
+            if _is_struct_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
                 t_idx = int(u_lp_idx)
                 if 0 <= t_idx < total_actions:
                     mask[t_idx] = True
@@ -1563,7 +1692,7 @@ class ClusterTool:
                     target_place = self._get_place(target)
                     if bool(getattr(target_place, "is_cleaning", False)):
                         continue
-                    if not self._transition_structurally_enabled(t_idx):
+                    if not _is_struct_enabled(t_idx):
                         continue
                     ti = int(t_idx)
                     if 0 <= ti < total_actions:
@@ -1575,7 +1704,7 @@ class ClusterTool:
                 continue
             if self._select_target_for_source(place_name) is None:
                 continue
-            if not self._transition_structurally_enabled(u_idx):
+            if not _is_struct_enabled(u_idx):
                 continue
             ui = int(u_idx)
             if 0 <= ui < total_actions:
