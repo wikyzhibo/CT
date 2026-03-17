@@ -251,10 +251,8 @@ class ClusterTool:
             "get_enable_t_s": 0.0,
             "fire_s": 0.0,
             "build_obs_s": 0.0,
-            "reward_s": 0.0,
+            "advance_and_reward_s": 0.0,
             "next_event_delta_s": 0.0,
-            "advance_time_s": 0.0,
-            "check_scrap_s": 0.0,
             "other_s": 0.0,
         }
         self._last_state_scan: Dict[str, Any] = {}
@@ -289,13 +287,11 @@ class ClusterTool:
         DONE = False
         SCRAPE = False
         step_start = perf_counter()
-        reward_s = 0.0
+        advance_and_reward_s = 0.0
         fire_s = 0.0
         get_enable_t_s = 0.0
         build_obs_s = 0.0
         next_event_delta_s = 0.0
-        advance_time_s = 0.0
-        check_scrap_s = 0.0
 
         self._last_deadlock = False
         # ======超出最大运行时间直接判定为超时结束，避免“原地等待”导致的无效步骤======
@@ -317,10 +313,8 @@ class ClusterTool:
                 get_enable_t_s=get_enable_t_s,
                 fire_s=fire_s,
                 build_obs_s=build_obs_s,
-                reward_s=reward_s,
+                advance_and_reward_s=advance_and_reward_s,
                 next_event_delta_s=next_event_delta_s,
-                advance_time_s=advance_time_s,
-                check_scrap_s=check_scrap_s,
             )
             return DONE, timeout_reward, SCRAPE, action_mask, obs
 
@@ -367,12 +361,11 @@ class ClusterTool:
             assert  actual_dt > 0, f"actual_dt ({actual_dt}) should be positive"
 
             t2 = t1 + actual_dt
-            t_reward = perf_counter()
-            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
-            reward_s += perf_counter() - t_reward
-            t_advance = perf_counter()
-            scan_info = self.advance_time(actual_dt, event_reason=wait_reason)
-            advance_time_s += perf_counter() - t_advance
+            t_ar = perf_counter()
+            reward_result, scan_info = self._advance_and_compute_reward(
+                actual_dt, t1, t2, detailed=detailed_reward,
+            )
+            advance_and_reward_s += perf_counter() - t_ar
             self._consecutive_wait_time += (t2 - t1)
 
             # 停滞惩罚
@@ -387,12 +380,11 @@ class ClusterTool:
             self._consecutive_wait_time = 0
 
             t2 = t1 + self.ttime
-            t_reward = perf_counter()
-            reward_result = self.calc_reward(t1, t2, detailed=detailed_reward)
-            reward_s += perf_counter() - t_reward
-            t_advance = perf_counter()
-            scan_info = self.advance_time(self.ttime, event_reason="fire_transition")
-            advance_time_s += perf_counter() - t_advance
+            t_ar = perf_counter()
+            reward_result, scan_info = self._advance_and_compute_reward(
+                self.ttime, t1, t2, detailed=detailed_reward,
+            )
+            advance_and_reward_s += perf_counter() - t_ar
             t_fire = perf_counter()
             log_entry = self._fire(int(action), start_time=t1, end_time=t2)
             fire_s += perf_counter() - t_fire
@@ -407,14 +399,12 @@ class ClusterTool:
                 self._per_wafer_reward = 0.0
 
         finish = len(self._get_place("LP_done").tokens) >= self.n_wafer
-        # ====== 违反驻留时间约束 ======
-        t_check_scrap = perf_counter()
+        # ====== 违反驻留时间约束（已在 _advance_and_compute_reward 中检测）======
         scan = scan_info if isinstance(scan_info, dict) else {}
         is_scrap = bool(scan.get("is_scrap", False))
         scrap_info = scan.get("scrap_info")
-        if scrap_info is None:
+        if "is_scrap" not in scan:
             is_scrap, scrap_info = self._check_scrap()
-        check_scrap_s += perf_counter() - t_check_scrap
         if is_scrap:
             self.scrap_count += 1
             self.resident_violation_count += 1
@@ -441,10 +431,8 @@ class ClusterTool:
                     get_enable_t_s=get_enable_t_s,
                     fire_s=fire_s,
                     build_obs_s=build_obs_s,
-                    reward_s=reward_s,
+                    advance_and_reward_s=advance_and_reward_s,
                     next_event_delta_s=next_event_delta_s,
-                    advance_time_s=advance_time_s,
-                    check_scrap_s=check_scrap_s,
                 )
                 return DONE, reward_result, SCRAPE, action_mask, obs
 
@@ -470,10 +458,8 @@ class ClusterTool:
             get_enable_t_s=get_enable_t_s,
             fire_s=fire_s,
             build_obs_s=build_obs_s,
-            reward_s=reward_s,
+            advance_and_reward_s=advance_and_reward_s,
             next_event_delta_s=next_event_delta_s,
-            advance_time_s=advance_time_s,
-            check_scrap_s=check_scrap_s,
         )
         return bool(finish), reward_result, SCRAPE, action_mask, obs
 
@@ -581,19 +567,15 @@ class ClusterTool:
         get_enable_t_s: float,
         fire_s: float,
         build_obs_s: float,
-        reward_s: float,
+        advance_and_reward_s: float,
         next_event_delta_s: float = 0.0,
-        advance_time_s: float = 0.0,
-        check_scrap_s: float = 0.0,
     ) -> None:
         tracked = (
             get_enable_t_s
             + fire_s
             + build_obs_s
-            + reward_s
+            + advance_and_reward_s
             + next_event_delta_s
-            + advance_time_s
-            + check_scrap_s
         )
         other_s = max(0.0, float(total_s) - float(tracked))
         self._step_profile["count"] += 1
@@ -601,10 +583,8 @@ class ClusterTool:
         self._step_profile["get_enable_t_s"] += float(get_enable_t_s)
         self._step_profile["fire_s"] += float(fire_s)
         self._step_profile["build_obs_s"] += float(build_obs_s)
-        self._step_profile["reward_s"] += float(reward_s)
+        self._step_profile["advance_and_reward_s"] += float(advance_and_reward_s)
         self._step_profile["next_event_delta_s"] += float(next_event_delta_s)
-        self._step_profile["advance_time_s"] += float(advance_time_s)
-        self._step_profile["check_scrap_s"] += float(check_scrap_s)
         self._step_profile["other_s"] += float(other_s)
 
     def get_step_profile_summary(self) -> Dict[str, Any]:
@@ -621,10 +601,8 @@ class ClusterTool:
             "get_enable_t",
             "fire",
             "build_obs",
-            "reward",
+            "advance_and_reward",
             "next_event_delta",
-            "advance_time",
-            "check_scrap",
             "other",
         )
         for key in keys:
@@ -687,6 +665,143 @@ class ClusterTool:
             parts["total"] = float(total)
             return parts
         return float(total)
+
+    def _advance_and_compute_reward(
+        self,
+        dt: int,
+        t1: int,
+        t2: int,
+        detailed: bool = False,
+    ) -> tuple:
+        """
+        单次 marks 遍历完成：reward 计算 + stay_time 推进 + 清洗/idle 推进 + scrap/qtime 检测。
+        排序：reward 使用推进前 stay_time，scrap/qtime 使用推进后 stay_time。
+        返回 (reward_result, scan_info)。
+        """
+        safe_dt = max(0, int(dt))
+        self.time += safe_dt
+
+        parts = {
+            "time_cost": 0.0,
+            "proc_reward": 0.0,
+            "safe_reward": 0.0,
+            "warn_penalty": 0.0,
+            "penalty": 0.0,
+            "wafer_done_bonus": 0.0,
+            "finish_bonus": 0.0,
+            "scrap_penalty": 0.0,
+        }
+
+        do_time_cost = bool(self.reward_config.get("time_cost", 1))
+        do_proc_reward = bool(self.reward_config.get("proc_reward", 1))
+        do_transport_penalty = bool(self.reward_config.get("transport_penalty", 1))
+        do_warn_penalty = bool(self.reward_config.get("warn_penalty", 1))
+
+        if do_time_cost:
+            parts["time_cost"] = -float(safe_dt * self.time_coef_penalty)
+
+        is_scrap = False
+        scrap_info: Optional[Dict[str, Any]] = None
+        qtime_new_violations: List[int] = []
+        qtime_limit = int(self.D_Residual_time)
+        p_residual = int(self.P_Residual_time)
+        proc_coef = self.processing_coef_reward
+        transport_coef = self.transport_overtime_coef_penalty
+        warn_coef = int(self.warn_coef_penalty)
+        check_qtime = not self._training
+
+        for p in self.marks:
+            p_type = p.type
+            has_tok = len(p.tokens) > 0
+
+            # --- A: reward (PRE-advance stay_time) ---
+            if has_tok and p_type == CHAMBER:
+                head = p.tokens[0]
+                head_stay = int(head.stay_time)
+                proc_time = int(p.processing_time)
+                if do_proc_reward and proc_time > 0:
+                    remain = proc_time - head_stay
+                    if remain < 0:
+                        remain = 0
+                    progress = safe_dt if safe_dt < remain else remain
+                    parts["proc_reward"] += proc_coef * float(progress)
+                if do_warn_penalty:
+                    left = proc_time + p_residual - head_stay
+                    if left <= p_residual:
+                        parts["warn_penalty"] -= warn_coef * safe_dt
+            elif has_tok and p_type == DELIVERY_ROBOT and do_transport_penalty:
+                for tok in p.tokens:
+                    deadline = int(tok.enter_time) + int(self.D_Residual_time)
+                    over_start = int(t1) if int(t1) > deadline else deadline
+                    if int(t2) > over_start:
+                        parts["penalty"] -= float(int(t2) - over_start) * float(transport_coef)
+
+            # --- B: update stay_times ---
+            if p_type != SOURCE and safe_dt > 0:
+                for tok in p.tokens:
+                    tok.stay_time += safe_dt
+
+            # --- C: advance cleaning / idle (PM only) ---
+            if safe_dt > 0 and p.name.startswith("PM"):
+                if not has_tok:
+                    p.idle_time += safe_dt
+                else:
+                    p.idle_time = 0
+                if p.is_cleaning:
+                    remaining_clean = int(getattr(p, "cleaning_remaining", 0)) - safe_dt
+                    if remaining_clean < 0:
+                        remaining_clean = 0
+                    p.cleaning_remaining = remaining_clean
+                    if remaining_clean == 0:
+                        p.is_cleaning = False
+                        p.cleaning_reason = ""
+                        self.fire_log.append({
+                            "event_type": "cleaning_end",
+                            "time": int(self.time),
+                            "chamber": p.name,
+                            "processed_wafer_count": int(getattr(p, "processed_wafer_count", 0)),
+                        })
+
+            # --- D: scrap / qtime detection (POST-advance stay_time) ---
+            if has_tok and (not is_scrap) and p_type == CHAMBER:
+                head = p.tokens[0]
+                remaining_proc = int(p.processing_time) - int(head.stay_time)
+                if remaining_proc < -p_residual:
+                    overtime = -remaining_proc - p_residual
+                    scrap_info = {
+                        "token_id": int(getattr(head, "token_id", -1)),
+                        "place": p.name,
+                        "stay_time": int(head.stay_time),
+                        "proc_time": int(p.processing_time),
+                        "overtime": int(overtime),
+                        "type": "resident",
+                    }
+                    is_scrap = True
+            if check_qtime and has_tok and p_type == DELIVERY_ROBOT:
+                for tok in p.tokens:
+                    token_id = int(getattr(tok, "token_id", -1))
+                    if token_id < 0 or token_id in self._qtime_violated_tokens:
+                        continue
+                    if int(tok.stay_time) > qtime_limit:
+                        qtime_new_violations.append(token_id)
+
+        for token_id in qtime_new_violations:
+            if token_id not in self._qtime_violated_tokens:
+                self._qtime_violated_tokens.add(token_id)
+                self.qtime_violation_count += 1
+
+        scan_info: Dict[str, Any] = {
+            "is_scrap": is_scrap,
+            "scrap_info": scrap_info,
+            "qtime_new_violations": qtime_new_violations,
+        }
+        self._last_state_scan = scan_info
+
+        total = sum(parts.values())
+        if detailed:
+            parts["total"] = float(total)
+            return parts, scan_info
+        return float(total), scan_info
 
     def _fire(self, t_idx: int, start_time: int, end_time: int) -> Dict[str, Any]:
         t_name = self.id2t_name[t_idx]
@@ -1639,13 +1754,17 @@ class ClusterTool:
                 blame[i] = penalty_coeff
         return blame
 
+    _MASK_SKIP_PLACES = frozenset({"LP", "LP_done"})
+    _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
+
     def get_action_mask(
         self,
         wait_action_start: Optional[int] = None,
         n_actions: Optional[int] = None,
     ) -> np.ndarray:
         """
-        返回完整离散动作掩码（transition + wait）。判定使能时直接写入 mask，不先生成动作 id 列表。
+        返回完整离散动作掩码（transition + wait）。
+        遍历 marks（而非 _token_pool），内联 remaining_time / has_ready_chamber 检查。
         """
         start = int(self.T if wait_action_start is None else wait_action_start)
         total_actions = int(
@@ -1655,14 +1774,13 @@ class ClusterTool:
         struct_enabled_cache: Dict[int, bool] = {}
 
         def _is_struct_enabled(t_idx: int) -> bool:
-            cached = struct_enabled_cache.get(int(t_idx))
+            cached = struct_enabled_cache.get(t_idx)
             if cached is not None:
-                return bool(cached)
-            result = bool(self._transition_structurally_enabled(int(t_idx)))
-            struct_enabled_cache[int(t_idx)] = result
+                return cached
+            result = bool(self._transition_structurally_enabled(t_idx))
+            struct_enabled_cache[t_idx] = result
             return result
 
-        # Transition 部分：与 _get_enable_t 逻辑一致，判定一个写一个。
         u_lp_idx = self._u_transition_by_source.get("LP")
         if u_lp_idx is not None and self._allow_start():
             if _is_struct_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
@@ -1670,50 +1788,72 @@ class ClusterTool:
                 if 0 <= t_idx < total_actions:
                     mask[t_idx] = True
 
-        for tok in self._token_pool:
-            place_idx = int(getattr(tok, "_place_idx", -1))
-            if place_idx < 0 or place_idx >= len(self.id2p_name):
-                continue
-            place_name = self.id2p_name[place_idx]
-            if place_name in {"LP", "LP_done"}:
-                continue
-            if self._token_remaining_time(tok, place_idx) > 0:
-                continue
+        has_ready_chamber = False
+        ready_chambers = self._ready_chambers
+        target_cache: Dict[str, Optional[str]] = {}
+        skip = self._MASK_SKIP_PLACES
+        timed = self._MASK_TIMED_TYPES
+        t_trans_by_transport = self._t_transitions_by_transport
+        u_trans_by_source = self._u_transition_by_source
+        id2t = self.id2t_name
+        route_code_by_idx = self._t_route_code_by_idx
+        route_gate_allows = self._route_gate_allows_t
+        token_route_gate = self._token_route_gate
+        get_place = self._get_place
 
-            if place_name.startswith("d_TM"):
-                for t_idx in self._t_transitions_by_transport.get(place_name, []):
-                    t_name = self.id2t_name[t_idx]
-                    target = t_name[2:]
-                    target_hint = getattr(tok, "_target_place", None)
-                    if target_hint is not None and target_hint != target:
-                        continue
-                    if not self._route_gate_allows_t(self._token_route_gate(tok), self._t_route_code_by_idx[t_idx]):
-                        continue
-                    target_place = self._get_place(target)
-                    if bool(getattr(target_place, "is_cleaning", False)):
-                        continue
-                    if not _is_struct_enabled(t_idx):
-                        continue
-                    ti = int(t_idx)
-                    if 0 <= ti < total_actions:
-                        mask[ti] = True
+        for place in self.marks:
+            n_tok = len(place.tokens)
+            if n_tok == 0:
                 continue
+            pname = place.name
+            if pname in skip:
+                continue
+            p_type = place.type
+            proc_time = place.processing_time
 
-            u_idx = self._u_transition_by_source.get(place_name)
-            if u_idx is None:
-                continue
-            if self._select_target_for_source(place_name) is None:
-                continue
-            if not _is_struct_enabled(u_idx):
-                continue
-            ui = int(u_idx)
-            if 0 <= ui < total_actions:
-                mask[ui] = True
+            is_timed = p_type in timed
+            is_dtm = pname.startswith("d_TM")
 
-        # Wait 部分：默认启用所有 wait；存在加工完成待取片时仅启用 <=5s 的 wait。
-        restrict_long_wait = self._has_ready_chamber_wafers()
+            if is_dtm:
+                for tok in place.tokens:
+                    if is_timed and proc_time > 0 and tok.stay_time < proc_time:
+                        continue
+                    for t_idx in t_trans_by_transport.get(pname, ()):
+                        target = id2t[t_idx][2:]
+                        target_hint = getattr(tok, "_target_place", None)
+                        if target_hint is not None and target_hint != target:
+                            continue
+                        if not route_gate_allows(token_route_gate(tok), route_code_by_idx[t_idx]):
+                            continue
+                        target_place = get_place(target)
+                        if target_place.is_cleaning:
+                            continue
+                        if not _is_struct_enabled(t_idx):
+                            continue
+                        if 0 <= t_idx < total_actions:
+                            mask[t_idx] = True
+            else:
+                head = place.tokens[0]
+                if is_timed and proc_time > 0 and head.stay_time < proc_time:
+                    continue
+                u_idx = u_trans_by_source.get(pname)
+                if u_idx is not None:
+                    cached_target = target_cache.get(pname)
+                    if cached_target is None and pname not in target_cache:
+                        cached_target = self._select_target_for_source(pname)
+                        target_cache[pname] = cached_target
+                    if cached_target is not None and _is_struct_enabled(u_idx):
+                        if 0 <= u_idx < total_actions:
+                            mask[u_idx] = True
+
+            if not has_ready_chamber and p_type == CHAMBER and proc_time > 0 and pname in ready_chambers:
+                for tok in place.tokens:
+                    if tok.stay_time >= proc_time:
+                        has_ready_chamber = True
+                        break
+
         for offset, duration in enumerate(self.wait_durations):
-            if restrict_long_wait and int(duration) > 5:
+            if has_ready_chamber and int(duration) > 5:
                 continue
             idx = start + int(offset)
             if 0 <= idx < total_actions:

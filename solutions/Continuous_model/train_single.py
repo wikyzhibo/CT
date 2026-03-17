@@ -312,10 +312,8 @@ def train_single(
             ("get_enable_t", "get_enable_t"),
             ("fire", "_fire"),
             ("build_obs", "build_obs"),
-            ("reward", "calc_reward"),
+            ("advance_and_reward", "advance+reward"),
             ("next_event_delta", "next_event"),
-            ("advance_time", "advance_time"),
-            ("check_scrap", "check_scrap"),
             ("other", "other"),
         ]
         for key, label in ordered_segments:
