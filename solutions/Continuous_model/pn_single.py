@@ -54,6 +54,7 @@ REASON_DESC: Dict[str, str] = {
     "dwell_time_not_met": "运输位停留时间未满足",
     "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
     "takt_release_limit": "节拍限制：距上次发片间隔未达当前周期节拍",
+    "max_wafers_in_system_limit": "在制品已达上限，禁止继续发片",
 }
 
 
@@ -149,6 +150,7 @@ class ClusterTool:
 
         self.MAX_TIME = config.MAX_TIME
         self.n_wafer = int(config.n_wafer)
+        self.max_wafers_in_system = int(config.max_wafers_in_system)
         
         self.done_event_reward = int(config.done_event_reward)
         self.finish_event_reward = self.done_event_reward * 6
@@ -296,6 +298,7 @@ class ClusterTool:
 
         self.time = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 50
+        self.entered_wafer_count = 0
         self.done_count = 0
         self.scrap_count = 0
         self.deadlock_count = 0
@@ -526,6 +529,7 @@ class ClusterTool:
         self._rebuild_place_cache()
         self._init_obs_cache()
         self.time = 0
+        self.entered_wafer_count = 0
         self.done_count = 0
         self.scrap_count = 0
         self.deadlock_count = 0
@@ -916,6 +920,7 @@ class ClusterTool:
             tok.step = max(tok.step, self._step_map.get(target, 0))
             self._track_enter(tok, target)
             if target == "LP_done":
+                self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
                 self.done_count += 1
                 self._per_wafer_reward += float(self.done_event_reward)
             elif target in self._chamber_timeline and wafer_id >= 0:
@@ -931,6 +936,7 @@ class ClusterTool:
         self.m[pre_place_idx] -= 1
         self.m[pst_place_idx] += 1
         if t_name == "u_LP":
+            self.entered_wafer_count += 1
             self._last_u_LP_fire_time = int(start_time)
             self._u_LP_release_count += 1
         return {
@@ -1103,11 +1109,16 @@ class ClusterTool:
         return sorted(enabled)
 
     def _allow_start(self):
-        """returns True if u_LP can fire now, based on takt and release count."""
+        """returns True if u_LP can fire now, based on WIP limit and takt."""
+        if not self._allow_start_by_wip_limit():
+            return False
         required = self._takt_required_interval()
         if required is None:
             return True
         return (self.time - self._last_u_LP_fire_time) >= int(required)
+
+    def _allow_start_by_wip_limit(self) -> bool:
+        return int(self.entered_wafer_count) < int(self.max_wafers_in_system)
 
     def _takt_required_interval(self) -> Optional[int]:
         """
@@ -1243,6 +1254,9 @@ class ClusterTool:
 
             if t_name.startswith("u_"):
                 src = t_name[2:]
+                if t_name == "u_LP" and not self._allow_start_by_wip_limit():
+                    disabled.append({"action": t, "name": t_name, "reason": "max_wafers_in_system_limit"})
+                    continue
                 if self.robot_capacity == 2 and self.device_mode != "cascade":
                     if d_tm is not None and len(d_tm.tokens) > 0 and locked_sources and src not in locked_sources:
                         disabled.append({"action": t, "name": t_name, "reason": "locked_by_arm2_head"})

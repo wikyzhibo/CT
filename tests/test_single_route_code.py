@@ -388,3 +388,70 @@ def test_cascade_route_code4_manual_takt_interval_blocks_u_lp_until_due():
         n_actions=net.T + len(net.wait_durations),
     )
     assert bool(mask2[u_lp_idx])
+
+
+def test_single_max_wafers_blocks_u_lp_when_wip_reaches_limit():
+    cfg = PetriEnvConfig(
+        n_wafer=2,
+        stop_on_scrap=False,
+        route_code=0,
+        max_wafers_in_system=1,
+        process_time_map={"PM1": 5, "PM3": 5, "PM4": 5},
+    )
+    net = ClusterTool(config=cfg)
+    # 聚焦 max_wafers 语义，避免 takt 对 u_LP 产生干扰。
+    net._takt_result = None
+    u_lp_idx = net.id2t_name.index("u_LP")
+
+    _fire_by_name(net, "u_LP")
+    assert net.entered_wafer_count == 1
+    _fire_by_name(net, "t_PM1")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM1")
+    d_tm1 = net._get_place("d_TM1")
+    stage2_target = str(d_tm1.head()._target_place)
+    _fire_by_name(net, f"t_{stage2_target}")
+
+    mask = net.get_action_mask(
+        wait_action_start=net.T,
+        n_actions=net.T + len(net.wait_durations),
+    )
+    assert not bool(mask[u_lp_idx])
+
+    reasons = net.get_enable_actions_with_reasons(wait_action_start=net.T)
+    u_lp_disabled = [item for item in reasons["disabled"] if int(item["action"]) == u_lp_idx]
+    assert any(item.get("reason") == "max_wafers_in_system_limit" for item in u_lp_disabled)
+
+
+def test_single_max_wafers_releases_slot_after_lp_done():
+    cfg = PetriEnvConfig(
+        n_wafer=2,
+        stop_on_scrap=False,
+        route_code=0,
+        max_wafers_in_system=1,
+        process_time_map={"PM1": 5, "PM3": 5, "PM4": 5},
+    )
+    net = ClusterTool(config=cfg)
+    # 聚焦 max_wafers 语义，避免 takt 对 u_LP 产生干扰。
+    net._takt_result = None
+    u_lp_idx = net.id2t_name.index("u_LP")
+
+    _fire_by_name(net, "u_LP")
+    _fire_by_name(net, "t_PM1")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM1")
+    d_tm1 = net._get_place("d_TM1")
+    stage2_target = str(d_tm1.head()._target_place)
+    _fire_by_name(net, f"t_{stage2_target}")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, f"u_{stage2_target}")
+    _fire_by_name(net, "t_LP_done")
+
+    assert net.done_count == 1
+    assert net.entered_wafer_count == 0
+
+    mask = net.get_action_mask(
+        wait_action_start=net.T,
+        n_actions=net.T + len(net.wait_durations),
+    )
+    assert bool(mask[u_lp_idx])

@@ -151,6 +151,19 @@ class BasedToken:
 - `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
 - 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
 
+**max_wafers_in_system 门控（2026-03-18）**
+- What changed：`pn_single` 新增在制品并发上限门控。`u_LP` 发片时 `entered_wafer_count += 1`，`t_LP_done` 完成时 `entered_wafer_count -= 1`；当 `entered_wafer_count >= max_wafers_in_system` 时禁用 `u_LP`。
+- Why：避免配置项仅存在于 `env_config` 但在单设备执行链不生效，统一与 `pn.py` 的语义口径。
+- Impact / How to use：该限制只作用于入口发片动作 `u_LP`，不改变 `n_wafer` 的完工判定。`max_wafers_in_system=0` 时会从首步起禁止发片。
+- Example：
+  ```python
+  cfg = PetriEnvConfig(
+      n_wafer=12,
+      max_wafers_in_system=5,
+      route_code=0,
+  )
+  ```
+
 **临时执行模式（2026-03-17）**
 - `pn_single` 当前默认按“单臂 + 非 FIFO + token 扫描使能”执行：
   - `robot_capacity` 固定为 1（暂不考虑双臂死锁锁定规则）；
