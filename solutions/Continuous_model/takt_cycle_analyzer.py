@@ -29,6 +29,27 @@ def _lcm(a: int, b: int) -> int:
     return abs(a * b) // gcd(a, b)
 
 
+def build_fixed_takt_result(interval: int, horizon: int = TAKT_HORIZON) -> Dict[str, Any]:
+    """
+    构造固定节拍结果，返回结构与 analyze_cycle 一致。
+    用于需要手动指定固定发片节拍的场景（如 route4）。
+    """
+    fixed_interval = int(interval)
+    if fixed_interval <= 0:
+        raise ValueError("interval 必须 > 0。")
+    h = int(horizon)
+    if h <= 0:
+        raise ValueError("horizon 必须 > 0。")
+    takt_value = _normalize_number(float(fixed_interval))
+    cycle_takts = [takt_value for _ in range(h)]
+    return {
+        "fast_takt": takt_value,
+        "peak_slow_takts": [],
+        "cycle_length": h,
+        "cycle_takts": cycle_takts,
+    }
+
+
 def _build_stage_takt_cycle(
     stage: Dict[str, Any], fast_takt: float
 ) -> Dict[str, Any]:

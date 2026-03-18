@@ -31,7 +31,10 @@ from solutions.Continuous_model.construct_single import (
     parse_route,
 )
 from solutions.Continuous_model.pn import Place
-from solutions.Continuous_model.takt_cycle_analyzer import analyze_cycle
+from solutions.Continuous_model.takt_cycle_analyzer import (
+    analyze_cycle,
+    build_fixed_takt_result,
+)
 from visualization.plot import Op, plot_gantt_hatched_residence
 
 CHAMBER = 1
@@ -187,6 +190,7 @@ class ClusterTool:
         
         self.device_mode = config.device_mode
         self.route_code = config.route_code
+        self.route4_takt_interval = int(getattr(config, "route4_takt_interval", 0) or 0)
         self.single_device_mode = self.device_mode
         self.single_route_code = self.route_code
 
@@ -196,6 +200,8 @@ class ClusterTool:
             ROUTE_SPECS[("single", 0)],
         )
         route_meta = parse_route(stages, BUFFER_NAMES)
+        if self.device_mode == "cascade" and self.route_code == 4:
+            route_meta["u_targets"]["LLD"] = ["PM7", "LP_done"]
         self._route_stages: List[List[str]] = list(stages)  # 用于节拍分析器
         self.chambers = tuple(route_meta["chambers"])
         self._timeline_chambers = tuple(route_meta["timeline_chambers"])
@@ -311,7 +317,8 @@ class ClusterTool:
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
         self._token_pool: List[BasedToken] = []
         if self.device_mode == "cascade":
-            self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
+            if self.route_code != 4:
+                self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
             if self.route_code == 1:
                 self._cascade_round_robin_pairs["LLC"] = ("PM1", "PM2", "PM3", "PM4")
             if self.route_code in {2, 3}:
@@ -885,7 +892,10 @@ class ClusterTool:
             src = t_name[2:]
             tok._dst_level_targets = tuple(self._u_targets.get(src, []))
             tok._dst_level_full_on_pick = self._is_dst_level_full(src)
-            dst = self._select_target_for_source(src, advance_round_robin=True)
+            if self.device_mode == "cascade" and self.route_code == 4 and src == "LLD":
+                dst = self._select_route4_lld_target(tok)
+            else:
+                dst = self._select_target_for_source(src, advance_round_robin=True)
             tok._target_place = dst
             tok.machine = int(self._next_robot_machine())
             if self._is_cascade:
@@ -994,6 +1004,42 @@ class ClusterTool:
         if isinstance(gate, (list, set)):
             return t_code in gate
         return True
+
+    def _route4_next_target_from_token(self, tok: BasedToken) -> Optional[str]:
+        queue = tok.route_queue
+        if not queue:
+            return None
+        next_idx = tok.route_head_idx + 1
+        if next_idx < 0:
+            next_idx = 0
+        if next_idx >= len(queue):
+            next_idx = len(queue) - 1
+        next_gate = queue[next_idx]
+        if not isinstance(next_gate, int):
+            return None
+        if next_gate == int(self._t_route_code_map.get("t_PM7", -999)):
+            return "PM7"
+        if next_gate == int(self._t_route_code_map.get("t_LP_done", -998)):
+            return "LP_done"
+        return None
+
+    def _select_route4_lld_target(
+        self,
+        tok: BasedToken,
+        ignore_cleaning: bool = False,
+    ) -> Optional[str]:
+        target = self._route4_next_target_from_token(tok)
+        if target is None:
+            return None
+        candidates = self._u_targets.get("LLD", [])
+        if target not in candidates:
+            return None
+        target_place = self._get_place(target)
+        if (not ignore_cleaning) and target_place.is_cleaning:
+            return None
+        if len(target_place.tokens) >= target_place.capacity:
+            return None
+        return target
 
     def _get_enable_t(self) -> List[int]:
         """返回当前使能的变迁索引列表（仅 transition，供 reset 等使用）。"""
@@ -1337,18 +1383,25 @@ class ClusterTool:
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
         if self.device_mode == "cascade":
-            pm_stage3_default = 600 if self.route_code == 1 else 300
-            defaults = {
-                "PM7": 70,
-                "PM8": 70,
-                "PM1": pm_stage3_default,
-                "PM2": pm_stage3_default,
-                "LLD": 70,
-            }
-            if self.route_code != 3:
-                defaults.update({"PM9": 200, "PM10": 200})
-            if self.route_code == 1:
-                defaults.update({"PM3": pm_stage3_default, "PM4": pm_stage3_default})
+            if self.route_code == 4:
+                defaults = {
+                    "PM7": 70,
+                    "PM8": 70,
+                    "LLD": 70,
+                }
+            else:
+                pm_stage3_default = 600 if self.route_code == 1 else 300
+                defaults = {
+                    "PM7": 70,
+                    "PM8": 70,
+                    "PM1": pm_stage3_default,
+                    "PM2": pm_stage3_default,
+                    "LLD": 70,
+                }
+                if self.route_code != 3:
+                    defaults.update({"PM9": 200, "PM10": 200})
+                if self.route_code == 1:
+                    defaults.update({"PM3": pm_stage3_default, "PM4": pm_stage3_default})
         else:
             defaults = {"PM1": 100, "PM3": 300, "PM4": 300, "PM6": 300}
         return _preprocess_process_time_map(
@@ -1401,6 +1454,11 @@ class ClusterTool:
         analyzer 内部会统一把每道工序处理时间按「工序时长 + 运输时间」计入节拍。
         失败或无可分析工序时返回 None。
         """
+        if self.device_mode == "cascade" and self.route_code == 4:
+            if self.route4_takt_interval > 0:
+                return build_fixed_takt_result(self.route4_takt_interval)
+            return None
+
         analyzer_stages: List[Dict[str, Any]] = []
         for i, stage in enumerate(self._route_stages):
             if not stage:
@@ -1663,6 +1721,17 @@ class ClusterTool:
             # 需求：LLD 有晶圆时，u_PM1/u_PM2/u_PM3/u_PM4 仍应保持可使能。
             if "LLD" in candidates:
                 return "LLD"
+        if self.device_mode == "cascade" and self.route_code == 4 and source == "LLD":
+            lld_place = self._get_place("LLD")
+            if len(lld_place.tokens) == 0:
+                return None
+            target = self._select_route4_lld_target(
+                lld_place.head(),
+                ignore_cleaning=ignore_cleaning,
+            )
+            if preferred_target is not None and target != preferred_target:
+                return None
+            return target
         if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs and preferred_target is None:
             # 级联并行目标采用轮换分配；仅在真实发射时推进轮换指针，避免使能检查污染状态。
             rr_targets = list(self._cascade_round_robin_pairs[source])

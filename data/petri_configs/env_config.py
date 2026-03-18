@@ -112,7 +112,10 @@ class PetriEnvConfig:
     #   1: PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10
     #   2: PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> PM9/PM10
     #   3: PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> LP_done
+    #   4: [PM7 -> PM8 -> LLC -> LLD] * 5 -> LP_done
     route_code: int = 1
+    # route_code=4 的手动发片节拍间隔（秒）；<=0 表示不启用节拍门控
+    route4_takt_interval: int = 0
     # 单设备工序时间随机扰动（按 episode 固定）
     proc_rand_enabled: bool = False
     # 单设备工序时间随机扰动区间（按腔室独立配置）
@@ -224,6 +227,8 @@ class PetriEnvConfig:
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
         lines.append(f"  单设备模式: {self.device_mode}")
         lines.append(f"  单设备路径代号: {self.route_code}")
+        if str(self.device_mode).lower() == "cascade" and int(self.route_code) == 4:
+            lines.append(f"  route4手动节拍: {self.route4_takt_interval}s")
         
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -301,6 +306,8 @@ class PetriEnvConfig:
             lines.append("  place_display_names: None")
 
         lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
+        lines.append(f"  route_code: {self.route_code}")
+        lines.append(f"  route4_takt_interval: {self.route4_takt_interval}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")

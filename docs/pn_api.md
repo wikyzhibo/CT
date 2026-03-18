@@ -122,8 +122,11 @@ class BasedToken:
 - `single_device_mode="cascade"`：
   - `single_route_code=1`：`LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`（兼容旧模板）
   - `single_route_code=2`：`LP -> PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> PM9/PM10 -> LP_done`（新增模板）
+  - `single_route_code=3`：`LP -> PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> LP_done`
+  - `single_route_code=4`：`LP -> [PM7 -> PM8 -> LLC -> LLD] * 5 -> LP_done`（严格顺序循环 5 次）
 - `single_route_code=0`（single 模式默认）：`LP -> PM1(100s) -> PM3/PM4(300s) -> LP_done`
 - `single_route_code=1`（single 模式）：`LP -> PM1(100s) -> PM3/PM4(300s) -> PM6(300s) -> LP_done`
+- `single_route_code=4` 可配置手动节拍：`route4_takt_interval`（秒）。`>0` 时按固定间隔门控 `u_LP`，`<=0` 时不做节拍门控。
 - 双臂模式约束：`u_*` 仅在可解析到有效目标腔室时才允许发射；若下游层满导致目标不可解析，则该 `u_*` 必须禁用，避免出现 `LP -> d_TM1 -> LP_done` 的非法短路。
 - 上述约束同样适用于 `d_TM1` 为空时：双臂“可任意取片”不等于可忽略目标可达性，目标不可解析时必须禁用 `u_*`。
 - 单/级联模式路由门控统一改为 token 队列：`route_queue + route_head_idx`。
@@ -163,7 +166,7 @@ class BasedToken:
 **设备模式字段**
 - `single_device_mode`: `single` 或 `cascade`。
   - `single`: 使用原单设备路径（可叠加 `single_route_code`）。
-  - `cascade`: 使用级联路径模板（`single_route_code=1/2`），接口仍保持单动作离散动作空间（`transition + wait`）。
+  - `cascade`: 使用级联路径模板（`single_route_code=1/2/3/4`），接口仍保持单动作离散动作空间（`transition + wait`）。
 
 **驻留时间更新规则（单设备）**
 - `LP`（type=3）中的 token 不更新 `stay_time`，与 `pn.py` 保持一致

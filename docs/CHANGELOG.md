@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-18
+
+### Cascade 新增 route_code=4 循环路线与手动节拍 (2026-03-18)
+- **What changed**：`construct_single/pn_single` 在 `single_device_mode=cascade` 下新增 `single_route_code=4`，路径为 `LP -> [PM7 -> PM8 -> LLC -> LLD] * 5 -> LP_done`；不再生成 `PM1/PM2/PM3/PM4/PM9/PM10` 相关变迁。新增 `route4_takt_interval`，并在 `takt_cycle_analyzer.py` 增加 `build_fixed_takt_result()` 供 route4 使用固定节拍门控。
+- **Why**：需要一条严格串行、固定循环次数的 cascade 工艺模板，并允许 route4 单独配置发片节拍而不依赖自动节拍分析。
+- **Impact**：级联模式可通过 `single_route_code=1/2/3/4` 切换模板；`route_code=4` 下 `u_LLD` 会按 token 路由队列在前 4 轮回 `PM7`、第 5 轮去 `LP_done`。`route4_takt_interval > 0` 时 `u_LP` 按固定间隔门控，`<=0` 不门控。
+
 ## 2026-03-17
 
 ### Ultra 并行采样子环境终止即自重置修复 (2026-03-17)

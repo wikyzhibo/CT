@@ -105,10 +105,18 @@ def test_place_obs_cascade_includes_llc_lld_with_core4_features():
             "PM10": 5,
         },
     )
-    chamber_names = env._get_place_obs_pm_names()
+    chamber_names = [
+        spec["name"]
+        for spec in env.net._obs_specs
+        if spec["name"].startswith("PM") or spec["name"] in {"LLC", "LLD"}
+    ]
     assert "LLC" in chamber_names
     assert "LLD" in chamber_names
-    chamber_feature_dim = sum(env._get_place_obs_feature_dim(name) for name in chamber_names)
+    chamber_feature_dim = sum(
+        int(spec["dim"])
+        for spec in env.net._obs_specs
+        if spec["name"] in chamber_names
+    )
     obs_dim = int(env.observation_spec["observation"].shape[-1])
     assert obs_dim == 1 + 14 + chamber_feature_dim
     td = env._reset(None)
@@ -255,3 +263,128 @@ def test_cascade_route_code3_can_finish_via_lld_then_lp_done():
     _fire_by_name(net, "t_LP_done")
 
     assert net.done_count == 1
+
+
+def test_cascade_route_code4_topology_is_strict_loop_route():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=4,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "LLD": 5,
+        },
+    )
+    net = ClusterTool(config=cfg)
+
+    assert net.single_route_code == 4
+    assert net.id2t_name == [
+        "u_LP",
+        "t_PM7",
+        "u_PM7",
+        "t_PM8",
+        "u_PM8",
+        "t_LLC",
+        "u_LLC",
+        "t_LLD",
+        "u_LLD",
+        "t_LP_done",
+    ]
+    assert net._u_targets["LP"] == ["PM7"]
+    assert net._u_targets["PM7"] == ["PM8"]
+    assert net._u_targets["PM8"] == ["LLC"]
+    assert net._u_targets["LLC"] == ["LLD"]
+    assert net._u_targets["LLD"] == ["PM7", "LP_done"]
+    assert "PM1" not in net.id2p_name
+    assert "PM2" not in net.id2p_name
+    assert "PM3" not in net.id2p_name
+    assert "PM4" not in net.id2p_name
+    assert "PM9" not in net.id2p_name
+    assert "PM10" not in net.id2p_name
+
+
+def test_cascade_route_code4_lld_targets_pm7_first_four_then_lp_done():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=4,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "LLD": 5,
+        },
+    )
+    net = ClusterTool(config=cfg)
+
+    _fire_by_name(net, "u_LP")
+
+    for lap in range(5):
+        _fire_by_name(net, "t_PM7")
+        _fire_by_name(net, "u_PM7")
+        _fire_by_name(net, "t_PM8")
+        _fire_by_name(net, "u_PM8")
+        _fire_by_name(net, "t_LLC")
+        _fire_by_name(net, "u_LLC")
+        _fire_by_name(net, "t_LLD")
+        _fire_by_name(net, "u_LLD")
+
+        d_tm2 = net._get_place("d_TM2")
+        assert len(d_tm2.tokens) == 1
+        target = d_tm2.head()._target_place
+        net.step(detailed_reward=True, wait_duration=5)
+        enabled_names = {net.id2t_name[t] for t in net._get_enable_t()}
+        if lap < 4:
+            assert target == "PM7"
+            assert "t_PM7" in enabled_names
+            assert "t_LP_done" not in enabled_names
+        else:
+            assert target == "LP_done"
+            assert "t_LP_done" in enabled_names
+            assert "t_PM7" not in enabled_names
+
+    _fire_by_name(net, "t_LP_done")
+    assert net.done_count == 1
+
+
+def test_cascade_route_code4_manual_takt_interval_blocks_u_lp_until_due():
+    cfg = PetriEnvConfig(
+        n_wafer=2,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=4,
+        route4_takt_interval=30,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "LLD": 5,
+        },
+    )
+    net = ClusterTool(config=cfg)
+    u_lp_idx = net.id2t_name.index("u_LP")
+
+    _fire_by_name(net, "u_LP")
+    _fire_by_name(net, "t_PM7")
+    _fire_by_name(net, "u_PM7")
+    _fire_by_name(net, "t_PM8")
+
+    mask = net.get_action_mask(
+        wait_action_start=net.T,
+        n_actions=net.T + len(net.wait_durations),
+    )
+    assert not bool(mask[u_lp_idx])
+
+    reasons = net.get_enable_actions_with_reasons(wait_action_start=net.T)
+    u_lp_disabled = [item for item in reasons["disabled"] if int(item["action"]) == u_lp_idx]
+    assert any(item.get("reason") == "takt_release_limit" for item in u_lp_disabled)
+
+    elapsed = net.time - net._last_u_LP_fire_time
+    net.advance_time(max(0, 30 - int(elapsed)), event_reason="test_route4_takt")
+
+    mask2 = net.get_action_mask(
+        wait_action_start=net.T,
+        n_actions=net.T + len(net.wait_durations),
+    )
+    assert bool(mask2[u_lp_idx])

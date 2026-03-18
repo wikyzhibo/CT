@@ -59,7 +59,32 @@ def test_single_mode_t_routing_uses_route_queue_gate():
     assert hasattr(tok, "route_head_idx")
     _fire_by_name(net, "u_LP")
     net.step(detailed_reward=True, wait_duration=5)
-    enabled_names = {net.id2t_name[t] for t in net.get_enable_t()}
+    enabled_names = {net.id2t_name[t] for t in net._get_enable_t()}
     assert "t_PM1" in enabled_names
     assert "t_PM3" not in enabled_names
     assert "t_PM4" not in enabled_names
+
+
+def test_cascade_route4_token_route_queue_shape_and_tail_gate():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=4,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "LLD": 5,
+        },
+    )
+    net = ClusterTool(config=cfg)
+    lp_tok = net._get_place("LP").head()
+    queue = lp_tok.route_queue
+
+    assert queue[0] == -1
+    assert len(queue) == 42
+    assert queue[1] == net._t_route_code_map["t_PM7"]
+    assert queue[3] == net._t_route_code_map["t_PM8"]
+    assert queue[5] == net._t_route_code_map["t_LLC"]
+    assert queue[7] == net._t_route_code_map["t_LLD"]
+    assert queue[-1] == net._t_route_code_map["t_LP_done"]
