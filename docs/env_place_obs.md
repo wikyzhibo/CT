@@ -10,6 +10,7 @@
  - `device_mode=cascade` 时会额外纳入 `LLC/LLD` 两个腔室；其中 `LLC/LLD` 使用 4 维核心特征，其余 PM 仍使用 9 维特征。
  - `LP_done` 不进入主体 observation。
  - 时间相关特征统一归一化并裁剪到 `[0, 1]`。
+ - PM 第 9 维为 `near_cleaning_norm`（固定 `clip window=2`），仅在距离触发清洗 2 片以内提供非零信号。
 
 ## When to use
 - 需要显式观察 PM3 与 PM4 分离状态（含清洗）时。
@@ -48,7 +49,7 @@
  - `wafer_time_to_scrap_norm`
  - `is_cleaning`
  - `clean_remaining_time_norm`
- - `remaining_runs_before_clean_norm`
+ - `near_cleaning_norm = (1-is_cleaning) * clip((2-r)/2, 0, 1)`，其中 `r=max(N-c,0)`，`N=max(1,cleaning_trigger_wafers)`，`c=max(0,processed_wafer_count)`
 - LLC/LLD 特征（4 维核心）：
  - `occupied`
  - `processing`
@@ -90,6 +91,7 @@
 - PM 无晶圆时，工艺与超时相关特征置 0，仅保留清洗相关状态。
 - 归一化分母均设置下限 `>=1`，避免除零。
 - 若开启工序时间随机扰动，同一 episode 内工序时长固定；不同 episode 才会重新采样。
+- `near_cleaning_norm` 分段语义：`r>=2 -> 0`，`r=1 -> 0.5`，`r=0 -> 1`；`is_cleaning=True` 时强制为 `0`。
 
 ## Place 子类与 obs 构造
 

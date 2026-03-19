@@ -2,6 +2,11 @@
 
 ## 2026-03-18
 
+### 单设备 PM 第 9 维改为临近清洗分数（clip window=2）(2026-03-18)
+- **What changed**：`solutions/Continuous_model/pn.py` 中 `PM.get_obs()` 第 9 维由 `remaining_runs_before_clean_norm` 改为 `near_cleaning_norm`，公式为 `near_cleaning_norm = (1-is_cleaning) * clip((2-r)/2, 0, 1)`，其中 `r=max(N-c,0)`、`N=max(1,cleaning_trigger_wafers)`、`c=max(0,processed_wafer_count)`。
+- **Why**：将清洗相位特征压缩到“触发前 2 片窗口”，减少对绝对触发阈值的绑定，提升跨 `cleaning_trigger_wafers` 的泛化稳定性。
+- **Impact**：PM 观测维度与拼接顺序保持不变（仍为 9 维且位置不变）；第 9 维语义更新为分段值 `r>=2 -> 0`、`r=1 -> 0.5`、`r=0 -> 1`，且 `is_cleaning=True` 时强制为 `0`。同步更新 `env_place_obs.md`、`continuous_solution_design.md`、`pn_api.md` 与测试用例。
+
 ### Cascade 新增 route_code=5（路线 D）(2026-03-18)
 - **What changed**：`construct_single/pn_single` 在 `single_device_mode=cascade` 下新增 `single_route_code=5`，路径为 `LP -> PM7/PM8(70) -> PM9/PM10(200) -> LP_done`；该路线不生成 `LLC/LLD/PM1/PM2/PM3/PM4` 相关变迁。
 - **Why**：需要支持一条不经过中段缓冲与前段加工腔室的直连级联工艺模板（路线 D）。

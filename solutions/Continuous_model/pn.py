@@ -373,16 +373,23 @@ class PM(Place):
             clean_remaining_time_norm = 1.0
         buffer[offset + 7] = clean_remaining_time_norm
 
+        trigger_wafers = float(self._cleaning_trigger_wafers)
+        if trigger_wafers < 1.0:
+            trigger_wafers = 1.0
         processed_count = float(self.processed_wafer_count)
         if processed_count < 0.0:
             processed_count = 0.0
-        remaining_runs = float(self._cleaning_trigger_wafers) - processed_count
+        remaining_runs = trigger_wafers - processed_count
         if remaining_runs < 0.0:
             remaining_runs = 0.0
-        remaining_runs_norm = remaining_runs * self._inv_cleaning_trigger
-        if remaining_runs_norm > 1.0:
-            remaining_runs_norm = 1.0
-        buffer[offset + 8] = remaining_runs_norm
+        near_cleaning_norm = (2.0 - remaining_runs) * 0.5
+        if near_cleaning_norm < 0.0:
+            near_cleaning_norm = 0.0
+        elif near_cleaning_norm > 1.0:
+            near_cleaning_norm = 1.0
+        if self.is_cleaning:
+            near_cleaning_norm = 0.0
+        buffer[offset + 8] = near_cleaning_norm
         return 9
 
     def clone(self) -> "PM":

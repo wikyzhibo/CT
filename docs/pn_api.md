@@ -204,14 +204,11 @@ class BasedToken:
 - 死锁定义：`LP_done` 未完成且 Stage1 无任何使能变迁。
 
 **观测补充（单设备）**
-- `Env_PN_Single` 的观测由两部分组成（全部为 `float32`）：
-  - `MAX_WAFERS` 个晶圆的特征：先收集所有 token，按 `token_id` 升序排序；每片晶圆使用“合法 `(place_idx, where)` 对全集 one-hot”（静态规则枚举，不是 `P×W` 笛卡尔积），并拼接
-    - `present`：真实晶圆为 `1`，补零位为 `0`
-    - `status_one_hot`（顺序固定）：`processing / done_waiting_pick / moving / waiting`
-      - `waiting` 定义：晶圆位于运输位且 `stay_time > D_Residual_time`
-    - `remaining_processing_norm`：剩余加工量归一化，`0` 表示可取
-    - `time_to_scrap_norm`：先按阈值 `30` 裁剪再归一化，`0` 表示立刻报废；运输位晶圆固定为 `1`
-  - 不足 `MAX_WAFERS` 时按单片特征长度补零；最后追加 3 维腔室计数：`PM1/PM3/PM4` 的 `processed_wafer_count`（用于让策略感知清洗触发临界状态）
+- `Env_PN_Single` 的 observation 统一由 `ClusterTool.get_obs()` 返回（`float32`），顺序为 `LP -> TM -> chamber*`，`LP_done` 不进入主体观测。
+- PM 库所固定 9 维，末尾第 9 维改为 `near_cleaning_norm`（语义位置不变）：
+  - `near_cleaning_norm = (1-is_cleaning) * clip((2-r)/2, 0, 1)`
+  - `r = max(N-c, 0)`，`N = max(1, cleaning_trigger_wafers)`，`c = max(0, processed_wafer_count)`
+  - 分段语义：`r>=2 -> 0`，`r=1 -> 0.5`，`r=0 -> 1`；清洗中强制 `0`
 
 **运输位 token 的机械臂标识**
 - 每个 token 在进入 `d_TM1`（即 `u_*` 发射）时分配 `machine` 字段。
