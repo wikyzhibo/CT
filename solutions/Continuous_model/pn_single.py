@@ -894,6 +894,7 @@ class ClusterTool:
     def get_obs(self) -> np.ndarray:
         if self._obs_dim == 0:
             return np.zeros(0, dtype=np.float32)
+        self._update_ll_direction_obs_flags()
         buffer = self._obs_buffer
         buffer[:] = 0.0
         for place, offset in zip(self._obs_places, self._obs_offsets):
@@ -904,6 +905,50 @@ class ClusterTool:
 
     def get_obs_dim(self) -> int:
         return int(self._obs_dim)
+
+    def _peek_target_for_source_for_obs(self, source: str) -> Optional[str]:
+        """
+        仅用于观测构造的无副作用目标窥视：
+        - 不推进 round-robin 指针；
+        - 尽量给出“下一跳意图”，即便当前容量/清洗导致暂不可发射。
+        """
+        target = self._select_target_for_source(
+            source,
+            ignore_cleaning=True,
+            advance_round_robin=False,
+        )
+        if target is not None:
+            return target
+        candidates = list(self._u_targets.get(source, []))
+        if not candidates:
+            return None
+        if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs:
+            rr_targets = list(self._cascade_round_robin_pairs[source])
+            next_target = self._cascade_round_robin_next.get(source, rr_targets[0])
+            if next_target in candidates:
+                return next_target
+        return candidates[0]
+
+    def _update_ll_direction_obs_flags(self) -> None:
+        """
+        LLC/LLD 方向位规则：
+        - 下一跳由 TM3 搬运 => in_flag=1
+        - 下一跳由 TM2 搬运 => out_flag=1
+        """
+        for ll_name in ("LLC", "LLD"):
+            place = self._place_by_name.get(ll_name)
+            if place is None or not hasattr(place, "set_direction_flags"):
+                continue
+            has_wafer = len(place.tokens) > 0
+            if (not has_wafer) or self.device_mode != "cascade":
+                place.set_direction_flags(False, False)
+                continue
+            target = self._peek_target_for_source_for_obs(ll_name)
+            if target is None:
+                place.set_direction_flags(False, False)
+                continue
+            transport = self._transport_for_t_target(str(target))
+            place.set_direction_flags(transport == "d_TM3", transport == "d_TM2")
 
     def _record_step_profile(
         self,

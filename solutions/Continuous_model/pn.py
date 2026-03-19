@@ -415,8 +415,30 @@ class PM(Place):
 
 
 class LL(Place):
-    """Load Lock 缓冲（LLC/LLD），返回 4 维特征。"""
-    __slots__ = ()
+    """Load Lock 缓冲（LLC/LLD），返回 6 维特征（含 in/out 方向 one-hot）。"""
+    __slots__ = ("_obs_in_flag", "_obs_out_flag")
+
+    def __init__(
+        self,
+        name: str,
+        capacity: int,
+        processing_time: int,
+        type: int = 5,
+        **kwargs,
+    ):
+        super().__init__(
+            name=name,
+            capacity=capacity,
+            processing_time=processing_time,
+            type=type,
+            **kwargs,
+        )
+        self._obs_in_flag = 0.0
+        self._obs_out_flag = 0.0
+
+    def set_direction_flags(self, in_flag: bool, out_flag: bool) -> None:
+        self._obs_in_flag = 1.0 if in_flag else 0.0
+        self._obs_out_flag = 1.0 if out_flag else 0.0
 
     def get_obs(self) -> List[float]:
         out = np.zeros(self.get_obs_dim(), dtype=np.float32)
@@ -424,10 +446,10 @@ class LL(Place):
         return out.tolist()
 
     def get_obs_dim(self) -> int:
-        return 4
+        return 6
 
     def write_obs(self, buffer: np.ndarray, offset: int) -> int:
-        buffer[offset: offset + 4] = 0.0
+        buffer[offset: offset + 6] = 0.0
         return self._write_obs_inner(buffer, offset)
 
     def write_obs_fast(self, buffer: np.ndarray, offset: int) -> int:
@@ -437,12 +459,14 @@ class LL(Place):
         has_wafer = len(self.tokens) > 0
         buffer[offset] = 1.0 if has_wafer else 0.0
         if not has_wafer:
-            return 4
+            return 6
 
         raw_proc_time = float(self.processing_time)
         if raw_proc_time <= 0.0:
             buffer[offset + 2] = 1.0
-            return 4
+            buffer[offset + 4] = self._obs_in_flag
+            buffer[offset + 5] = self._obs_out_flag
+            return 6
 
         stay_time = float(self.tokens[0].stay_time)
         is_processing = stay_time < raw_proc_time
@@ -455,7 +479,9 @@ class LL(Place):
         if remaining_norm > 1.0:
             remaining_norm = 1.0
         buffer[offset + 3] = remaining_norm
-        return 4
+        buffer[offset + 4] = self._obs_in_flag
+        buffer[offset + 5] = self._obs_out_flag
+        return 6
 
     def clone(self) -> "LL":
         cloned = LL(
@@ -471,6 +497,8 @@ class LL(Place):
             cleaning_remaining=self.cleaning_remaining,
             cleaning_reason=self.cleaning_reason,
         )
+        cloned._obs_in_flag = float(self._obs_in_flag)
+        cloned._obs_out_flag = float(self._obs_out_flag)
         cloned.tokens = deque(tok.clone() for tok in self.tokens)
         return cloned
 

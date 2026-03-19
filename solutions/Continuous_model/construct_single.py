@@ -60,6 +60,34 @@ ROUTE_SPECS: Dict[Tuple[str, int], List[List[str]]] = {
 }
 BUFFER_NAMES: Set[str] = {"LLC"}
 
+# 级联模式下固定 8 维 TM 去向 one-hot（逐目标编码，避免按目标组压缩导致信息丢失）
+CASCADE_TM2_TARGET_ORDER: Tuple[str, ...] = (
+    "PM7",
+    "PM8",
+    "PM9",
+    "PM10",
+    "LLC",
+    "LLD",
+    "LP_done",
+    "LP",
+)
+CASCADE_TM3_TARGET_ORDER: Tuple[str, ...] = (
+    "PM1",
+    "PM2",
+    "PM3",
+    "PM4",
+    "PM5",
+    "PM6",
+    "LLC",
+    "LLD",
+)
+CASCADE_TM2_TARGET_ONEHOT: Dict[str, int] = {
+    name: idx for idx, name in enumerate(CASCADE_TM2_TARGET_ORDER)
+}
+CASCADE_TM3_TARGET_ONEHOT: Dict[str, int] = {
+    name: idx for idx, name in enumerate(CASCADE_TM3_TARGET_ORDER)
+}
+
 # t_* 路由码常量（仅用于 token 队头门控）
 T_ROUTE_CODES_SINGLE: Dict[str, int] = {
     "t_PM1": 1,
@@ -688,18 +716,21 @@ def _build_single_device_net_from_route_config(
     ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
 
     # transport onehot map
+    # 配置驱动路径默认使用逐目标编码；cascade 固定为 8 维目标字典。
     tm_target_onehot_map: Dict[str, Dict[str, int]] = {}
-    tm_target_group_seq: Dict[str, List[Tuple[str, ...]]] = {}
     for hop in route_ir.transports:
-        tp = hop.transport_place
-        dst = tuple(route_ir.stages[hop.to_stage_idx].candidates)
-        group_seq = tm_target_group_seq.setdefault(tp, [])
-        if dst not in group_seq:
-            group_seq.append(dst)
-        gid = group_seq.index(dst)
+        tp = str(hop.transport_place)
+        dst_candidates = tuple(route_ir.stages[hop.to_stage_idx].candidates)
+        if mode == "cascade" and tp == "d_TM2":
+            tm_target_onehot_map[tp] = dict(CASCADE_TM2_TARGET_ONEHOT)
+            continue
+        if mode == "cascade" and tp == "d_TM3":
+            tm_target_onehot_map[tp] = dict(CASCADE_TM3_TARGET_ONEHOT)
+            continue
         m = tm_target_onehot_map.setdefault(tp, {})
-        for dst_name in dst:
-            m[dst_name] = gid
+        for dst_name in dst_candidates:
+            if dst_name not in m:
+                m[dst_name] = len(m)
 
     ctx = obs_config or {}
     p_res = int(ctx.get("P_Residual_time", 15))
@@ -732,6 +763,10 @@ def _build_single_device_net_from_route_config(
                 place = SR(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
             elif name.startswith("d_"):
                 tm_map = tm_target_onehot_map.get(name, {})
+                if mode == "cascade" and name == "d_TM2":
+                    tm_map = dict(CASCADE_TM2_TARGET_ONEHOT)
+                elif mode == "cascade" and name == "d_TM3":
+                    tm_map = dict(CASCADE_TM3_TARGET_ONEHOT)
                 onehot_dim = max(tm_map.values(), default=-1) + 1 if tm_map else 0
                 place = TM(
                     name=name,
@@ -1167,10 +1202,10 @@ def build_single_device_net(
         return m
 
     def _tm2_onehot_map() -> Dict[str, int]:
-        return {"PM7": 0, "PM8": 0, "LLC": 1, "PM9": 2, "PM10": 2, "LP_done": 3}
+        return dict(CASCADE_TM2_TARGET_ONEHOT)
 
     def _tm3_onehot_map() -> Dict[str, int]:
-        return {"PM1": 0, "PM2": 0, "PM3": 0, "PM4": 0, "LLD": 1}
+        return dict(CASCADE_TM3_TARGET_ONEHOT)
 
     ctx = obs_config or {}
     p_res = int(ctx.get("P_Residual_time", 15))
@@ -1221,7 +1256,7 @@ def build_single_device_net(
                     type=ptype,
                     D_Residual_time=d_res,
                     target_onehot_map=_tm2_onehot_map(),
-                    onehot_dim=4,
+                    onehot_dim=8,
                 )
             elif name == "d_TM3":
                 place = TM(
@@ -1231,7 +1266,7 @@ def build_single_device_net(
                     type=ptype,
                     D_Residual_time=d_res,
                     target_onehot_map=_tm3_onehot_map(),
-                    onehot_dim=2,
+                    onehot_dim=8,
                 )
             elif name in {"LLC", "LLD"}:
                 place = LL(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)

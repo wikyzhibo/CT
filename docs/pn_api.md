@@ -27,9 +27,9 @@
 | 子类 | 库所 | 特征维度 | 构造参数 |
 |-----|------|---------|---------|
 | SR  | LP, LP_done | 1 / 0 | n_wafer |
-| TM  | d_TM1, d_TM2, d_TM3 | 4+4 或 4+2 | D_Residual_time, target_onehot_map, onehot_dim |
+| TM  | d_TM1, d_TM2, d_TM3 | `4 + onehot_dim`（cascade 下 TM2/TM3 固定 `4+8`） | D_Residual_time, target_onehot_map, onehot_dim |
 | PM  | PM1, PM3, PM4... | 9 | P_Residual_time, cleaning_* |
-| LL  | LLC, LLD | 4 | - |
+| LL  | LLC, LLD | 6（基础 4 维 + `in/out` 两维） | - |
 
 构网时由 `construct_single.build_single_device_net(obs_config=...)` 创建。详见 `docs/架构.md`。
 

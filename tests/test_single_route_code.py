@@ -200,10 +200,105 @@ def test_place_obs_cascade_includes_llc_lld_with_core4_features():
         for spec in env.net._obs_specs
         if spec["name"] in chamber_names
     )
+    tm_feature_dim = sum(
+        int(spec["dim"])
+        for spec in env.net._obs_specs
+        if spec["name"] in {"d_TM2", "d_TM3"}
+    )
     obs_dim = int(env.observation_spec["observation"].shape[-1])
-    assert obs_dim == 1 + 14 + chamber_feature_dim
+    assert tm_feature_dim == 24
+    assert obs_dim == 1 + tm_feature_dim + chamber_feature_dim
     td = env._reset(None)
     assert int(td["observation"].shape[-1]) == obs_dim
+
+
+def test_cascade_tm_target_onehot_uses_fixed_8_destination_slots():
+    env = Env_PN_Single(
+        detailed_reward=False,
+        device_mode="cascade",
+        robot_capacity=1,
+        route_code=2,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+            "PM9": 5,
+            "PM10": 5,
+        },
+    )
+    tm2 = next(p for p in env.net.marks if p.name == "d_TM2")
+    tm3 = next(p for p in env.net.marks if p.name == "d_TM3")
+    assert tm2.get_obs_dim() == 12
+    assert tm3.get_obs_dim() == 12
+    assert set(tm2._target_onehot_map.keys()) == {
+        "PM7",
+        "PM8",
+        "PM9",
+        "PM10",
+        "LLC",
+        "LLD",
+        "LP_done",
+        "LP",
+    }
+    assert set(tm3._target_onehot_map.keys()) == {
+        "PM1",
+        "PM2",
+        "PM3",
+        "PM4",
+        "PM5",
+        "PM6",
+        "LLC",
+        "LLD",
+    }
+
+
+def test_ll_obs_adds_in_out_onehot_for_tm3_tm2():
+    env = Env_PN_Single(
+        detailed_reward=False,
+        device_mode="cascade",
+        robot_capacity=1,
+        route_code=2,
+        process_time_map={
+            "PM7": 5,
+            "PM8": 5,
+            "PM1": 5,
+            "PM2": 5,
+            "LLD": 5,
+            "PM9": 5,
+            "PM10": 5,
+        },
+    )
+    net = env.net
+
+    ll_specs = {spec["name"]: spec for spec in net._obs_specs if spec["name"] in {"LLC", "LLD"}}
+    assert int(ll_specs["LLC"]["dim"]) == 6
+    assert int(ll_specs["LLD"]["dim"]) == 6
+
+    _fire_by_name(net, "u_LP")
+    _fire_by_name(net, "t_PM7")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM7")
+    _fire_by_name(net, "t_LLC")
+
+    obs = net.get_obs()
+    llc_off = int(ll_specs["LLC"]["offset"])
+    # LLC 下一跳由 TM3 搬运（in=1, out=0）
+    assert obs[llc_off + 4] == pytest.approx(1.0)
+    assert obs[llc_off + 5] == pytest.approx(0.0)
+
+    _fire_by_name(net, "u_LLC")
+    _fire_by_name(net, "t_PM1")
+    net.step(detailed_reward=True, wait_duration=5)
+    _fire_by_name(net, "u_PM1")
+    _fire_by_name(net, "t_LLD")
+
+    obs = net.get_obs()
+    lld_off = int(ll_specs["LLD"]["offset"])
+    # LLD 下一跳由 TM2 搬运（in=0, out=1）
+    assert obs[lld_off + 4] == pytest.approx(0.0)
+    assert obs[lld_off + 5] == pytest.approx(1.0)
 
 
 def test_cascade_route_code2_uses_pm1_pm2_only():

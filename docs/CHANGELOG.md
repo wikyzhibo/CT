@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+### 修复 TM/LL 观测扩维以匹配新路线目标空间 (2026-03-19)
+- **What changed**：`construct_single.py` 将 cascade 下 `TM2/TM3` 目标 one-hot 从“按目标组压缩”改为固定 8 维逐目标编码。`TM2` 目标集合为 `PM7/PM8/PM9/PM10/LLC/LLD/LP_done/LP`，`TM3` 目标集合为 `PM1/PM2/PM3/PM4/PM5/PM6/LLC/LLD`。同时 `pn.py` 中 `LLC/LLD` 观测从 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot（`TM3=进`，`TM2=出`），并由 `pn_single.py` 在构造观测时无副作用推断方向位。
+- **Why**：路线更新后 TM 与 LL 的潜在去向显著增加，旧观测维度无法完整表达目标语义，容易造成策略混淆。
+- **Impact**：cascade 模式观测维度变化（TM 总维度由 14 变为 24，LL 每个库所由 4 变为 6），旧模型输入层与新观测不兼容，需要重新训练或重建策略输入头。新增/更新 `tests/test_single_route_code.py` 覆盖 TM 固定 8 维编码与 LL in/out 语义。
+
 ### 新增 legacy 兼容路线组 2-*（映射旧 route_code 1/3/4/5）(2026-03-19)
 - **What changed**：在 `data/petri_configs/cascade_routes_1_star.json` 中新增 `2-1/2-2/2-3/2-4` 四条路线，分别对应旧版 `construct_single.py` 的 cascade `route_code=1/3/4/5` 拓扑，并按当前 `routes.sequence` 格式补齐 stage 级 `process_time/cleaning_*` 字段。
 - **Why**：解决“`route_code` 与 `single_route_name` 拓扑不一致”时的防御性校验冲突，便于在保留新工艺模板 `1-*` 的同时继续使用 legacy 拓扑口径。
