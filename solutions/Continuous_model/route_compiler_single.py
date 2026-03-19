@@ -283,6 +283,18 @@ def infer_transport_robot(
             f"no robot can transport hop {tuple(from_candidates)} -> {tuple(to_candidates)}"
         )
 
+    # 级联重复路由（如 2-3）中，LLC->LLD 期望由内侧机械手执行。
+    # 当该 hop 同时被多个机器人覆盖时，优先选择 TM3（或其 transport_place=d_TM3）。
+    if (
+        len(from_candidates) == 1
+        and len(to_candidates) == 1
+        and str(from_candidates[0]) == "LLC"
+        and str(to_candidates[0]) == "LLD"
+    ):
+        for rb in matched:
+            if rb.name == "TM3" or rb.transport_place == "d_TM3":
+                return rb
+
     matched.sort(key=lambda r: (int(r.priority), len(r.managed_chambers), r.name))
     top = matched[0]
     if len(matched) > 1:

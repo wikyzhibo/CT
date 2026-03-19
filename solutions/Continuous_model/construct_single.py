@@ -583,6 +583,14 @@ def _build_single_device_net_from_route_config(
         rb_cfg = route_config["robots"][rb_name]
         add_place_name(str(rb_cfg.get("transport_place", f"d_{rb_name}")))
 
+    # 统计每个 source 对应的 transport 集合；若同一 source 有多个 transport 则需分离 u_* 变迁
+    src_to_transports: Dict[str, Set[str]] = {}
+    for hop in route_ir.transports:
+        src_stage = route_ir.stages[hop.from_stage_idx]
+        d_place = hop.transport_place
+        for src in src_stage.candidates:
+            src_to_transports.setdefault(src, set()).add(d_place)
+
     # Transition 顺序：按 hop 顺序先 u_* 再 t_*
     id2t_name: List[str] = []
     seen_t: Set[str] = set()
@@ -592,11 +600,19 @@ def _build_single_device_net_from_route_config(
             seen_t.add(name)
             id2t_name.append(name)
 
+    def u_transition_name(src: str, d_place: str) -> str:
+        """当同一 source 有多个 transport 时使用 u_{src}_{d_place}，否则 u_{src}"""
+        transports = src_to_transports.get(src, set())
+        if len(transports) > 1:
+            return f"u_{src}_{d_place}"
+        return f"u_{src}"
+
     for hop in route_ir.transports:
         src_stage = route_ir.stages[hop.from_stage_idx]
         dst_stage = route_ir.stages[hop.to_stage_idx]
+        d_place = hop.transport_place
         for src in src_stage.candidates:
-            add_transition(f"u_{src}")
+            add_transition(u_transition_name(src, d_place))
         for dst in dst_stage.candidates:
             add_transition(f"t_{dst}")
 
@@ -609,15 +625,17 @@ def _build_single_device_net_from_route_config(
     def add_arc(src: str, tr: str, dst: str) -> None:
         if src not in p_idx or dst not in p_idx or tr not in t_idx:
             return
-        pre[p_idx[src], t_idx[tr]] += 1
-        pst[p_idx[dst], t_idx[tr]] += 1
+        # 同名变迁在 repeat 路径中会被多次引用；同一库所-变迁弧应保持单位权重，
+        # 不能因重复路径展开把权重累加到 >1（否则结构使能会错误要求多 token）。
+        pre[p_idx[src], t_idx[tr]] = 1
+        pst[p_idx[dst], t_idx[tr]] = 1
 
     for hop in route_ir.transports:
         src_stage = route_ir.stages[hop.from_stage_idx]
         dst_stage = route_ir.stages[hop.to_stage_idx]
         d_place = hop.transport_place
         for src in src_stage.candidates:
-            add_arc(src, f"u_{src}", d_place)
+            add_arc(src, u_transition_name(src, d_place), d_place)
         for dst in dst_stage.candidates:
             add_arc(d_place, f"t_{dst}", dst)
 
