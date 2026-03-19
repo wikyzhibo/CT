@@ -624,6 +624,7 @@ class ClusterTool:
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
         self._takt_result: Optional[Dict[str, Any]] = self._compute_takt_result()
+        print(self._takt_result)
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
         self._training = True
@@ -1402,6 +1403,14 @@ class ClusterTool:
 
             # 加工腔/缓冲位 token：尝试 u_*
             target = self._token_next_target(tok)
+            if target is not None:
+                target_place = self._place_by_name.get(str(target))
+                if (
+                    target_place is None
+                    or target_place.is_cleaning
+                    or len(target_place.tokens) >= target_place.capacity
+                ):
+                    target = None
             if target is None:
                 target = self._select_target_for_source(place_name)
             if target is None:
@@ -1412,7 +1421,8 @@ class ClusterTool:
                 u_idx = self._u_transition_by_source.get(place_name)
             if u_idx is None:
                 continue
-            if not _is_struct_enabled(u_idx):
+            struct_enabled = _is_struct_enabled(u_idx)
+            if not struct_enabled:
                 continue
             enabled.add(int(u_idx))
 
@@ -2473,7 +2483,16 @@ class ClusterTool:
                 head = tokens[0]
                 if is_timed and proc_time > 0 and head.stay_time < proc_time:
                     continue
-                target = self._token_next_target(head)
+                route_target = self._token_next_target(head)
+                target = route_target
+                if target is not None:
+                    target_place = place_by_name.get(str(target))
+                    if (
+                        target_place is None
+                        or target_place.is_cleaning
+                        or len(target_place.tokens) >= target_place.capacity
+                    ):
+                        target = None
                 if target is None:
                     cached_target = target_cache.get(pname, _SENTINEL)
                     if cached_target is _SENTINEL:
@@ -2485,7 +2504,8 @@ class ClusterTool:
                     u_idx = self._u_transition_by_source_transport.get((pname, transport))
                     if u_idx is None:
                         u_idx = u_trans_by_source.get(pname)
-                    if u_idx is not None and _is_struct_enabled(u_idx):
+                    struct_enabled = bool(u_idx is not None and _is_struct_enabled(u_idx))
+                    if u_idx is not None and struct_enabled:
                         if 0 <= u_idx < total_actions:
                             mask[u_idx] = True
 

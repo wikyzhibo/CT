@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 
 TAKT_HORIZON = 100
-
+DELIVERY_TIME = 40
 
 def _normalize_number(value: float) -> float | int:
     """若是整数值则返回 int，否则返回 float。"""
@@ -164,7 +164,7 @@ def analyze_cycle(stages: List[Dict[str, Any]], max_parts: int = 10000) -> Dict[
         if "p" not in stage or "m" not in stage:
             raise ValueError(f"{stage_ctx} 缺少必填字段 p/m。")
         try:
-            p = int(stage["p"]) + 20
+            p = int(stage["p"]) + DELIVERY_TIME
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{stage_ctx} p 非法: {stage.get('p')!r}。") from exc
         try:
