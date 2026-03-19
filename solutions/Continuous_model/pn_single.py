@@ -144,6 +144,37 @@ else:
 
 
 class ClusterTool:
+    _VALID_ROUTE_CODES: Dict[str, Set[int]] = {
+        "single": {0, 1},
+        "cascade": {1, 2, 3, 4, 5},
+    }
+
+    @classmethod
+    def _normalize_device_mode(cls, raw_mode: Any) -> str:
+        mode = str(raw_mode).strip().lower()
+        if mode not in cls._VALID_ROUTE_CODES:
+            valid_modes = sorted(cls._VALID_ROUTE_CODES.keys())
+            raise ValueError(
+                f"invalid device_mode={raw_mode!r}; expected one of {valid_modes}"
+            )
+        return mode
+
+    @classmethod
+    def _normalize_route_code(cls, raw_route_code: Any, device_mode: str) -> int:
+        try:
+            route_code = int(raw_route_code)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid route_code={raw_route_code!r}; route_code must be an integer"
+            ) from exc
+        valid_route_codes = sorted(cls._VALID_ROUTE_CODES[device_mode])
+        if route_code not in cls._VALID_ROUTE_CODES[device_mode]:
+            raise ValueError(
+                f"invalid route_code={route_code!r} for device_mode={device_mode!r}; "
+                f"expected one of {valid_route_codes}"
+            )
+        return route_code
+
     def __init__(self, config: PetriEnvConfig = None) -> None:
         assert config is not None, "config must be provided"
         self.config = config
@@ -190,17 +221,22 @@ class ClusterTool:
         }
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
         
-        self.device_mode = config.device_mode
-        self.route_code = config.route_code
+        self.device_mode = self._normalize_device_mode(config.device_mode)
+        self.route_code = self._normalize_route_code(config.route_code, self.device_mode)
+        self.config.device_mode = self.device_mode
+        self.config.route_code = self.route_code
         self.route4_takt_interval = int(getattr(config, "route4_takt_interval", 0) or 0)
         self.single_device_mode = self.device_mode
         self.single_route_code = self.route_code
 
         route_key = (self.device_mode, self.route_code)
-        stages = ROUTE_SPECS.get(route_key) or ROUTE_SPECS.get(
-            (self.device_mode, 1 if self.device_mode == "cascade" else 0),
-            ROUTE_SPECS[("single", 0)],
-        )
+        stages = ROUTE_SPECS.get(route_key)
+        if stages is None:
+            valid_route_codes = sorted(self._VALID_ROUTE_CODES[self.device_mode])
+            raise ValueError(
+                f"route spec not found for device_mode={self.device_mode!r}, "
+                f"route_code={self.route_code!r}; expected route_code in {valid_route_codes}"
+            )
         route_meta = parse_route(stages, BUFFER_NAMES)
         if self.device_mode == "cascade" and self.route_code == 4:
             route_meta["u_targets"]["LLD"] = ["PM7", "LP_done"]
@@ -1388,12 +1424,27 @@ class ClusterTool:
             self._episode_proc_time_map = sampled
         else:
             self._episode_proc_time_map = dict(self._base_proc_time_map)
+        self._validate_episode_proc_time_map_consistency()
         for p in self.marks:
             if p.name in self._episode_proc_time_map:
                 p.processing_time = int(self._episode_proc_time_map[p.name])
         for chamber_name, proc_time in self._episode_proc_time_map.items():
             p_idx = self._get_place_index(chamber_name)
             self.ptime[p_idx] = int(proc_time)
+
+    def _validate_episode_proc_time_map_consistency(self) -> None:
+        expected = set(self.chambers)
+        actual = set(self._episode_proc_time_map.keys())
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        if not missing and not extra:
+            return
+        raise ValueError(
+            "episode process time map is inconsistent with route chambers: "
+            f"device_mode={self.device_mode!r}, route_code={self.route_code!r}, "
+            f"missing={missing}, extra={extra}, "
+            f"expected={sorted(expected)}, actual={sorted(actual)}"
+        )
 
     def _preprocess_process_time_map(self, process_time_map: Dict[str, int]) -> Dict[str, int]:
         if self.device_mode == "cascade":
@@ -1425,6 +1476,16 @@ class ClusterTool:
                     defaults.update({"PM3": pm_stage3_default, "PM4": pm_stage3_default})
         else:
             defaults = {"PM1": 100, "PM3": 300, "PM4": 300, "PM6": 300}
+        missing_defaults = sorted(
+            chamber
+            for chamber in self.chambers
+            if chamber not in process_time_map and chamber not in defaults
+        )
+        if missing_defaults:
+            raise ValueError(
+                "missing default process times for chambers: "
+                f"{missing_defaults}; device_mode={self.device_mode!r}, route_code={self.route_code!r}"
+            )
         return _preprocess_process_time_map(
             process_time_map=process_time_map,
             chambers=self.chambers,
@@ -1469,12 +1530,51 @@ class ClusterTool:
             "d": int(d),
         }
 
+    def _validate_takt_stage_inputs(self) -> None:
+        stage_details = [
+            f"s{idx + 1}={list(stage)}" for idx, stage in enumerate(self._route_stages)
+        ]
+        stage_place_set: Set[str] = set()
+        for stage in self._route_stages:
+            for place in stage:
+                stage_place_set.add(str(place))
+
+        unknown_stage_places = sorted(
+            place for place in stage_place_set if place not in self._step_map
+        )
+        if unknown_stage_places:
+            raise ValueError(
+                "route stage contains places not in step map: "
+                f"{unknown_stage_places}; device_mode={self.device_mode!r}, "
+                f"route_code={self.route_code!r}, stages={stage_details}"
+            )
+
+        proc_places = set(self._episode_proc_time_map.keys())
+        out_of_stage_proc_places = sorted(proc_places - stage_place_set)
+        if out_of_stage_proc_places:
+            raise ValueError(
+                "takt stage mismatch: process_time map has out-of-route places: "
+                f"{out_of_stage_proc_places}; device_mode={self.device_mode!r}, "
+                f"route_code={self.route_code!r}, stages={stage_details}, "
+                f"process_time_places={sorted(proc_places)}"
+            )
+
+        missing_proc_places = sorted(set(self.chambers) - proc_places)
+        if missing_proc_places:
+            raise ValueError(
+                "takt stage mismatch: route chambers missing from process_time map: "
+                f"{missing_proc_places}; device_mode={self.device_mode!r}, "
+                f"route_code={self.route_code!r}, stages={stage_details}, "
+                f"process_time_places={sorted(proc_places)}"
+            )
+
     def _compute_takt_result(self) -> Optional[Dict[str, Any]]:
         """
         根据当前加工配方（路线 + 工序时长 + 清洗参数）调用节拍分析器，
         analyzer 内部会统一把每道工序处理时间按「工序时长 + 运输时间」计入节拍。
         失败或无可分析工序时返回 None。
         """
+        self._validate_takt_stage_inputs()
         if self.device_mode == "cascade" and self.route_code == 4:
             if self.route4_takt_interval > 0:
                 return build_fixed_takt_result(self.route4_takt_interval)

@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-19
+
+### 单设备路线参数与节拍输入一致性严格校验 (2026-03-19)
+- **What changed**：`solutions/Continuous_model/pn_single.py` 对 `device_mode/single_route_code` 增加严格规范化与合法性校验：`device_mode` 仅允许 `single/cascade`，`route_code` 强制转 `int` 并按模式校验（single: `0/1`，cascade: `1/2/3/4/5`），非法值直接抛 `ValueError`，不再静默回退。新增 `_episode_proc_time_map` 一致性守卫（必须与当前路线 `chambers` 完全一致）以及节拍分析前的 stage-工时一致性检查（越界/缺失会带 `device_mode/route_code/stage` 明细报错）。
+- **Why**：防止路线配置与工时映射不一致时继续运行，导致节拍计算错误且难以定位（例如 route5 混入非本路线腔室）。
+- **Impact**：配置错误将前移到初始化阶段暴露；合法配置行为不变。`route_code=\"5\"` 这类字符串输入会被规范化为整数后按 route5 执行。同步更新 `takt_cycle_analyzer.py` 的 stage 级错误上下文与 `tests/test_single_route_code.py` 覆盖用例。
+
 ## 2026-03-18
 
 ### 单设备 PM 第 9 维改为临近清洗分数（clip window=2）(2026-03-18)

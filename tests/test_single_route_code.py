@@ -1,3 +1,5 @@
+import pytest
+
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.pn_single import ClusterTool
 from solutions.Continuous_model.env_single import Env_PN_Single
@@ -6,6 +8,87 @@ from solutions.Continuous_model.env_single import Env_PN_Single
 def _fire_by_name(net: ClusterTool, transition_name: str) -> None:
     tid = net.id2t_name.index(transition_name)
     net.step(a1=tid, detailed_reward=True)
+
+
+FULL_PROCESS_TIME_MAP = {
+    "PM1": 300,
+    "PM2": 300,
+    "PM3": 600,
+    "PM4": 600,
+    "PM6": 300,
+    "PM7": 70,
+    "PM8": 70,
+    "PM9": 200,
+    "PM10": 200,
+    "LLD": 70,
+    "LLC": 0,
+}
+
+
+@pytest.mark.parametrize(
+    "device_mode,route_code,expected_keys",
+    [
+        ("single", 0, {"PM1", "PM3", "PM4"}),
+        ("single", 1, {"PM1", "PM3", "PM4", "PM6"}),
+        ("cascade", 1, {"PM7", "PM8", "PM1", "PM2", "PM3", "PM4", "LLD", "PM9", "PM10"}),
+        ("cascade", 2, {"PM7", "PM8", "PM1", "PM2", "LLD", "PM9", "PM10"}),
+        ("cascade", 3, {"PM7", "PM8", "PM1", "PM2", "LLD"}),
+        ("cascade", 4, {"PM7", "PM8", "LLD"}),
+        ("cascade", 5, {"PM7", "PM8", "PM9", "PM10"}),
+    ],
+)
+def test_episode_proc_time_map_keys_match_route_chambers(
+    device_mode: str,
+    route_code: int,
+    expected_keys: set[str],
+):
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode=device_mode,
+        route_code=route_code,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    net = ClusterTool(config=cfg)
+    assert set(net._episode_proc_time_map.keys()) == expected_keys
+
+
+def test_route_code_string_is_normalized_to_int_for_cascade_route5():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code="5",
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    net = ClusterTool(config=cfg)
+    assert net.route_code == 5
+    assert net.single_route_code == 5
+    assert set(net._episode_proc_time_map.keys()) == {"PM7", "PM8", "PM9", "PM10"}
+
+
+def test_invalid_device_mode_raises_value_error():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="invalid_mode",
+        route_code=1,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    with pytest.raises(ValueError, match="device_mode"):
+        ClusterTool(config=cfg)
+
+
+def test_invalid_route_code_raises_value_error_instead_of_fallback():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=99,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    with pytest.raises(ValueError, match="route_code"):
+        ClusterTool(config=cfg)
 
 
 def test_single_route_code0_keeps_legacy_topology():
@@ -465,6 +548,48 @@ def test_cascade_route_code5_can_finish_via_pm9_then_lp_done():
     _fire_by_name(net, "t_LP_done")
 
     assert net.done_count == 1
+
+
+def test_cascade_route5_filters_full_process_time_map_to_route_chambers():
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=5,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    net = ClusterTool(config=cfg)
+    assert set(net._episode_proc_time_map.keys()) == {"PM7", "PM8", "PM9", "PM10"}
+
+
+def test_cascade_route5_takt_input_contains_only_two_route_stages(monkeypatch):
+    captured: dict = {}
+
+    def _fake_analyze_cycle(stages, max_parts=10000):
+        captured["stages"] = [dict(stage) for stage in stages]
+        return {
+            "fast_takt": 100,
+            "peak_slow_takts": [],
+            "cycle_length": 100,
+            "cycle_takts": [100] * 100,
+        }
+
+    monkeypatch.setattr(
+        "solutions.Continuous_model.pn_single.analyze_cycle",
+        _fake_analyze_cycle,
+    )
+    cfg = PetriEnvConfig(
+        n_wafer=1,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=5,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+    )
+    net = ClusterTool(config=cfg)
+    assert net._takt_result is not None
+    assert [stage["name"] for stage in captured["stages"]] == ["s1", "s2"]
+    assert [stage["m"] for stage in captured["stages"]] == [2, 2]
+    assert [stage["p"] for stage in captured["stages"]] == [70, 200]
 
 
 def test_single_max_wafers_blocks_u_lp_when_wip_reaches_limit():

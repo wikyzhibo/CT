@@ -152,26 +152,50 @@ def analyze_cycle(stages: List[Dict[str, Any]], max_parts: int = 10000) -> Dict[
     normalized_stages: List[Dict[str, Any]] = []
 
     for idx, stage in enumerate(stages):
+        stage_index = idx + 1
+        default_stage_name = f"s{stage_index}"
+        if not isinstance(stage, dict):
+            raise ValueError(
+                f"[stage#{stage_index}:{default_stage_name}] "
+                f"stage 类型错误，期望 dict，实际为 {type(stage).__name__}"
+            )
+        stage_name = str(stage.get("name", default_stage_name))
+        stage_ctx = f"[stage#{stage_index}:{stage_name}]"
         if "p" not in stage or "m" not in stage:
-            raise ValueError(f"第 {idx} 道工序缺少必填字段 p/m。")
-        p = int(stage["p"]) + 20
-        m = int(stage["m"])
+            raise ValueError(f"{stage_ctx} 缺少必填字段 p/m。")
+        try:
+            p = int(stage["p"]) + 20
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{stage_ctx} p 非法: {stage.get('p')!r}。") from exc
+        try:
+            m = int(stage["m"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{stage_ctx} m 非法: {stage.get('m')!r}。") from exc
         q_raw = stage.get("q")
-        q = None if q_raw is None else int(q_raw)
-        d = int(stage.get("d", 0))
+        if q_raw is None:
+            q = None
+        else:
+            try:
+                q = int(q_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{stage_ctx} q 非法: {q_raw!r}。") from exc
+        try:
+            d = int(stage.get("d", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{stage_ctx} d 非法: {stage.get('d', 0)!r}。") from exc
 
         if p <= 0:
-            raise ValueError(f"第 {idx} 道工序 p 必须 > 0。")
+            raise ValueError(f"{stage_ctx} p 必须 > 0。")
         if m <= 0:
-            raise ValueError(f"第 {idx} 道工序 m 必须 >= 1。")
+            raise ValueError(f"{stage_ctx} m 必须 >= 1。")
         if q is not None and q <= 0:
-            raise ValueError(f"第 {idx} 道工序 q 若提供，必须 > 0。")
+            raise ValueError(f"{stage_ctx} q 若提供，必须 > 0。")
         if d < 0:
-            raise ValueError(f"第 {idx} 道工序 d 不能为负。")
+            raise ValueError(f"{stage_ctx} d 不能为负。")
 
         normalized_stages.append(
             {
-                "name": stage.get("name", f"s{idx + 1}"),
+                "name": stage_name,
                 "p": p,
                 "m": m,
                 "q": q,

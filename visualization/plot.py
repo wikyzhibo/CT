@@ -123,7 +123,7 @@ def plot_gantt_hatched_residence(
     # 根据时间跨度动态调整图像尺寸和分辨率
     # 时间越长，图像越宽，以保证短时间动作（如ARM的5s）可见
     fig_width = 30
-    fig_height = 8
+    fig_height = 6
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     
     # 设置浅色背景，确保所有元素清晰可见
@@ -239,7 +239,7 @@ def plot_gantt_hatched_residence(
         #ax.plot([op.proc_end, op.proc_end], [y0, y0 + lane_h], color="black", linewidth=1.5)
 
         # label
-        if n_jobs > 50:
+        if n_jobs > 80:
             with_label = False
 
         if with_label:
