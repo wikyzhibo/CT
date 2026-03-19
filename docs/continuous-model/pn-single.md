@@ -29,6 +29,7 @@
 - 环境接口:
   - 类: `solutions.Continuous_model.env_single.Env_PN_Single`
   - 关键参数: `device_mode`, `robot_capacity`, `route_code`, `proc_time_rand_enabled`
+  - 配置驱动参数（可选）: `single_route_config`, `single_route_config_path`, `single_route_name`
 - 训练入口:
   - `python -m solutions.Continuous_model.train_single --device single --rollout-n-envs 1`
   - 关键参数: `--device`, `--compute-device`, `--checkpoint`, `--proc-time-rand-enabled`, `--rollout-n-envs`
@@ -41,10 +42,13 @@
 
 ## Behavior Rules
 1. 路径参数严格校验：`device_mode` 与 `route_code` 非法时直接报错。
-2. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
-3. 导出脚本的 `--out-name` 当前不参与文件命名，仅保留兼容。
-4. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
-5. 旧观测分支（place-obs）不再作为当前实现接口。
+2. 当提供 `single_route_config` 时，构网优先走“配置驱动编译链”（`parse/normalize -> route IR -> token route -> net build`）；`route_code` 仅用于兼容 alias 选择。
+3. 当通过 `PetriEnvConfig.load(json)` 加载且 json 中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`。
+4. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
+5. 导出脚本的 `--out-name` 当前不参与文件命名，仅保留兼容。
+6. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
+7. 旧观测分支（place-obs）不再作为当前实现接口。
+8. 配置驱动路径启用时，所选 `route.sequence` 中 stage 级 `process_time/cleaning_*` 会在 `pn_single` 侧先覆盖 `process_time_map/cleaning_*_map`，再进入 `_preprocess_process_time_map`；因此最终工时以 route stage 为准（仍按系统口径取整到 5 的倍数）。
 
 ## Examples
 - 正例:
@@ -65,4 +69,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-19: 修复配置驱动路径 `single_route_name` 下 stage 工时被全局 `process_time_map` 回写的问题；现已在 `pn_single` 初始化阶段先注入 route stage 覆盖（含 cleaning map），并统一 route 选择名与构网阶段一致。
+- 2026-03-19: `PetriEnvConfig.load` 支持 `single_route_config_path` 自动装载外部路线配置文件；`cascade.json` 可直接通过 `single_route_name` 切换目标路线而不改代码。
+- 2026-03-19: `construct_single.py` 新增配置驱动构网通路，支持 `routes.sequence/repeat`、机器人自动推断 transport place、自动编译 `token.route_queue` 与 `t_route_code_map`；`pn_single.py` 优先消费构网返回的 `route_meta`，避免与运行时路由元数据不一致。
 - 2026-03-19: 建立 pn_single 主文档，统一单设备入口、脚本接口与行为规则说明。

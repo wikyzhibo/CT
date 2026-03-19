@@ -85,6 +85,8 @@ class Env_PN_Single(EnvBase):
         reward_config: Optional[Dict[str, int]] = None,
         robot_capacity: int = 1,
         route_code: Optional[int] = None,
+        single_route_config: Optional[Dict[str, Any]] = None,
+        single_route_name: Optional[str] = None,
         process_time_map: Optional[Dict[str, int]] = None,
         proc_time_rand_enabled: Optional[bool] = None,
         proc_time_rand_scale_map: Optional[Dict[str, Dict[str, float]]] = None,
@@ -105,6 +107,10 @@ class Env_PN_Single(EnvBase):
         config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
         if route_code is not None:
             config.route_code = int(route_code)
+        if single_route_config is not None:
+            config.single_route_config = dict(single_route_config)
+        if single_route_name is not None:
+            config.single_route_name = str(single_route_name)
         if process_time_map is not None:
             config.process_time_map = {
                 str(chamber): int(value) for chamber, value in dict(process_time_map).items()

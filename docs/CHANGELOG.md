@@ -2,6 +2,21 @@
 
 ## 2026-03-19
 
+### 修复配置驱动路径 stage 工时被全局配置覆盖 (2026-03-19)
+- **What changed**：`solutions/Continuous_model/pn_single.py` 在 `single_route_config` 模式下，初始化时先解析所选 route 的 stage 覆盖（`process_time/cleaning_duration/cleaning_trigger_wafers/proc_rand_scale`）并注入到 `_base_proc_time_map` 与 cleaning 映射，再进入 `_preprocess_process_time_map`；同时统一 `single_route_name` 解析结果，保证与构网阶段使用同一路线。
+- **Why**：此前即使路径拓扑已切到 `1-1`，`_refresh_episode_proc_time()` 仍可能被全局 `process_time_map` 回写，导致腔室工时显示为 `cascade.json` 默认值。
+- **Impact**：配置驱动下工时优先级变为 `route stage > process_time_map/chambers default`（并保持取整到 5 的倍数）；新增回归断言 `tests/test_single_route_config_driven.py::test_petri_env_config_loads_single_route_config_from_path`，覆盖 `1-1` 的 PM/LLD 工时和清洗参数。
+
+### 新增级联路线配置文件（1-* 命名）(2026-03-19)
+- **What changed**：新增 `data/petri_configs/cascade_routes_1_star.json`，将 6 条级联路线整理为统一配置，路线键名按 `1-1` 到 `1-6` 命名；起点统一 `LP`，终点统一 `LP_done`，并在各 stage 记录工序时间与清洗触发信息（如 `[88s/1片]`）。
+- **Why**：便于按路线模板集中管理路径、阶段候选与工艺参数，降低后续手工抄写和维护成本。
+- **Impact**：可直接作为 `single_route_config` 输入使用；`legacy.route_code_alias.cascade` 已映射到 `1-*` 路线键名。并且 `cascade.json` 新增 `single_route_config_path/single_route_name`，可仅改配置切换路线。
+
+### 单设备构网新增配置驱动编译链（2026-03-19）
+- **What changed**：`construct_single.py` 新增配置驱动路径编译模块（`route_compiler_single.py`），支持 `routes.sequence/repeat`、按 `robots.managed_chambers` 自动推断 stage 间 transport place、自动生成 `token_route_queue_template` 与 `t_route_code_map`。`build_single_device_net` 新增可选参数 `route_config/route_name`；`pn_single.py` 改为优先消费构网返回的 `route_meta`，避免运行时与构网元数据分叉。
+- **Why**：旧实现对 `route_code` 与手写队列耦合过深，路径、并行候选与机械手归属变更成本高，且构网阶段存在重复分支与重复字符串处理。
+- **Impact**：保持 `Place/PM/TM/pre/post/token.route_queue` 等旧概念兼容；当提供 `single_route_config` 时优先走配置驱动编译链，`route_code` 退化为兼容 alias 入口。新增 `tests/test_single_route_config_driven.py` 覆盖配置驱动路径与 repeat 队列编译。
+
 ### 文档体系重构：5 个主题主文档 + 兼容层 (2026-03-19)
 - **What changed**：新增 5 个主题主文档：`overview/project-context.md`、`continuous-model/pn-single.md`、`visualization/ui-guide.md`、`training/training-guide.md`、`td-petri/td-petri-guide.md`；新增 `docs/deprecated/README.md` 迁移索引；将 `project.md`、`架构.md`、`continuous_solution_design.md`、`viz.md`、`td_petri.md`、`td_petri_modeling.md`、`Petri animate tool.md` 改为兼容跳转页；`docs/README.md` 重构为唯一导航入口。
 - **Why**：原文档分散且重复，AI 与新成员难以在短时间定位“项目描述 / pn_single / 可视化 / 训练 / td_petri”权威说明。

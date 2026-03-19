@@ -8,6 +8,7 @@ data/petri_configs/
 ├── env_config.py               # 配置类定义
 ├── default_config.json         # 默认配置
 ├── phase2_config.json          # PPO 环境配置（完整奖励）
+├── cascade_routes_1_star.json  # 级联工艺路线集（1-* 命名）
 ├── usage_example.py            # 使用示例
 └── README.md                   # 本说明文件
 ```

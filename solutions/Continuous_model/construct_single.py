@@ -8,12 +8,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 import numpy as np
 
 from solutions.Continuous_model.construct import BasedToken
 from solutions.Continuous_model.pn import LL, PM, Place, SR, TM
+from solutions.Continuous_model.route_compiler_single import (
+    RobotSpec as CompiledRobotSpec,
+    TokenRoutePlan,
+    build_route_meta_from_route_ir,
+    build_token_route_plan,
+    compile_route_stages,
+)
 
 
 # 路线定义：stages 为阶段序列，每个阶段为单点或并行多点
@@ -260,6 +267,555 @@ def parse_route(
     }
 
 
+def _build_pre_color_from_route_queue(
+    pre: np.ndarray,
+    id2t_name: List[str],
+    route_queue: Tuple[object, ...],
+    t_route_code_map: Dict[str, int],
+) -> np.ndarray:
+    """
+    从 token.route_queue 模板反推 pre_color（兼容字段）。
+    """
+    p_count, t_count = pre.shape
+    max_where = max(1, len(route_queue)) + 1
+    pre_color = np.zeros((p_count, t_count, max_where), dtype=int)
+    for tid, t_name in enumerate(id2t_name):
+        if t_name.startswith("u_"):
+            pre_color[:, tid, :] = pre[:, tid][:, None]
+            continue
+        t_code = int(t_route_code_map.get(t_name, -1))
+        allowed_where: List[int] = []
+        for where_idx, gate in enumerate(route_queue):
+            if gate == -1:
+                continue
+            if isinstance(gate, int):
+                if gate == t_code:
+                    allowed_where.append(where_idx)
+            elif isinstance(gate, (tuple, list, set, frozenset)):
+                if t_code in gate:
+                    allowed_where.append(where_idx)
+        for c in allowed_where:
+            pre_color[:, tid, c] = pre[:, tid]
+    return pre_color
+
+
+def _legacy_route_sequence(mode: str, route_code: int) -> List[Dict[str, Any]]:
+    """
+    兼容层：由旧 route_code 生成新 sequence 结构（含 source/sink）。
+    """
+    if mode == "cascade":
+        if route_code == 1:
+            stages = [["LP"], ["PM7", "PM8"], ["LLC"], ["PM1", "PM2", "PM3", "PM4"], ["LLD"], ["PM9", "PM10"], ["LP_done"]]
+        elif route_code == 2:
+            stages = [["LP"], ["PM7", "PM8"], ["LLC"], ["PM1", "PM2"], ["LLD"], ["PM9", "PM10"], ["LP_done"]]
+        elif route_code == 3:
+            stages = [["LP"], ["PM7", "PM8"], ["LLC"], ["PM1", "PM2"], ["LLD"], ["LP_done"]]
+        elif route_code == 4:
+            return [
+                {"stage": {"candidates": ["LP"]}},
+                {
+                    "repeat": {
+                        "count": 5,
+                        "sequence": [
+                            {"stage": {"candidates": ["PM7"]}},
+                            {"stage": {"candidates": ["PM8"]}},
+                            {"stage": {"candidates": ["LLC"]}},
+                            {"stage": {"candidates": ["LLD"]}},
+                        ],
+                    }
+                },
+                {"stage": {"candidates": ["LP_done"]}},
+            ]
+        else:
+            stages = [["LP"], ["PM7", "PM8"], ["PM9", "PM10"], ["LP_done"]]
+    else:
+        if route_code == 1:
+            stages = [["LP"], ["PM1"], ["PM3", "PM4"], ["PM6"], ["LP_done"]]
+        else:
+            stages = [["LP"], ["PM1"], ["PM3", "PM4"], ["LP_done"]]
+    return [{"stage": {"candidates": s}} for s in stages]
+
+
+def _legacy_route_config(
+    mode: str,
+    route_code: int,
+    process_time_map: Mapping[str, int],
+    robot_capacity: int,
+    ttime: int,
+) -> Dict[str, Any]:
+    """
+    兼容层：将旧 route_code 输入映射为配置驱动 schema。
+    """
+    legacy_process_defaults = {
+        "single": {
+            "PM1": int(process_time_map.get("PM1", 100)),
+            "PM2": 0,
+            "PM3": int(process_time_map.get("PM3", 300)),
+            "PM4": int(process_time_map.get("PM4", 300)),
+            "PM6": int(process_time_map.get("PM6", 300 if route_code == 1 else 0)),
+        },
+        "cascade": {
+            "PM7": int(process_time_map.get("PM7", 70)),
+            "PM8": int(process_time_map.get("PM8", 70)),
+            "PM1": int(process_time_map.get("PM1", 600 if route_code == 1 else 300)),
+            "PM2": int(process_time_map.get("PM2", 600 if route_code == 1 else 300)),
+            "PM3": int(process_time_map.get("PM3", 600)),
+            "PM4": int(process_time_map.get("PM4", 600)),
+            "LLC": int(process_time_map.get("LLC", 0)),
+            "LLD": int(process_time_map.get("LLD", 70)),
+            "PM9": int(process_time_map.get("PM9", 200)),
+            "PM10": int(process_time_map.get("PM10", 200)),
+        },
+    }
+    pt_map = legacy_process_defaults["cascade" if mode == "cascade" else "single"]
+
+    chambers: Dict[str, Dict[str, Any]] = {}
+    for name, ptime in pt_map.items():
+        if name in {"LLC", "LLD"}:
+            kind = "buffer" if name == "LLC" else "loadlock"
+            cls = "LL"
+        elif name == "PM2" and mode != "cascade":
+            kind = "buffer"
+            cls = "Place"
+        elif name == "PM6" and mode != "cascade" and route_code != 1:
+            kind = "buffer"
+            cls = "Place"
+        else:
+            kind = "process"
+            cls = "PM"
+        chambers[name] = {
+            "kind": kind,
+            "class": cls,
+            "process_time": int(ptime),
+            "capacity": 1,
+            "cleaning_duration": 0,
+            "cleaning_trigger_wafers": 0,
+            "proc_rand_scale": 0.0,
+        }
+
+    if mode == "cascade":
+        robots = {
+            "TM2": {
+                "transport_place": "d_TM2",
+                "managed_chambers": ["LP", "PM7", "PM8", "LLD", "PM9", "PM10", "LP_done", "LLC"],
+                "dwell_time": int(ttime),
+                "capacity": int(robot_capacity),
+                "priority": 10,
+            },
+            "TM3": {
+                "transport_place": "d_TM3",
+                "managed_chambers": ["LLC", "PM1", "PM2", "PM3", "PM4", "LLD"],
+                "dwell_time": int(ttime),
+                "capacity": int(robot_capacity),
+                "priority": 20,
+            },
+        }
+    else:
+        robots = {
+            "TM1": {
+                "transport_place": "d_TM1",
+                "managed_chambers": ["LP", "PM1", "PM2", "PM3", "PM4", "PM6", "LP_done"],
+                "dwell_time": int(ttime),
+                "capacity": int(robot_capacity),
+                "priority": 10,
+            }
+        }
+
+    route_name = f"legacy_{mode}_{route_code}"
+    return {
+        "version": 1,
+        "source": {"name": "LP", "capacity": 1},
+        "sink": {"name": "LP_done", "capacity": 1},
+        "chambers": chambers,
+        "robots": robots,
+        "routes": {route_name: {"sequence": _legacy_route_sequence(mode=mode, route_code=route_code)}},
+        "legacy": {
+            "route_code_alias": {
+                mode: {str(route_code): route_name}
+            }
+        },
+    }
+
+
+def _resolve_route_name(
+    route_cfg: Mapping[str, Any],
+    mode: str,
+    route_code: int,
+    route_name: Optional[str],
+) -> str:
+    routes = route_cfg.get("routes") or {}
+    if not isinstance(routes, Mapping) or not routes:
+        raise ValueError("route_config.routes must be a non-empty mapping")
+    if route_name and route_name in routes:
+        return str(route_name)
+    legacy_alias = (
+        route_cfg.get("legacy", {})
+        .get("route_code_alias", {})
+        .get(mode, {})
+    )
+    aliased = legacy_alias.get(str(route_code))
+    if aliased and aliased in routes:
+        return str(aliased)
+    return str(next(iter(routes.keys())))
+
+
+def _build_single_device_net_from_route_config(
+    n_wafer: int,
+    ttime: int,
+    robot_capacity: int,
+    process_time_map: Optional[Dict[str, int]],
+    route_code: int,
+    device_mode: str,
+    obs_config: Optional[Dict[str, Any]],
+    route_config: Mapping[str, Any],
+    route_name: Optional[str],
+) -> Dict[str, object]:
+    process_time_map = process_time_map or {}
+    mode = str(device_mode).lower()
+    source_cfg = dict(route_config.get("source") or {"name": "LP", "capacity": max(1, n_wafer)})
+    sink_cfg = dict(route_config.get("sink") or {"name": "LP_done", "capacity": max(1, n_wafer)})
+    source_name = str(source_cfg.get("name", "LP"))
+    sink_name = str(sink_cfg.get("name", "LP_done"))
+    selected_route_name = _resolve_route_name(route_config, mode=mode, route_code=int(route_code), route_name=route_name)
+
+    chambers_cfg = dict(route_config.get("chambers") or {})
+    chamber_kind_map: Dict[str, str] = {}
+    for cname, cfg in chambers_cfg.items():
+        chamber_kind_map[str(cname)] = str((cfg or {}).get("kind", "process"))
+
+    robots_cfg_raw = dict(route_config.get("robots") or {})
+    robots_cfg: Dict[str, CompiledRobotSpec] = {}
+    for rb_name, rb in robots_cfg_raw.items():
+        managed = tuple(str(x) for x in (rb or {}).get("managed_chambers", ()))
+        robots_cfg[str(rb_name)] = CompiledRobotSpec(
+            name=str(rb_name),
+            managed_chambers=managed,
+            transport_place=str((rb or {}).get("transport_place", f"d_{rb_name}")),
+            priority=int((rb or {}).get("priority", 0)),
+        )
+
+    route_entry = dict((route_config.get("routes") or {}).get(selected_route_name) or {})
+    route_ir = compile_route_stages(
+        route_name=selected_route_name,
+        route_cfg=route_entry,
+        source_name=source_name,
+        sink_name=sink_name,
+        chamber_kind_map=chamber_kind_map,
+        robots=robots_cfg,
+    )
+
+    # 每条 route 的 stage 级参数（process/cleaning）覆盖 chamber 级默认值
+    route_stage_proc_time: Dict[str, int] = {}
+    route_stage_clean_dur: Dict[str, int] = {}
+    route_stage_clean_trig: Dict[str, int] = {}
+    route_stage_rand_scale: Dict[str, float] = {}
+
+    def _set_consistent_int(target: Dict[str, int], name: str, value: int, field_name: str) -> None:
+        if name in target and int(target[name]) != int(value):
+            raise ValueError(
+                f"route {selected_route_name} has conflicting {field_name} for {name}: "
+                f"{target[name]} vs {value}"
+            )
+        target[name] = int(value)
+
+    def _set_consistent_float(target: Dict[str, float], name: str, value: float, field_name: str) -> None:
+        if name in target and float(target[name]) != float(value):
+            raise ValueError(
+                f"route {selected_route_name} has conflicting {field_name} for {name}: "
+                f"{target[name]} vs {value}"
+            )
+        target[name] = float(value)
+
+    for stage in route_ir.stages:
+        is_process_stage = str(stage.stage_type) == "process"
+        for chamber_name in stage.candidates:
+            if chamber_name in {source_name, sink_name}:
+                continue
+            # 对 process stage，<=0 视为“未指定”，避免把未知工时覆盖成 0
+            if stage.stage_process_time is not None:
+                p_val = float(stage.stage_process_time)
+                if (not is_process_stage) or p_val > 0:
+                    _set_consistent_int(
+                        route_stage_proc_time,
+                        chamber_name,
+                        int(round(p_val)),
+                        "process_time",
+                    )
+            if stage.stage_cleaning_duration is not None:
+                _set_consistent_int(
+                    route_stage_clean_dur,
+                    chamber_name,
+                    int(stage.stage_cleaning_duration),
+                    "cleaning_duration",
+                )
+            if stage.stage_cleaning_trigger_wafers is not None:
+                _set_consistent_int(
+                    route_stage_clean_trig,
+                    chamber_name,
+                    int(stage.stage_cleaning_trigger_wafers),
+                    "cleaning_trigger_wafers",
+                )
+            if stage.stage_proc_rand_scale is not None:
+                _set_consistent_float(
+                    route_stage_rand_scale,
+                    chamber_name,
+                    float(stage.stage_proc_rand_scale),
+                    "proc_rand_scale",
+                )
+
+    # Place 顺序：source -> route 中出现的 chambers -> sink -> transport places
+    id2p_name: List[str] = []
+    seen_places: Set[str] = set()
+
+    def add_place_name(name: str) -> None:
+        if name not in seen_places:
+            seen_places.add(name)
+            id2p_name.append(name)
+
+    add_place_name(source_name)
+    for stage in route_ir.stages[1:-1]:
+        for c in stage.candidates:
+            add_place_name(c)
+    add_place_name(sink_name)
+
+    # 兼容旧级联 route5/route4：即使未使用也保留 TM3 展示位
+    for rb_name in (route_config.get("robots") or {}):
+        rb_cfg = route_config["robots"][rb_name]
+        add_place_name(str(rb_cfg.get("transport_place", f"d_{rb_name}")))
+
+    # Transition 顺序：按 hop 顺序先 u_* 再 t_*
+    id2t_name: List[str] = []
+    seen_t: Set[str] = set()
+
+    def add_transition(name: str) -> None:
+        if name not in seen_t:
+            seen_t.add(name)
+            id2t_name.append(name)
+
+    for hop in route_ir.transports:
+        src_stage = route_ir.stages[hop.from_stage_idx]
+        dst_stage = route_ir.stages[hop.to_stage_idx]
+        for src in src_stage.candidates:
+            add_transition(f"u_{src}")
+        for dst in dst_stage.candidates:
+            add_transition(f"t_{dst}")
+
+    p_idx = {name: i for i, name in enumerate(id2p_name)}
+    t_idx = {name: i for i, name in enumerate(id2t_name)}
+    p_count, t_count = len(id2p_name), len(id2t_name)
+    pre = np.zeros((p_count, t_count), dtype=int)
+    pst = np.zeros((p_count, t_count), dtype=int)
+
+    def add_arc(src: str, tr: str, dst: str) -> None:
+        if src not in p_idx or dst not in p_idx or tr not in t_idx:
+            return
+        pre[p_idx[src], t_idx[tr]] += 1
+        pst[p_idx[dst], t_idx[tr]] += 1
+
+    for hop in route_ir.transports:
+        src_stage = route_ir.stages[hop.from_stage_idx]
+        dst_stage = route_ir.stages[hop.to_stage_idx]
+        d_place = hop.transport_place
+        for src in src_stage.candidates:
+            add_arc(src, f"u_{src}", d_place)
+        for dst in dst_stage.candidates:
+            add_arc(d_place, f"t_{dst}", dst)
+
+    token_plan: TokenRoutePlan = build_token_route_plan(route_ir=route_ir, transition_names=id2t_name)
+    token_route_queue = token_plan.route_queue_template
+    t_route_code_map = dict(token_plan.transition_code_map)
+    pre_color = _build_pre_color_from_route_queue(pre, id2t_name, token_route_queue, t_route_code_map)
+
+    # 模块参数
+    modules: Dict[str, SingleModuleSpec] = {}
+    source_capacity = int(source_cfg.get("capacity", max(1, n_wafer)))
+    sink_capacity = int(sink_cfg.get("capacity", max(1, n_wafer)))
+    modules[source_name] = SingleModuleSpec(tokens=n_wafer, ptime=0, capacity=max(1, source_capacity))
+    modules[sink_name] = SingleModuleSpec(tokens=0, ptime=0, capacity=max(1, sink_capacity))
+
+    for name in id2p_name:
+        if name in {source_name, sink_name}:
+            continue
+        if name.startswith("d_"):
+            # transport
+            rb_cfg = next(
+                (dict(v) for v in (route_config.get("robots") or {}).values() if str(v.get("transport_place", "")) == name),
+                {},
+            )
+            modules[name] = SingleModuleSpec(
+                tokens=0,
+                ptime=int(rb_cfg.get("dwell_time", ttime)),
+                capacity=int(rb_cfg.get("capacity", robot_capacity)),
+            )
+            continue
+        c_cfg = dict(chambers_cfg.get(name) or {})
+        ptime = int(
+            route_stage_proc_time.get(
+                name,
+                process_time_map.get(name, c_cfg.get("process_time", 0)),
+            )
+        )
+        modules[name] = SingleModuleSpec(
+            tokens=0,
+            ptime=ptime,
+            capacity=int(c_cfg.get("capacity", 1)),
+        )
+
+    m0 = np.array([modules[name].tokens for name in id2p_name], dtype=int)
+    md = m0.copy()
+    md[p_idx[source_name]] = 0
+    md[p_idx[sink_name]] = n_wafer
+    ptime = np.array([modules[name].ptime for name in id2p_name], dtype=int)
+    capacity = np.array([modules[name].capacity for name in id2p_name], dtype=int)
+    ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
+
+    # transport onehot map
+    tm_target_onehot_map: Dict[str, Dict[str, int]] = {}
+    tm_target_group_seq: Dict[str, List[Tuple[str, ...]]] = {}
+    for hop in route_ir.transports:
+        tp = hop.transport_place
+        dst = tuple(route_ir.stages[hop.to_stage_idx].candidates)
+        group_seq = tm_target_group_seq.setdefault(tp, [])
+        if dst not in group_seq:
+            group_seq.append(dst)
+        gid = group_seq.index(dst)
+        m = tm_target_onehot_map.setdefault(tp, {})
+        for dst_name in dst:
+            m[dst_name] = gid
+
+    ctx = obs_config or {}
+    p_res = int(ctx.get("P_Residual_time", 15))
+    d_res = int(ctx.get("D_Residual_time", 10))
+    clean_dur_default = int(ctx.get("cleaning_duration", 150))
+    clean_trig_default = int(ctx.get("cleaning_trigger_wafers", 5))
+    cleaning_duration_map: Dict[str, int] = dict(ctx.get("cleaning_duration_map") or {})
+    cleaning_trigger_wafers_map: Dict[str, int] = dict(ctx.get("cleaning_trigger_wafers_map") or {})
+    scrap_clip = float(ctx.get("scrap_clip_threshold", 20.0))
+
+    buffer_names = {
+        name for name, cfg in chambers_cfg.items()
+        if str((cfg or {}).get("kind", "")) == "buffer"
+    }
+    marks: List[Place] = []
+    for name in id2p_name:
+        spec = modules[name]
+        if name == source_name or name == sink_name:
+            ptype = 3
+        elif name.startswith("d_"):
+            ptype = 2
+        else:
+            kind = str((chambers_cfg.get(name) or {}).get("kind", "process"))
+            ptype = 5 if kind in {"buffer", "loadlock"} else 1
+
+        if obs_config is not None:
+            if name == source_name:
+                place = SR(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype, n_wafer=n_wafer)
+            elif name == sink_name:
+                place = SR(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
+            elif name.startswith("d_"):
+                tm_map = tm_target_onehot_map.get(name, {})
+                onehot_dim = max(tm_map.values(), default=-1) + 1 if tm_map else 0
+                place = TM(
+                    name=name,
+                    capacity=spec.capacity,
+                    processing_time=spec.ptime,
+                    type=ptype,
+                    D_Residual_time=d_res,
+                    target_onehot_map=tm_map,
+                    onehot_dim=onehot_dim,
+                )
+            elif ptype == 5:
+                place = LL(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
+            elif ptype == 1:
+                c_dur = int(
+                    route_stage_clean_dur.get(
+                        name,
+                        cleaning_duration_map.get(
+                            name,
+                            (chambers_cfg.get(name) or {}).get("cleaning_duration", clean_dur_default),
+                        ),
+                    )
+                )
+                c_trig = int(
+                    route_stage_clean_trig.get(
+                        name,
+                        cleaning_trigger_wafers_map.get(
+                            name,
+                            (chambers_cfg.get(name) or {}).get("cleaning_trigger_wafers", clean_trig_default),
+                        ),
+                    )
+                )
+                place = PM(
+                    name=name,
+                    capacity=spec.capacity,
+                    processing_time=spec.ptime,
+                    type=ptype,
+                    P_Residual_time=p_res,
+                    cleaning_duration=max(1, c_dur),
+                    cleaning_trigger_wafers=max(1, c_trig),
+                    scrap_clip_threshold=scrap_clip,
+                )
+            else:
+                place = Place(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
+        else:
+            place = Place(name=name, capacity=spec.capacity, processing_time=spec.ptime, type=ptype)
+
+        if name == source_name:
+            for tok_id in range(n_wafer):
+                place.append(
+                    BasedToken(
+                        enter_time=0,
+                        token_id=tok_id,
+                        route_type=1,
+                        step=0,
+                        where=0,
+                        route_queue=token_route_queue,
+                        route_head_idx=0,
+                    )
+                )
+        marks.append(place)
+
+    route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
+
+    pre_place_indices: List[np.ndarray] = [np.flatnonzero(pre[:, t] > 0) for t in range(t_count)]
+    pst_place_indices: List[np.ndarray] = [np.flatnonzero(pst[:, t] > 0) for t in range(t_count)]
+    transport_pre_place_idx: List[int] = []
+    for t in range(t_count):
+        found = next(
+            (int(idx) for idx in pre_place_indices[t] if id2p_name[int(idx)].startswith("d_")),
+            -1,
+        )
+        transport_pre_place_idx.append(int(found))
+
+    return {
+        "m0": m0,
+        "md": md,
+        "pre": pre,
+        "pre_color": pre_color,
+        "pst": pst,
+        "pre_place_indices": pre_place_indices,
+        "pst_place_indices": pst_place_indices,
+        "transport_pre_place_idx": transport_pre_place_idx,
+        "ptime": ptime,
+        "ttime": ttime_arr,
+        "capacity": capacity,
+        "id2p_name": id2p_name,
+        "id2t_name": id2t_name,
+        "idle_idx": {"start": p_idx[source_name], "end": p_idx[sink_name]},
+        "marks": marks,
+        "n_wafer": n_wafer,
+        "n_wafer_route1": n_wafer,
+        "n_wafer_route2": 0,
+        "single_route_code": route_code,
+        "single_device_mode": mode,
+        "route_meta": route_meta,
+        "t_route_code_map": t_route_code_map,
+        "token_route_queue_template": token_route_queue,
+        "token_route_plan_template": token_plan,
+        "route_ir": route_ir,
+    }
+
+
 @dataclass
 class SingleModuleSpec:
     tokens: int = 0
@@ -275,6 +831,8 @@ def build_single_device_net(
     route_code: int = 0,
     device_mode: str = "single",
     obs_config: Optional[Dict[str, Any]] = None,
+    route_config: Optional[Mapping[str, Any]] = None,
+    route_name: Optional[str] = None,
 ) -> Dict[str, object]:
     """
     构建 Petri 网结构：
@@ -288,6 +846,11 @@ def build_single_device_net(
       - route_code=4: LP -> [PM7 -> PM8 -> LLC -> LLD] * 5 -> LP_done
       - route_code=5: LP -> PM7/8 -> PM9/10 -> LP_done
 
+    route_config（可选）:
+    - 提供配置驱动构网 schema（含 source/sink/chambers/robots/routes）
+    - 提供后优先走编译链：parse/normalize -> route IR -> token route -> net build
+    - 未提供时保留 legacy route_code 逻辑
+
     返回 dict 除 pre/pst/m0/md/marks/id2p_name/id2t_name 等外，还包含预计算索引（供 get_enable_t/_fire 复用）：
     - pre_place_indices: List[np.ndarray]，pre_place_indices[t] 为变迁 t 的前置库所下标
     - pst_place_indices: List[np.ndarray]，pst_place_indices[t] 为变迁 t 的后置库所下标
@@ -299,6 +862,18 @@ def build_single_device_net(
     robot_capacity = 2 if int(robot_capacity) == 2 else 1
     process_time_map = process_time_map or {}
     route_code = int(route_code)
+    if route_config is not None:
+        return _build_single_device_net_from_route_config(
+            n_wafer=n_wafer,
+            ttime=ttime,
+            robot_capacity=robot_capacity,
+            process_time_map=process_time_map,
+            route_code=route_code,
+            device_mode=mode,
+            obs_config=obs_config,
+            route_config=route_config,
+            route_name=route_name,
+        )
     if mode == "cascade":
         if route_code not in {1, 2, 3, 4, 5}:
             route_code = 1

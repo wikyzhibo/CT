@@ -117,6 +117,12 @@ class PetriEnvConfig:
     route_code: int = 1
     # route_code=4 的手动发片节拍间隔（秒）；<=0 表示不启用节拍门控
     route4_takt_interval: int = 0
+    # 单设备配置驱动路径（可选）：提供后优先于 route_code 模板构网
+    single_route_config: Optional[Dict[str, Any]] = None
+    # 单设备配置驱动路径文件（可选）：在 load(json) 时可自动加载到 single_route_config
+    single_route_config_path: Optional[str] = None
+    # single_route_config 下的 routes 选择名（为空则按 legacy alias/首条路线）
+    single_route_name: Optional[str] = None
     # 单设备工序时间随机扰动（按 episode 固定）
     proc_rand_enabled: bool = False
     # 单设备工序时间随机扰动区间（按腔室独立配置）
@@ -228,6 +234,12 @@ class PetriEnvConfig:
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
         lines.append(f"  单设备模式: {self.device_mode}")
         lines.append(f"  单设备路径代号: {self.route_code}")
+        if self.single_route_config is not None:
+            sel = self.single_route_name or "<auto>"
+            lines.append(f"  单设备配置驱动路径: enabled (route={sel})")
+        elif self.single_route_config_path:
+            sel = self.single_route_name or "<auto>"
+            lines.append(f"  单设备配置驱动路径文件: {self.single_route_config_path} (route={sel})")
         if str(self.device_mode).lower() == "cascade" and int(self.route_code) == 4:
             lines.append(f"  route4手动节拍: {self.route4_takt_interval}s")
         
@@ -308,6 +320,9 @@ class PetriEnvConfig:
 
         lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
         lines.append(f"  route_code: {self.route_code}")
+        lines.append(f"  single_route_config: {'set' if self.single_route_config is not None else 'None'}")
+        lines.append(f"  single_route_config_path: {self.single_route_config_path}")
+        lines.append(f"  single_route_name: {self.single_route_name}")
         lines.append(f"  route4_takt_interval: {self.route4_takt_interval}")
         
         # 奖励配置
@@ -354,5 +369,14 @@ class PetriEnvConfig:
         if "routes" in data and data["routes"] is not None and isinstance(data["routes"], dict):
             # 保持为 dict
             pass
+        # 配置驱动路径文件：若仅给了路径，自动加载成 single_route_config
+        route_cfg_path = data.get("single_route_config_path")
+        if route_cfg_path and not data.get("single_route_config"):
+            route_path = Path(route_cfg_path)
+            if not route_path.is_absolute():
+                route_path = path.parent / route_path
+            with open(route_path, "r", encoding="utf-8") as rf:
+                data["single_route_config"] = json.load(rf)
+
         fields = {f.name for f in cls.__dataclass_fields__.values()}
         return cls(**{k: v for k, v in data.items() if k in fields})
