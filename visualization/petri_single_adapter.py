@@ -41,7 +41,9 @@ class PetriSingleAdapter(AlgorithmAdapter):
         self._history: List[Dict[str, Any]] = []
         self._step_count = 0
         if self.device_mode == "cascade":
-            self.disabled_chambers = {"PM5", "PM6"}
+            # Cascade 模式下 PM5/PM6 需要在 UI 中可视化展示（status 由 net 状态决定）。
+            # 旧逻辑会把 PM5/PM6 强制标记为 disabled，导致 LED 永远不点亮。
+            self.disabled_chambers = set()
         else:
             self.disabled_chambers = {"PM2", "PM5"}
             if int(getattr(self.net, "single_route_code", 0)) == 0:
@@ -246,8 +248,9 @@ class PetriSingleAdapter(AlgorithmAdapter):
                         capacity=1,
                         wafers=[],
                         proc_time=0.0,
-                        status="disabled",
-                        chamber_type="disabled",
+                        # 缺失时仅作为 idle 占位展示；不再使用 disabled 样式。
+                        status="idle",
+                        chamber_type="processing",
                         cleaning_wafer_countdown=-1,
                     )
                 )

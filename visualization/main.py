@@ -330,7 +330,7 @@ def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWin
 def main() -> int:
     parser = argparse.ArgumentParser(description="PySide6 Petri 可视化")
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
-    parser.add_argument("--device", type=str, default="single", choices=["single", "cascade"], help="设备模式")
+    parser.add_argument("--device", type=str, default="cascade", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
     parser.add_argument("--single-route-code", type=int, default=None, choices=[0, 1], help="单设备路径代号（不传则使用 single.json）")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
