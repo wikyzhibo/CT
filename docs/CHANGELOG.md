@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+### 新增 legacy 兼容路线组 2-*（映射旧 route_code 1/3/4/5）(2026-03-19)
+- **What changed**：在 `data/petri_configs/cascade_routes_1_star.json` 中新增 `2-1/2-2/2-3/2-4` 四条路线，分别对应旧版 `construct_single.py` 的 cascade `route_code=1/3/4/5` 拓扑，并按当前 `routes.sequence` 格式补齐 stage 级 `process_time/cleaning_*` 字段。
+- **Why**：解决“`route_code` 与 `single_route_name` 拓扑不一致”时的防御性校验冲突，便于在保留新工艺模板 `1-*` 的同时继续使用 legacy 拓扑口径。
+- **Impact**：当需要与旧 `route_code=5` 行为对齐时，可直接使用 `single_route_name=2-4`（路径 `LP->PM7/PM8->PM9/PM10->LP_done`，不含 `LLC/LLD` stage）。同步新增测试覆盖该组合。
+
 ### 修复配置驱动路径 stage 工时被全局配置覆盖 (2026-03-19)
 - **What changed**：`solutions/Continuous_model/pn_single.py` 在 `single_route_config` 模式下，初始化时先解析所选 route 的 stage 覆盖（`process_time/cleaning_duration/cleaning_trigger_wafers/proc_rand_scale`）并注入到 `_base_proc_time_map` 与 cleaning 映射，再进入 `_preprocess_process_time_map`；同时统一 `single_route_name` 解析结果，保证与构网阶段使用同一路线。
 - **Why**：此前即使路径拓扑已切到 `1-1`，`_refresh_episode_proc_time()` 仍可能被全局 `process_time_map` 回写，导致腔室工时显示为 `cascade.json` 默认值。

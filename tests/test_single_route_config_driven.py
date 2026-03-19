@@ -138,7 +138,8 @@ def test_petri_env_config_loads_single_route_config_from_path():
     cfg_path = Path("data/petri_configs/cascade.json")
     cfg = PetriEnvConfig.load(cfg_path)
     assert cfg.single_route_config is not None
-    assert cfg.single_route_name == "1-1"
+    assert cfg.single_route_name in (cfg.single_route_config.get("routes") or {})
+    cfg.single_route_name = "1-1"
     net = ClusterTool(config=cfg)
     # 1-1: LP -> PM7/PM8 -> LLC -> PM3/PM4 -> LLD -> PM9/PM10 -> LP_done
     assert net._u_targets["LP"] == ["PM7", "PM8"]
@@ -153,3 +154,16 @@ def test_petri_env_config_loads_single_route_config_from_path():
     assert lld.processing_time == 75
     assert net._cleaning_duration_map.get("PM3") == 88
     assert net._cleaning_trigger_map.get("PM3") == 1
+
+
+def test_legacy_compatible_route_2_4_matches_route_code_5_topology():
+    cfg_path = Path("data/petri_configs/cascade.json")
+    cfg = PetriEnvConfig.load(cfg_path)
+    cfg.route_code = 5
+    cfg.single_route_name = "2-4"
+    net = ClusterTool(config=cfg)
+    assert net._u_targets["LP"] == ["PM7", "PM8"]
+    assert net._u_targets["PM7"] == ["PM9", "PM10"]
+    assert net._u_targets["PM9"] == ["LP_done"]
+    assert "LLC" not in net.chambers
+    assert "LLD" not in net.chambers

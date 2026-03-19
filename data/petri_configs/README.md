@@ -8,10 +8,22 @@ data/petri_configs/
 ├── env_config.py               # 配置类定义
 ├── default_config.json         # 默认配置
 ├── phase2_config.json          # PPO 环境配置（完整奖励）
-├── cascade_routes_1_star.json  # 级联工艺路线集（1-* 命名）
+├── cascade_routes_1_star.json  # 级联工艺路线集（含 1-* 与 2-* 命名）
 ├── usage_example.py            # 使用示例
 └── README.md                   # 本说明文件
 ```
+
+## 级联路线组说明（single_route_config）
+
+- `data/petri_configs/cascade_routes_1_star.json` 当前包含两组路线键名：
+- `1-*`：按新工艺配方整理的路线模板。
+- `2-*`：按 legacy `route_code` 拓扑兼容的路线模板（从旧 `construct_single.py` 路径定义映射而来）。
+- 兼容映射：
+- `2-1` -> legacy `route_code=1`
+- `2-2` -> legacy `route_code=3`
+- `2-3` -> legacy `route_code=4`
+- `2-4` -> legacy `route_code=5`
+- 当你希望 `route_code` 与路线拓扑严格一致时，建议优先选 `2-*`（例如 `route_code=5` 搭配 `single_route_name=\"2-4\"`）。
 
 ## 配置参数说明
 
