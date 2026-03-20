@@ -72,6 +72,8 @@ def build_adapter(
         proc_time_rand_enabled=env_overrides.get("proc_rand_enabled")
         or env_overrides.get("single_proc_time_rand_enabled"),
         proc_time_rand_scale_map=env_overrides.get("single_proc_time_rand_scale_map"),
+        single_route_config=env_overrides.get("single_route_config"),
+        single_route_name=env_overrides.get("single_route_name"),
     )
     return PetriSingleAdapter(env, step_verbose=step_verbose)
 
@@ -332,7 +334,13 @@ def main() -> int:
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
     parser.add_argument("--device", type=str, default="cascade", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
-    parser.add_argument("--single-route-code", type=int, default=None, choices=[0, 1], help="单设备路径代号（不传则使用 single.json）")
+    parser.add_argument(
+        "--single-route-code",
+        type=int,
+        default=None,
+        choices=[0, 1, 2, 3, 4, 5, 6],
+        help="路径代号（single:0/1, cascade:1-6；不传则由配置/回放覆盖）",
+    )
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     parser.add_argument("--debug", action="store_true", help="显示变迁按钮（用于调试）")

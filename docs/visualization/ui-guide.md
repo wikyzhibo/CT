@@ -37,6 +37,7 @@
 - 回放 JSON 契约（建议）:
   - 顶层字段: `schema_version`, `device_mode`, `sequence`, `reward_report`, `replay_env_overrides`
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
+  - `replay_env_overrides` 建议包含: `route_code`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
   - 当前导出脚本默认输出: `seq/tmp.json`
 
 ## Behavior Rules
@@ -65,5 +66,6 @@
 - `../deprecated/viz.md`
 
 ## Change Notes
+- 2026-03-20: 回放环境重建新增透传 `single_route_name/single_route_config`；当序列来自配置驱动路线（如 `1-2`）时，UI 回放将按原路线构网，不再退化为仅 `route_code` 的默认拓扑。
 - 2026-03-19: 建立可视化主文档，统一入口参数、模型加载与回放数据契约。
 - 2026-03-19: 修复级联（`--device cascade`）模式下 `PM5/PM6` 被强制标记为 `disabled` 的问题；现在会按适配器状态展示（缺失时作为 `idle` 占位）。

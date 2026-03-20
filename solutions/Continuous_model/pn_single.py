@@ -598,7 +598,7 @@ class ClusterTool:
         if self.device_mode == "cascade":
             if self.single_route_config is not None:
                 for source, targets in self._u_targets.items():
-                    if source in {"LP", "LLC", "LLD"} and len(targets) >= 2:
+                    if len(targets) >= 2:
                         pm_targets = [t for t in targets if t.startswith("PM") or t == "LP_done"]
                         if pm_targets:
                             self._cascade_round_robin_pairs[source] = tuple(pm_targets)

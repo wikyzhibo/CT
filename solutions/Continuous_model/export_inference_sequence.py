@@ -269,7 +269,12 @@ def _rollout_single_sequence(
         "robot_capacity": int(robot_capacity),
         "route_code": int(getattr(env.net, "single_route_code", 0)),
         "device_mode": str(device_mode),
+        # 配置驱动路线信息：用于可视化重建与导出时一致的路径拓扑。
+        "single_route_name": getattr(env.net, "single_route_name", None),
     }
+    single_route_cfg = getattr(env.net, "single_route_config", None)
+    if single_route_cfg is not None:
+        replay_env_overrides["single_route_config"] = dict(single_route_cfg)
     return sequence, finished, replay_env_overrides, reward_report, action_enable_steps
 
 

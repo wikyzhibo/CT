@@ -674,8 +674,10 @@ def _build_single_device_net_from_route_config(
 
     # 模块参数
     modules: Dict[str, SingleModuleSpec] = {}
-    source_capacity = int(source_cfg.get("capacity", max(1, n_wafer)))
-    sink_capacity = int(sink_cfg.get("capacity", max(1, n_wafer)))
+    # 运行时 token 数由 n_wafer 决定；若配置里的 source/sink 容量小于 n_wafer，
+    # 会导致后期 LP_done 满仓后 LLD 无目标可放（u_LLD 长期不使能）。
+    source_capacity = max(int(source_cfg.get("capacity", max(1, n_wafer))), int(n_wafer))
+    sink_capacity = max(int(sink_cfg.get("capacity", max(1, n_wafer))), int(n_wafer))
     modules[source_name] = SingleModuleSpec(tokens=n_wafer, ptime=0, capacity=max(1, source_capacity))
     modules[sink_name] = SingleModuleSpec(tokens=0, ptime=0, capacity=max(1, sink_capacity))
 
