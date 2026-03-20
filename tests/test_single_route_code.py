@@ -91,6 +91,31 @@ def test_invalid_route_code_raises_value_error_instead_of_fallback():
         ClusterTool(config=cfg)
 
 
+def test_llc_tm3_takt_first_ungated_then_interval_enforced():
+    """与 u_LP 节拍一致：首次 LLC→TM3 不门控；第二次起需满足 cycle 间隔。"""
+    cfg = PetriEnvConfig(
+        n_wafer=4,
+        stop_on_scrap=False,
+        device_mode="cascade",
+        route_code=1,
+        process_time_map=dict(FULL_PROCESS_TIME_MAP),
+        llc_tm3_takt_interval=150,
+    )
+    net = ClusterTool(config=cfg)
+    assert net._llc_tm3_u_idx is not None
+    assert net._llc_tm3_takt_required_interval() is None
+    assert net._allow_llc_tm3_fire_now()
+
+    net._u_LLC_tm3_release_count = 1
+    net._last_u_LLC_tm3_fire_time = 0
+    net.time = 50
+    assert net._llc_tm3_takt_required_interval() == 150
+    assert not net._allow_llc_tm3_fire_now()
+
+    net.time = 150
+    assert net._allow_llc_tm3_fire_now()
+
+
 def test_single_route_code0_keeps_legacy_topology():
     cfg = PetriEnvConfig(n_wafer=1, stop_on_scrap=False, route_code=0)
     net = ClusterTool(config=cfg)

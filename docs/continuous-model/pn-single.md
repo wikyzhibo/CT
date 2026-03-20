@@ -51,6 +51,7 @@
 8. 配置驱动路径启用时，所选 `route.sequence` 中 stage 级 `process_time/cleaning_*` 会在 `pn_single` 侧先覆盖 `process_time_map/cleaning_*_map`，再进入 `_preprocess_process_time_map`；因此最终工时以 route stage 为准（仍按系统口径取整到 5 的倍数）。
 9. `u_*` 使能在按 `route_queue` 推断到 `route_target` 时，仍必须满足目标库所可接收（未清洗且未满）；不满足时该分支必须退化为“无目标/不可使能”。
 10. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot（下一跳由 `TM3` 搬运记为 `in`，由 `TM2` 搬运记为 `out`）。
+11. `PetriEnvConfig.llc_tm3_takt_interval > 0` 时，对构网得到的 **LLC→`d_TM3`** 释放变迁（`("LLC","d_TM3")` 对应的 `u_*`）施加节拍门控：口径与 `u_LP` 的 `_takt_required_interval` 一致（**首次发射不因节拍被禁**，第二次起按 `build_fixed_takt_result(interval)` 的 `cycle_takts` 取最小间隔）；`<=0` 为默认关闭。门控同步作用于 `_get_enable_t`、`get_action_mask`、`get_enable_actions_with_reasons`（原因码 `llc_tm3_takt_release_limit`）与 `get_next_event_delta`。
 
 ## Examples
 - 正例:
@@ -71,6 +72,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-20: 新增可选 `llc_tm3_takt_interval`：`ClusterTool` 对 LLC→TM3 出片施加与 `u_LP` 同口径的节拍（首次不门控），用于配置驱动路线（如 `1-2`）实验。
 - 2026-03-19: 修复 TM/LL 观测扩维：cascade 下 `d_TM2/d_TM3` 目标 one-hot 固定为 8 维逐目标编码（`TM2: PM7/PM8/PM9/PM10/LLC/LLD/LP_done/LP`，`TM3: PM1/PM2/PM3/PM4/PM5/PM6/LLC/LLD`）；`LLC/LLD` 从 4 维扩展到 6 维，新增 `in/out` 方向 one-hot，解决路线扩展后观测信息不足导致策略混淆。
 - 2026-03-19: 配置驱动编译器新增 `LLC -> LLD` hop 选机规则：当该 hop 可被多机器人覆盖时，优先选择 `TM3 (d_TM3)`，用于满足 `2-3` 路径的内侧搬运约束。
 - 2026-03-19: 修复配置驱动 route chamber 与 episode process_time map 键集合不一致问题（典型为 `1-5` 中 mixed stage `LLC/LLD`），`pn_single` 在构网后会按实际构网结果补齐缺失 chamber 工时键，避免设备切换时报 `episode process time map is inconsistent`。

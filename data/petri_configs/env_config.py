@@ -117,6 +117,8 @@ class PetriEnvConfig:
     route_code: int = 1
     # route_code=4 的手动发片节拍间隔（秒）；<=0 表示不启用节拍门控
     route4_takt_interval: int = 0
+    # LLC→d_TM3（u_LLC）发射节拍间隔（秒）；<=0 表示不启用。口径与 u_LP 节拍一致（首次发射不门控）
+    llc_tm3_takt_interval: int = 150
     # 单设备配置驱动路径（可选）：提供后优先于 route_code 模板构网
     single_route_config: Optional[Dict[str, Any]] = None
     # 单设备配置驱动路径文件（可选）：在 load(json) 时可自动加载到 single_route_config
@@ -242,6 +244,8 @@ class PetriEnvConfig:
             lines.append(f"  单设备配置驱动路径文件: {self.single_route_config_path} (route={sel})")
         if str(self.device_mode).lower() == "cascade" and int(self.route_code) == 4:
             lines.append(f"  route4手动节拍: {self.route4_takt_interval}s")
+        if int(self.llc_tm3_takt_interval) > 0:
+            lines.append(f"  LLC→TM3 节拍: {self.llc_tm3_takt_interval}s")
         
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -324,6 +328,7 @@ class PetriEnvConfig:
         lines.append(f"  single_route_config_path: {self.single_route_config_path}")
         lines.append(f"  single_route_name: {self.single_route_name}")
         lines.append(f"  route4_takt_interval: {self.route4_takt_interval}")
+        lines.append(f"  llc_tm3_takt_interval: {self.llc_tm3_takt_interval}")
         
         # 奖励配置
         lines.append("\n【奖励开关配置】")

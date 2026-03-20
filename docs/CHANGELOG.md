@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-03-20
+
+### 可选 LLC→TM3 出片节拍（与 u_LP 同口径）(2026-03-20)
+- **What changed**：`PetriEnvConfig` 新增 `llc_tm3_takt_interval`（秒，`<=0` 关闭）。`pn_single.ClusterTool` 在间隔 `>0` 时对构网得到的 LLC→`d_TM3` 释放变迁施加节拍：使用 `takt_cycle_analyzer.build_fixed_takt_result` 生成周期序列；**首次 LLC→TM3 发射不因节拍被禁**，第二次起按序列取最小间隔；并写入 `_get_enable_t`、`get_action_mask`、`get_enable_actions_with_reasons`（`llc_tm3_takt_release_limit`）、`get_next_event_delta`。
+- **Why**：路线 `1-2` 等实验需单独限制 TM3 侧 LLC 出片节奏，与 LP 发片节拍解耦。
+- **Impact**：默认 `0`，行为与旧版一致。实验时在 JSON 中设置例如 `llc_tm3_takt_interval: 150` 即可。
+- **How to use**：与 `single_route_name`（如 `1-2`）同配置文件增加 `llc_tm3_takt_interval`。
+
 ## 2026-03-19
 
 ### 修复 TM/LL 观测扩维以匹配新路线目标空间 (2026-03-19)

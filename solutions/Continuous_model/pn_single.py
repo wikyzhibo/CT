@@ -55,6 +55,7 @@ REASON_DESC: Dict[str, str] = {
     "dwell_time_not_met": "运输位停留时间未满足",
     "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
     "takt_release_limit": "节拍限制：距上次发片间隔未达当前周期节拍",
+    "llc_tm3_takt_release_limit": "LLC→TM3 节拍限制：距上次 LLC 出片间隔未达当前周期节拍",
     "max_wafers_in_system_limit": "在制品已达上限，禁止继续发片",
 }
 
@@ -347,6 +348,7 @@ class ClusterTool:
         self.config.device_mode = self.device_mode
         self.config.route_code = self.route_code
         self.route4_takt_interval = int(getattr(config, "route4_takt_interval", 0) or 0)
+        self.llc_tm3_takt_interval = int(getattr(config, "llc_tm3_takt_interval", 0) or 0)
         self.single_device_mode = self.device_mode
         self.single_route_code = self.route_code
         self.single_route_config = getattr(config, "single_route_config", None)
@@ -627,6 +629,14 @@ class ClusterTool:
         print(self._takt_result)
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
+        self._llc_tm3_takt_result: Optional[Dict[str, Any]] = (
+            build_fixed_takt_result(self.llc_tm3_takt_interval)
+            if self.llc_tm3_takt_interval > 0
+            else None
+        )
+        self._last_u_LLC_tm3_fire_time: int = 0
+        self._u_LLC_tm3_release_count: int = 0
+        self._llc_tm3_u_idx: Optional[int] = None
         self._training = True
         self._profiling_enabled = True
         self._step_profile = {
@@ -838,6 +848,13 @@ class ClusterTool:
         self._takt_result = self._compute_takt_result()
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
+        self._llc_tm3_takt_result = (
+            build_fixed_takt_result(self.llc_tm3_takt_interval)
+            if self.llc_tm3_takt_interval > 0
+            else None
+        )
+        self._last_u_LLC_tm3_fire_time = 0
+        self._u_LLC_tm3_release_count = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in {"LP", "LP_done"}:
@@ -1263,6 +1280,13 @@ class ClusterTool:
             self.entered_wafer_count += 1
             self._last_u_LP_fire_time = int(start_time)
             self._u_LP_release_count += 1
+        if (
+            self._llc_tm3_takt_result is not None
+            and self._llc_tm3_u_idx is not None
+            and int(t_idx) == int(self._llc_tm3_u_idx)
+        ):
+            self._last_u_LLC_tm3_fire_time = int(start_time)
+            self._u_LLC_tm3_release_count += 1
         return {
             "t_name": t_name,
             "t1": int(start_time),
@@ -1469,6 +1493,13 @@ class ClusterTool:
             struct_enabled = _is_struct_enabled(u_idx)
             if not struct_enabled:
                 continue
+            if (
+                self._llc_tm3_takt_result is not None
+                and self._llc_tm3_u_idx is not None
+                and int(u_idx) == int(self._llc_tm3_u_idx)
+                and not self._allow_llc_tm3_fire_now()
+            ):
+                continue
             enabled.add(int(u_idx))
 
         return sorted(enabled)
@@ -1522,6 +1553,45 @@ class ClusterTool:
             required = 0
         return required
 
+    def _llc_tm3_takt_required_interval(self) -> Optional[int]:
+        """
+        返回下一次允许 LLC→d_TM3（u_LLC）出片的最小间隔（秒）。
+        口径与 _takt_required_interval（u_LP）一致：release_count<=0 时不门控。
+        """
+        takt = self._llc_tm3_takt_result
+        if not takt:
+            return None
+        release_count = int(self._u_LLC_tm3_release_count)
+        if release_count <= 0:
+            return None
+
+        cycle_takts = takt.get("cycle_takts") or []
+        if not cycle_takts:
+            return None
+        cycle_len = int(takt.get("cycle_length") or len(cycle_takts))
+        if cycle_len <= 0:
+            return None
+
+        if release_count == 1:
+            idx = 0
+        else:
+            idx = (release_count - 1) % cycle_len
+
+        required = cycle_takts[idx]
+        if isinstance(required, float):
+            required = int(round(required))
+        else:
+            required = int(required)
+        if required < 0:
+            required = 0
+        return required
+
+    def _allow_llc_tm3_fire_now(self) -> bool:
+        required = self._llc_tm3_takt_required_interval()
+        if required is None:
+            return True
+        return (self.time - self._last_u_LLC_tm3_fire_time) >= int(required)
+
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
         self._u_transition_by_source_transport = {}
@@ -1540,6 +1610,7 @@ class ClusterTool:
                 target = t_name[2:]
                 transport = self._transport_for_t_target(target)
                 self._t_transitions_by_transport.setdefault(transport, []).append(int(t_idx))
+        self._llc_tm3_u_idx = self._u_transition_by_source_transport.get(("LLC", "d_TM3"))
 
     def _rebuild_token_pool(self) -> None:
         pool: List[BasedToken] = []
@@ -1686,6 +1757,16 @@ class ClusterTool:
                 required = self._takt_required_interval()
                 if required is not None and (self.time - self._last_u_LP_fire_time) < int(required):
                     disabled.append({"action": t, "name": t_name, "reason": "takt_release_limit"})
+                    continue
+
+            if (
+                self._llc_tm3_takt_result is not None
+                and self._llc_tm3_u_idx is not None
+                and int(t) == int(self._llc_tm3_u_idx)
+            ):
+                req_llc = self._llc_tm3_takt_required_interval()
+                if req_llc is not None and (self.time - self._last_u_LLC_tm3_fire_time) < int(req_llc):
+                    disabled.append({"action": t, "name": t_name, "reason": "llc_tm3_takt_release_limit"})
                     continue
 
             enabled.append(t)
@@ -2081,6 +2162,12 @@ class ClusterTool:
             if delta_takt > 0:
                 if best is None or delta_takt < best:
                     best = delta_takt
+        req_llc = self._llc_tm3_takt_required_interval()
+        if req_llc is not None:
+            delta_llc = self._last_u_LLC_tm3_fire_time + int(req_llc) - self.time
+            if delta_llc > 0:
+                if best is None or delta_llc < best:
+                    best = delta_llc
         return best
 
     def _has_ready_chamber_wafers(self) -> bool:
@@ -2551,7 +2638,13 @@ class ClusterTool:
                         u_idx = u_trans_by_source.get(pname)
                     struct_enabled = bool(u_idx is not None and _is_struct_enabled(u_idx))
                     if u_idx is not None and struct_enabled:
-                        if 0 <= u_idx < total_actions:
+                        llc_takt_blocked = (
+                            self._llc_tm3_takt_result is not None
+                            and self._llc_tm3_u_idx is not None
+                            and int(u_idx) == int(self._llc_tm3_u_idx)
+                            and not self._allow_llc_tm3_fire_now()
+                        )
+                        if not llc_takt_blocked and 0 <= u_idx < total_actions:
                             mask[u_idx] = True
 
             if not has_ready_chamber and p_type == CHAMBER and proc_time > 0 and pname in ready_chambers:
