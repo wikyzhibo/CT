@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLa
 
 from ..algorithm_interface import ActionInfo
 from ..theme import ColorTheme
+from ..transition_labels import build_cascade_transition_rows, cascade_button_label, u_lld_tooltip_extra
 from ..ui_params import ui_params
 
 
@@ -285,27 +286,74 @@ class ControlPanel(QWidget):
             self.set_auto_active(False)
         self.model_auto_button.setEnabled(enabled)
 
-    def update_actions(self, actions: List[ActionInfo]) -> None:
-        # 清理旧按钮
+    def _clear_transition_rows(self) -> None:
         while self.transition_group.count():
             item = self.transition_group.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
+    def _make_transition_button(self, action: ActionInfo, extra_tip: str = "") -> QPushButton:
+        btn = QPushButton(cascade_button_label(action.action_name))
+        btn.setEnabled(action.enabled)
+        base = (action.description or "Condition not met") if not action.enabled else "点击执行"
+        btn.setToolTip((base + extra_tip).strip())
+        btn.setObjectName("TransitionButton")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(lambda _=False, a=action.action_id: self.action_clicked.emit(a))
+        self.buttons.append(btn)
+        return btn
+
+    def update_actions(
+        self,
+        actions: List[ActionInfo],
+        *,
+        device_mode: str = "single",
+        lld_targets: Optional[List[str]] = None,
+    ) -> None:
+        self._clear_transition_rows()
         self.buttons.clear()
+
+        transition_actions: List[ActionInfo] = []
         for action in actions:
             if action.action_id < 0:
                 continue
             if str(action.action_name).upper().startswith("WAIT"):
                 continue
-            btn = QPushButton(action.action_name)
-            btn.setEnabled(action.enabled)
-            tip = (action.description or "Condition not met") if not action.enabled else "Click to execute"
-            btn.setToolTip(tip)
-            btn.setObjectName("TransitionButton")
-            btn.clicked.connect(lambda _=False, a=action.action_id: self.action_clicked.emit(a))
-            self.transition_group.addWidget(btn)
-            self.buttons.append(btn)
+            transition_actions.append(action)
+
+        if device_mode != "cascade":
+            for action in transition_actions:
+                btn = QPushButton(action.action_name)
+                btn.setEnabled(action.enabled)
+                tip = (action.description or "Condition not met") if not action.enabled else "点击执行"
+                btn.setToolTip(tip)
+                btn.setObjectName("TransitionButton")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _=False, a=action.action_id: self.action_clicked.emit(a))
+                self.transition_group.addWidget(btn)
+                self.buttons.append(btn)
+            return
+
+        ordered_names = [a.action_name for a in transition_actions]
+        by_name = {a.action_name: a for a in transition_actions}
+        rows = build_cascade_transition_rows(ordered_names, by_name, lld_targets=lld_targets)
+        for left, right in rows:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(4)
+
+            def add_side(act: Optional[ActionInfo]) -> None:
+                if act is None:
+                    h.addStretch(1)
+                    return
+                extra = u_lld_tooltip_extra(lld_targets) if act.action_name == "u_LLD" else ""
+                h.addWidget(self._make_transition_button(act, extra_tip=extra), 1)
+
+            add_side(left)
+            add_side(right)
+            self.transition_group.addWidget(row)
 
     def set_wait_durations(
         self,

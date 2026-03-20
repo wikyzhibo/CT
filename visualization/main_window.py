@@ -24,10 +24,13 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QApplication,
     QPushButton, QLineEdit, QTextEdit,
     QScrollBar, QListWidget, QComboBox, QSpinBox, QSlider, QMessageBox,
-    QFileDialog, QLabel, QDialog, QDialogButtonBox, QFormLayout
+    QFileDialog, QLabel, QDialog, QDialogButtonBox, QFormLayout, QFrame,
 )
 
+from .algorithm_interface import ActionInfo
 from .theme import ColorTheme
+from .route_path_display import format_route_path_html
+from .transition_labels import CASCADE_ROUTE_OPTIONS
 from .ui_params import ui_params
 from .viewmodel import PetriViewModel
 from .widgets.stats_panel import StatsPanel
@@ -101,7 +104,8 @@ class PetriMainWindow(QMainWindow):
         self._action_sequence_default_dir = Path("seq")
         self._action_sequence_path: Path | None = None
         self._adapter_factory = None
-        
+        self._cascade_route_name: str | None = None
+
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
 
@@ -122,10 +126,28 @@ class PetriMainWindow(QMainWindow):
         self.left_panel.setFixedWidth(p.left_panel_width)
         content_layout.addWidget(self.left_panel)
 
+        self._center_column = QWidget()
+        center_col_layout = QVBoxLayout(self._center_column)
+        center_col_layout.setContentsMargins(0, 0, 0, 0)
+        center_col_layout.setSpacing(8)
+
+        self.route_banner_frame = QFrame()
+        self.route_banner_frame.setObjectName("RouteBannerFrame")
+        route_inner = QVBoxLayout(self.route_banner_frame)
+        route_inner.setContentsMargins(10, 8, 10, 8)
+        self.route_path_label = QLabel("")
+        self.route_path_label.setObjectName("RouteBannerPath")
+        self.route_path_label.setWordWrap(True)
+        self.route_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        route_inner.addWidget(self.route_path_label)
+
         self.center_canvas = CenterCanvas(self.theme)
         self.center_canvas.set_device_mode(self._device_mode)
         self.center_canvas.set_robot_capacity(self._robot_capacity)
-        content_layout.addWidget(self.center_canvas, stretch=1)
+
+        center_col_layout.addWidget(self.route_banner_frame)
+        center_col_layout.addWidget(self.center_canvas, stretch=1)
+        content_layout.addWidget(self._center_column, stretch=1)
 
         self.right_panel = ControlPanel(self.theme)
         self.right_panel.set_debug_mode(debug)
@@ -137,6 +159,7 @@ class PetriMainWindow(QMainWindow):
 
         self._connect_signals()
         self._apply_stylesheet()
+        self._action_config_cascade_route.setEnabled(self._device_mode == "cascade")
         self._refresh_status_message()
         
         # 初始化时禁用模型按钮
@@ -207,6 +230,9 @@ class PetriMainWindow(QMainWindow):
         arm_mode_menu.addAction(self._action_arm_dual)
         config_menu.addAction(self._action_config_wafer)
         self._action_config_wafer.triggered.connect(self._set_wafer_count)
+        self._action_config_cascade_route = QAction("路径", self)
+        config_menu.addAction(self._action_config_cascade_route)
+        self._action_config_cascade_route.triggered.connect(self._open_cascade_route_dialog)
         self._action_arm_single.triggered.connect(lambda: self._set_robot_capacity(1))
         self._action_arm_dual.triggered.connect(lambda: self._set_robot_capacity(2))
         cleaning_menu = config_menu.addMenu("清洁")
@@ -277,6 +303,8 @@ class PetriMainWindow(QMainWindow):
                 return
         self._device_mode = mode
         self.center_canvas.set_device_mode(mode)
+        self._action_config_cascade_route.setEnabled(mode == "cascade")
+        self._update_route_banner_text()
         self._model_handler = None
         self._concurrent_model_handler = None
         self._update_model_buttons_state()
@@ -295,6 +323,116 @@ class PetriMainWindow(QMainWindow):
     def set_model_apply_callback(self, callback) -> None:
         """注入模型应用器：callback(model_path, device_mode) -> (ok, message)。"""
         self._model_apply_callback = callback
+
+    def _build_cascade_transition_actions(self) -> tuple[list[ActionInfo], list[str] | None]:
+        """级联：按 net.id2t_name 全量变迁 + mask，不子集化。"""
+        adapter = self.viewmodel.adapter
+        env = adapter.env
+        net = adapter.net
+        t_count = int(net.T)
+        mask = env._mask()
+        actions: list[ActionInfo] = []
+        for i in range(t_count):
+            name = str(net.id2t_name[i])
+            ok = bool(mask[i])
+            actions.append(
+                ActionInfo(
+                    action_id=i,
+                    action_name=name,
+                    enabled=ok,
+                    description="" if ok else "当前条件不满足",
+                )
+            )
+        ut = getattr(net, "_u_targets", None) or {}
+        raw = ut.get("LLD", [])
+        lld_targets = [str(x) for x in raw] if isinstance(raw, (list, tuple)) else None
+        return actions, lld_targets
+
+    def _route_path_plain_from_net(self) -> str:
+        """仅返回配置中的 path 字符串，不重复展示路线键名（如 1-6）。"""
+        net = getattr(self.viewmodel.adapter, "net", None)
+        if net is None:
+            return ""
+        name = getattr(net, "single_route_name", None) or ""
+        cfg = getattr(net, "single_route_config", None) or {}
+        routes = cfg.get("routes") or {}
+        if name and isinstance(routes, dict) and name in routes:
+            entry = routes[name]
+            if isinstance(entry, dict):
+                path = entry.get("path")
+                if path:
+                    return str(path).strip()
+        rc = getattr(net, "single_route_code", None)
+        if rc is not None:
+            return f"(legacy route_code={rc})"
+        return ""
+
+    def _update_route_banner_text(self) -> None:
+        if self._device_mode != "cascade":
+            self.route_banner_frame.hide()
+            return
+        self.route_banner_frame.show()
+        plain = self._route_path_plain_from_net()
+        fallback = "（无路径描述：非配置驱动拓扑或缺少 routes.path）"
+        ff = ui_params.stats_panel.font_family
+        if plain.startswith("(legacy route_code="):
+            self.route_path_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.route_path_label.setText(plain)
+            return
+        if plain:
+            self.route_path_label.setTextFormat(Qt.TextFormat.RichText)
+            self.route_path_label.setText(
+                format_route_path_html(plain, self.theme, font_family=ff, font_size_px=15)
+            )
+            return
+        self.route_path_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.route_path_label.setText(fallback)
+
+    def _open_cascade_route_dialog(self) -> None:
+        if self._device_mode != "cascade":
+            QMessageBox.information(self, "路径", "请先切换到「级联设备」模式后再选择路径。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("级联路径")
+        form = QFormLayout(dialog)
+        combo = QComboBox(dialog)
+        for n in CASCADE_ROUTE_OPTIONS:
+            combo.addItem(n)
+        current = self._cascade_route_name or getattr(self.viewmodel.adapter.net, "single_route_name", "") or ""
+        idx = combo.findText(str(current))
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        form.addRow("路线键名", combo)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dialog
+        )
+        form.addRow(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._cascade_route_name = combo.currentText()
+        self._rebuild_adapter_preserve_device("cascade")
+
+    def _rebuild_adapter_preserve_device(self, mode: str) -> None:
+        if self._adapter_factory is None:
+            return
+        try:
+            new_adapter = self._adapter_factory(mode, self._robot_capacity)
+            self.viewmodel.replace_adapter(new_adapter, reset=True)
+        except Exception as e:
+            QMessageBox.warning(self, "路径切换失败", str(e))
+            return
+        self._model_handler = None
+        self._concurrent_model_handler = None
+        self._update_model_buttons_state()
+        if self._model_path_override is not None and self._model_apply_callback is not None:
+            ok, msg = self._model_apply_callback(str(self._model_path_override), mode)
+            if not ok:
+                self.set_model_handler(None)
+                QMessageBox.warning(self, "模型与当前拓扑不兼容", msg)
+        self._update_route_banner_text()
+        self._refresh_status_message()
 
     def _set_wafer_count(self) -> None:
         dialog = QDialog(self)
@@ -420,15 +558,23 @@ class PetriMainWindow(QMainWindow):
             self._refresh_status_message()
         self.center_canvas.update_state(state)
         self.left_panel.update_state(state, self.viewmodel.action_history, self.viewmodel.trend_data)
-        actions_for_panel = state.enabled_actions
-        if self._device_mode == "single":
+        if self._device_mode == "cascade":
+            sn = getattr(self.viewmodel.adapter.net, "single_route_name", None)
+            if sn:
+                self._cascade_route_name = str(sn)
+            cascade_actions, lld_targets = self._build_cascade_transition_actions()
+            self.right_panel.update_actions(
+                cascade_actions, device_mode="cascade", lld_targets=lld_targets
+            )
+        else:
+            actions_for_panel = state.enabled_actions
             # 单设备模式：展示“单设备全集变迁”，并通过 enabled 状态区分可点/禁用。
-            # 避免仅显示使能动作时在加工等待阶段出现“空白无按钮”。
             actions_for_panel = [
                 a for a in state.enabled_actions
                 if a.action_id >= 0 and not str(a.action_name).upper().startswith("WAIT")
             ]
-        self.right_panel.update_actions(actions_for_panel)
+            self.right_panel.update_actions(actions_for_panel, device_mode="single")
+        self._update_route_banner_text()
         if self._device_mode == "single" and hasattr(self.viewmodel.adapter, "env"):
             wait_durations = list(getattr(self.viewmodel.adapter.env, "wait_durations", [5]))
             wait_enabled_map = {}
@@ -572,6 +718,16 @@ class PetriMainWindow(QMainWindow):
         QMessageBox QPushButton:hover {{
             border-color: rgb{t.accent_cyan};
             background-color: rgb{t.bg_surface};
+        }}
+
+        #RouteBannerFrame {{
+            background-color: rgb{t.bg_surface};
+            border: 1px solid rgb{t.border_muted};
+        }}
+        #RouteBannerPath {{
+            background-color: transparent;
+            font-size: 15px;
+            font-weight: 700;
         }}
 
         /* -------- Buttons -------- */

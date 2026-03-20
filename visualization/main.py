@@ -366,16 +366,24 @@ def main() -> int:
     app_icon = set_app_icon(app)
     
     window = PetriMainWindow(viewmodel, debug=args.debug)
-    window.set_adapter_factory(
-        lambda mode, robot_capacity=1, env_overrides=None: build_adapter(
+    window._cascade_route_name = getattr(viewmodel.adapter.env.net, "single_route_name", None)
+
+    def adapter_factory(mode, robot_capacity=1, env_overrides=None):
+        ov = dict(env_overrides or {})
+        if mode == "cascade":
+            rn = getattr(window, "_cascade_route_name", None)
+            if rn:
+                ov.setdefault("single_route_name", str(rn))
+        return build_adapter(
             args.adapter,
             device_mode=mode,
             robot_capacity=robot_capacity,
             route_code=args.single_route_code,
-            env_overrides=env_overrides,
+            env_overrides=ov,
             step_verbose=not args.quiet,
         )
-    )
+
+    window.set_adapter_factory(adapter_factory)
     if selected_device in {"single", "cascade"}:
         window._device_mode = selected_device
         window.center_canvas.set_device_mode(selected_device)
