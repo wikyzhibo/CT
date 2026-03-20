@@ -1021,57 +1021,6 @@ class ClusterTool:
             }
         return summary
 
-    def calc_reward(self, t1: int, t2: int, detailed: bool = False):
-        dt = max(0, t2 - t1)
-        parts = {
-            "time_cost": 0.0,
-            "proc_reward": 0.0,
-            "safe_reward": 0.0,
-            "warn_penalty": 0.0,
-            "penalty": 0.0,
-            "wafer_done_bonus": 0.0,
-            "finish_bonus": 0.0,
-            "scrap_penalty": 0.0,
-        }
-
-        # 时间惩罚：每步按 dt 线性惩罚，鼓励更快完成
-        if self.reward_config.get("time_cost", 1):
-            parts["time_cost"] = -float(dt * self.time_coef_penalty)
-
-        # 加工奖励：每个加工位上每个晶圆根据加工进度给予奖励
-        if self.reward_config.get("proc_reward", 1):
-            for p in self.marks:
-                if p.type != CHAMBER or len(p.tokens) == 0 or p.processing_time <= 0:
-                    continue
-                remain = max(0, p.processing_time - int(p.head().stay_time))
-                progress = min(dt, remain)
-                parts["proc_reward"] += self.processing_coef_reward * float(progress)
-
-        # 与 pn.py 对齐：运输位(type=2, 单设备主要是 d_TM1)超过 D_Residual_time 后按超时秒数惩罚
-        if self.reward_config.get("transport_penalty", 1):
-            for p in self.marks:
-                if p.type != DELIVERY_ROBOT or len(p.tokens) == 0:
-                    continue
-                for tok in p.tokens:
-                    deadline = int(tok.enter_time) + int(self.D_Residual_time)
-                    over_start = max(int(t1), deadline)
-                    if int(t2) > over_start:
-                        parts["penalty"] -= float(int(t2) - over_start) * float(self.transport_overtime_coef_penalty)
-
-        # 驻留警告惩罚
-        for p in self.marks:
-            if p.type != CHAMBER or len(p.tokens) == 0:
-                continue
-            left = p.processing_time + self.P_Residual_time - p.head().stay_time
-            if self.reward_config.get("warn_penalty", 1) and left <= self.P_Residual_time:
-                parts["warn_penalty"] -= int(self.warn_coef_penalty) * dt
-
-        total = sum(parts.values())
-        if detailed:
-            parts["total"] = float(total)
-            return parts
-        return float(total)
-
     def _advance_and_compute_reward(
         self,
         dt: int,
@@ -2082,15 +2031,6 @@ class ClusterTool:
             return "d_TM3"
         return "d_TM2"
 
-    def _update_stay_times(self, dt: int) -> None:
-        if dt <= 0:
-            return
-        for p in self.marks:
-            if p.type == SOURCE:  # 跳过 LP 中的 wafer
-                continue
-            for tok in p.tokens:
-                tok.stay_time += dt
-
     def _init_cleaning_state(self) -> None:
         for p in self.marks:
             if not p.name.startswith("PM"):
@@ -2102,31 +2042,6 @@ class ClusterTool:
             p.cleaning_remaining = p.cleaning_remaining
             p.cleaning_reason = p.cleaning_reason
 
-    def _advance_cleaning_and_idle(self, dt: int) -> None:
-        if dt <= 0:
-            return
-        for p in self.marks:
-            if not p.is_pm:
-                continue
-            if len(p.tokens) == 0:
-                p.idle_time += dt
-            else:
-                p.idle_time = 0
-
-            if not p.is_cleaning:
-                continue
-            remaining = max(0, p.cleaning_remaining - dt)
-            p.cleaning_remaining = remaining
-            if remaining == 0:
-                p.is_cleaning = False
-                p.cleaning_reason = ""
-                if not self._training:
-                    self.fire_log.append({
-                        "event_type": "cleaning_end",
-                        "time": int(self.time),
-                        "chamber": p.name,
-                        "processed_wafer_count": p.processed_wafer_count,
-                    })
 
     def get_next_event_delta(self) -> Optional[int]:
         """
@@ -2186,70 +2101,6 @@ class ClusterTool:
                 if tok.stay_time >= processing_time:
                     return True
         return False
-
-    def _scan_runtime_state(self) -> Dict[str, Any]:
-        """
-        扫描当前 token 状态并返回 scrap 与 qtime 统计结果。
-        该扫描在 step 内由 advance_time 调用，避免重复遍历 token。
-        """
-        scrap_info: Optional[Dict[str, Any]] = None
-        is_scrap = False
-        qtime_new_violations: List[int] = []
-        n_places = len(self.marks)
-        qtime_limit = int(self.D_Residual_time)
-
-        for tok in self._token_pool:
-            place_idx = tok._place_idx
-            if place_idx < 0 or place_idx >= n_places:
-                continue
-            place = self.marks[place_idx]
-            stay_time = tok.stay_time
-
-            if (not is_scrap) and place.type == CHAMBER:
-                remaining = place.processing_time - stay_time
-                if remaining < -self.P_Residual_time:
-                    overtime = -remaining - self.P_Residual_time
-                    scrap_info = {
-                        "token_id": tok.token_id,
-                        "place": place.name,
-                        "stay_time": stay_time,
-                        "proc_time": place.processing_time,
-                        "overtime": overtime,
-                        "type": "resident",
-                    }
-                    is_scrap = True
-
-            if self._training:
-                continue
-            if place.type != DELIVERY_ROBOT:
-                continue
-            token_id = tok.token_id
-            if token_id < 0 or token_id in self._qtime_violated_tokens:
-                continue
-            if stay_time > qtime_limit:
-                qtime_new_violations.append(token_id)
-
-        return {
-            "is_scrap": is_scrap,
-            "scrap_info": scrap_info,
-            "qtime_new_violations": qtime_new_violations,
-        }
-
-    def advance_time(self, dt: int, event_reason: str = "") -> Dict[str, Any]:
-        """推进时间并更新相关状态"""
-        _ = event_reason  # 预留参数，便于后续追踪不同推进原因。
-        safe_dt = max(0, int(dt))
-        self.time += safe_dt
-        self._update_stay_times(safe_dt)
-        self._advance_cleaning_and_idle(safe_dt)
-        scan_info = self._scan_runtime_state()
-        for token_id in scan_info.get("qtime_new_violations", []):
-            if token_id in self._qtime_violated_tokens:
-                continue
-            self._qtime_violated_tokens.add(token_id)
-            self.qtime_violation_count += 1
-        self._last_state_scan = scan_info
-        return scan_info
 
     def _on_processing_unload(self, source_name: str) -> None:
         if not self.cleaning_enabled:
