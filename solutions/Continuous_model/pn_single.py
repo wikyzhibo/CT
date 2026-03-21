@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections import deque
 from time import perf_counter
-from typing import Any, Deque, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from pathlib import Path
 from solutions.Continuous_model.helper_function import _normalize_wait_durations
 
@@ -1144,7 +1143,6 @@ class ClusterTool:
         if t_name.startswith("u_"):
             src = pre_place.name
             tok._dst_level_targets = tuple(self._u_targets.get(src, []))
-            tok._dst_level_full_on_pick = self._is_dst_level_full(src)
             if self.device_mode == "cascade" and self.route_code == 4 and src == "LLD":
                 dst = self._select_route4_lld_target(tok)
             else:
@@ -1163,7 +1161,6 @@ class ClusterTool:
             target = t_name[2:]
             tok._target_place = None
             tok._dst_level_targets = None
-            tok._dst_level_full_on_pick = False
             tok.step = max(tok.step, self._step_map.get(target, 0))
             self._track_enter(tok, target)
             if target == "LP_done":
@@ -1175,7 +1172,7 @@ class ClusterTool:
                 self._chamber_timeline[target].append((end_time, None, wafer_id))
                 self._chamber_active[target][wafer_id] = idx
 
-        self._advance_token_route_head(tok)
+        tok.route_head_idx += 1
         pst_place.append(tok)
         pre_place_idx = int(pre_places[0])
         pst_place_idx = int(pst_places[0])
@@ -1239,17 +1236,6 @@ class ClusterTool:
         if idx >= n:
             idx = n - 1
         return queue[idx]
-
-    @staticmethod
-    def _advance_token_route_head(tok: BasedToken) -> None:
-        queue = tok.route_queue
-        if not queue:
-            return
-        next_idx = tok.route_head_idx + 1
-        n = len(queue)
-        if next_idx >= n:
-            next_idx = n - 1
-        tok.route_head_idx = max(0, next_idx)
 
     def _token_next_target(self, tok: BasedToken) -> Optional[str]:
         """从 token 的 route_queue 推断下一个目标腔室（用于多 transport 的 u_* 选择）。"""
@@ -1329,15 +1315,12 @@ class ClusterTool:
 
     def _allow_start(self):
         """returns True if u_LP can fire now, based on WIP limit and takt."""
-        if not self._allow_start_by_wip_limit():
+        if not int(self.entered_wafer_count) < int(self.max_wafers_in_system):
             return False
         required = self._takt_required_interval()
         if required is None:
             return True
         return (self.time - self._last_u_LP_fire_time) >= int(required)
-
-    def _allow_start_by_wip_limit(self) -> bool:
-        return int(self.entered_wafer_count) < int(self.max_wafers_in_system)
 
     def _takt_required_interval(self) -> Optional[int]:
         """
@@ -1834,16 +1817,6 @@ class ClusterTool:
         machine_id = self._next_machine_id
         self._next_machine_id = 2 if machine_id == 1 else 1
         return machine_id
-
-    def _is_dst_level_full(self, source: str) -> bool:
-        targets = self._u_targets.get(source, [])
-        if not targets:
-            return False
-        for target in targets:
-            p = self._get_place(target)
-            if len(p.tokens) < p.capacity:
-                return False
-        return True
 
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:
