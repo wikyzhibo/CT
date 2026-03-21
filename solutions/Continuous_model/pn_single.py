@@ -31,7 +31,6 @@ SOURCE = 3
 
 # 动作不使能原因的人性化描述（用于 Markdown 报告）
 REASON_DESC: Dict[str, str] = {
-    "pre_color_mismatch": "前置颜色/路径约束不满足",
     "insufficient_tokens": "库所 token 不足",
     "capacity_exceeded": "容量超限",
     "locked_by_arm2_head": "双臂模式：来源被队首晶圆目标锁定",
@@ -369,7 +368,6 @@ class ClusterTool:
         self._ready_chambers = tuple(route_meta.get("chambers", ()))
         self._single_process_chambers = self.chambers
 
-        self.pre_color: np.ndarray = info["pre_color"]
         self.m0: np.ndarray = info["m0"]
         self.m: np.ndarray = self.m0.copy()
         self.k: np.ndarray = info["capacity"]
@@ -393,11 +391,6 @@ class ClusterTool:
         self._transport_pre_place_idx: List[int] = info["transport_pre_place_idx"]
 
         self.marks: List[Place] = self._clone_marks(info["marks"])
-        # 临时执行策略：除 LP/LP_done 外全部按 unit-capacity 运行。
-        for idx, p in enumerate(self.marks):
-            if p.name not in {"LP", "LP_done"}:
-                p.capacity = 1
-                self.k[idx] = 1
 
         self.ori_marks = self._clone_marks(self.marks)
 
@@ -424,32 +417,18 @@ class ClusterTool:
         self._u_transition_by_source: Dict[str, int] = {}
         self._u_transition_by_source_transport: Dict[Tuple[str, str], int] = {}
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
-        if self.device_mode == "cascade":
-            if self.single_route_config is not None:
-                for source, targets in self._u_targets.items():
-                    if len(targets) >= 2:
-                        pm_targets = [t for t in targets if t.startswith("PM") or t == "LP_done"]
-                        if pm_targets:
-                            self._cascade_round_robin_pairs[source] = tuple(pm_targets)
-            if not self._cascade_round_robin_pairs and self.route_code != 4:
-                self._cascade_round_robin_pairs["LP"] = ("PM7", "PM8")
-            if self.route_code == 1 and "LLC" not in self._cascade_round_robin_pairs:
-                self._cascade_round_robin_pairs["LLC"] = ("PM1", "PM2", "PM3", "PM4")
-            if self.route_code in {2, 3} and "LLC" not in self._cascade_round_robin_pairs:
-                self._cascade_round_robin_pairs["LLC"] = ("PM1", "PM2")
-            if self.route_code == 2 and "LLD" not in self._cascade_round_robin_pairs:
-                self._cascade_round_robin_pairs["LLD"] = ("PM9", "PM10")
-            self._cascade_round_robin_next = {
-                source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
-            }
-        else:
+
+        # ====== 构造机器轮转对 ========
+        if self.single_route_config is not None:
             for source, targets in self._u_targets.items():
-                if len(targets) == 2:
-                    pair = (str(targets[0]), str(targets[1]))
-                    self._single_round_robin_pairs[source] = pair
-            self._single_round_robin_next = {
-                source: pair[0] for source, pair in self._single_round_robin_pairs.items()
-            }
+                if len(targets) >= 2:
+                    pm_targets = [t for t in targets if t.startswith("PM") or t == "LP_done"]
+                    if pm_targets:
+                        self._cascade_round_robin_pairs[source] = tuple(pm_targets)
+        self._cascade_round_robin_next = {
+            source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
+        }
+
         self._last_deadlock = False
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
@@ -752,49 +731,15 @@ class ClusterTool:
     def get_obs_dim(self) -> int:
         return int(self._obs_dim)
 
-    def _peek_target_for_source_for_obs(self, source: str) -> Optional[str]:
-        """
-        仅用于观测构造的无副作用目标窥视：
-        - 不推进 round-robin 指针；
-        - 尽量给出“下一跳意图”，即便当前容量/清洗导致暂不可发射。
-        """
-        target = self._select_target_for_source(
-            source,
-            ignore_cleaning=True,
-            advance_round_robin=False,
-        )
-        if target is not None:
-            return target
-        candidates = list(self._u_targets.get(source, []))
-        if not candidates:
-            return None
-        if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs:
-            rr_targets = list(self._cascade_round_robin_pairs[source])
-            next_target = self._cascade_round_robin_next.get(source, rr_targets[0])
-            if next_target in candidates:
-                return next_target
-        return candidates[0]
-
     def _update_ll_direction_obs_flags(self) -> None:
         """
-        LLC/LLD 方向位规则：
-        - 下一跳由 TM3 搬运 => in_flag=1
-        - 下一跳由 TM2 搬运 => out_flag=1
+        方向 one-hot 临时禁用：LLC/LLD 的 in/out 始终置 0。
         """
         for ll_name in ("LLC", "LLD"):
             place = self._place_by_name.get(ll_name)
             if place is None or not hasattr(place, "set_direction_flags"):
                 continue
-            has_wafer = len(place.tokens) > 0
-            if (not has_wafer) or self.device_mode != "cascade":
-                place.set_direction_flags(False, False)
-                continue
-            target = self._peek_target_for_source_for_obs(ll_name)
-            if target is None:
-                place.set_direction_flags(False, False)
-                continue
-            transport = self._transport_for_t_target(str(target))
-            place.set_direction_flags(transport == "d_TM3", transport == "d_TM2")
+            place.set_direction_flags(False, False)
 
     def _record_step_profile(
         self,
@@ -1016,15 +961,11 @@ class ClusterTool:
         if t_name.startswith("u_"):
             src = pre_place.name
             tok._dst_level_targets = tuple(self._u_targets.get(src, []))
-            if self.device_mode == "cascade" and self.route_code == 4 and src == "LLD":
-                dst = self._select_route4_lld_target(tok)
-            else:
-                dst = self._select_target_for_source(src, advance_round_robin=True)
-            tok._target_place = dst
             tok.machine = int(self._next_robot_machine())
             if self._is_cascade:
-                transport = self._transport_for_t_target(dst) if dst else "d_TM2"
+                transport = pst_place.name if pst_place.name.startswith("d_") else "d_TM2"
                 tok.machine = 2 if transport == "d_TM3" else 1
+            self._advance_round_robin_after_u_fire(src)
             if src in self._chamber_active and wafer_id in self._chamber_active[src]:
                 idx = self._chamber_active[src].pop(wafer_id)
                 e, _, wid = self._chamber_timeline[src][idx]
@@ -1032,7 +973,6 @@ class ClusterTool:
             self._on_processing_unload(src)
         elif t_name.startswith("t_"):
             target = t_name[2:]
-            tok._target_place = None
             tok._dst_level_targets = None
             tok.step = max(tok.step, self._step_map.get(target, 0))
             self._track_enter(tok, target)
@@ -1097,19 +1037,6 @@ class ClusterTool:
             return False
         return fired_token_id >= 0 and fired_token_id == scrap_token_id
 
-    @staticmethod
-    def _token_route_gate(tok: BasedToken) -> object:
-        queue = tok.route_queue
-        if not queue:
-            return -1
-        idx = tok.route_head_idx
-        if idx < 0:
-            idx = 0
-        n = len(queue)
-        if idx >= n:
-            idx = n - 1
-        return queue[idx]
-
     def _token_next_target(self, tok: BasedToken) -> Optional[str]:
         """从 token 的 route_queue 推断下一个目标腔室（用于多 transport 的 u_* 选择）。"""
         queue = tok.route_queue
@@ -1149,6 +1076,16 @@ class ClusterTool:
         if isinstance(gate, (list, set)):
             return t_code in gate
         return True
+
+    def _allow_t_by_machine_round_robin(
+        self,
+        transport_name: str,
+        target_name: str,
+        tok_gate: object,
+    ) -> bool:
+        if not isinstance(tok_gate, (tuple, frozenset)):
+            return True
+        return target_name in self._cascade_round_robin_next.values()
 
     def _route4_next_target_from_token(self, tok: BasedToken) -> Optional[str]:
         queue = tok.route_queue
@@ -1550,104 +1487,50 @@ class ClusterTool:
                 }
             )
 
-    def _select_target_for_source(
-        self,
-        source: str,
-        preferred_target: Optional[str] = None,
-        ignore_cleaning: bool = False,
-        advance_round_robin: bool = False,
-    ) -> Optional[str]:
+    def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
-        为 u_<source> 选择一个可接收目标（确定性顺序）。
-        仅检查目标腔室容量，运输位停留时间约束仍由 t_* 侧控制。
+        先按 robin 指针选目标，再检查该目标是否可接收（未满且非 cleaning）。
         """
-        candidates = self._u_targets.get(source, [])
-        if self.device_mode == "cascade" and source in {"PM7", "PM8"}:
-            # LLC 满时仍允许从 PM7/PM8 取片到 d_TM1，后续由 t_LLC 容量约束拦截放片时机。
-            # 这与用户要求一致：LLC 有片时 u_PM7/u_PM8 仍应可使能。
-            if "LLC" in candidates:
-                return "LLC"
-        if self.device_mode == "cascade" and source in {"PM1", "PM2", "PM3", "PM4"}:
-            # LLD 满时仍允许从 PM1-4 先取片到 d_TM1，后续由 t_LLD 实际容量约束放行。
-            # 需求：LLD 有晶圆时，u_PM1/u_PM2/u_PM3/u_PM4 仍应保持可使能。
-            if "LLD" in candidates:
-                return "LLD"
-        if self.device_mode == "cascade" and self.route_code == 4 and source == "LLD":
-            lld_place = self._get_place("LLD")
-            if len(lld_place.tokens) == 0:
-                return None
-            target = self._select_route4_lld_target(
-                lld_place.head(),
-                ignore_cleaning=ignore_cleaning,
-            )
-            if preferred_target is not None and target != preferred_target:
-                return None
-            return target
-        if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs and preferred_target is None:
-            # 级联并行目标采用轮换分配；仅在真实发射时推进轮换指针，避免使能检查污染状态。
-            rr_targets = list(self._cascade_round_robin_pairs[source])
-            available_targets: List[str] = []
-            for target in rr_targets:
-                if target not in candidates:
-                    continue
-                target_place = self._get_place(target)
-                if (not ignore_cleaning) and target_place.is_cleaning:
-                    continue
-                if len(target_place.tokens) < target_place.capacity:
-                    available_targets.append(target)
-            if available_targets:
-                next_target = self._cascade_round_robin_next.get(source, rr_targets[0])
-                start_idx = rr_targets.index(next_target) if next_target in rr_targets else 0
-                chosen_target = available_targets[0]
-                for offset in range(len(rr_targets)):
-                    candidate = rr_targets[(start_idx + offset) % len(rr_targets)]
-                    if candidate in available_targets:
-                        chosen_target = candidate
-                        break
-                if advance_round_robin and len(rr_targets) > 1:
-                    chosen_idx = rr_targets.index(chosen_target)
-                    self._cascade_round_robin_next[source] = rr_targets[
-                        (chosen_idx + 1) % len(rr_targets)
-                    ]
-                return chosen_target
-        if self.device_mode == "single" and source in self._single_round_robin_pairs and preferred_target is None:
-            # single 模式并行目标采用轮换分配，避免持续偏置到候选列表中的第一个目标。
-            rr_targets = list(self._single_round_robin_pairs[source])
-            available_targets: List[str] = []
-            for target in rr_targets:
-                if target not in candidates:
-                    continue
-                target_place = self._get_place(target)
-                if (not ignore_cleaning) and target_place.is_cleaning:
-                    continue
-                if len(target_place.tokens) < target_place.capacity:
-                    available_targets.append(target)
-            if len(available_targets) == 2:
-                next_target = self._single_round_robin_next.get(source, available_targets[0])
-                chosen_target = next_target if next_target in available_targets else available_targets[0]
-                if advance_round_robin:
-                    self._single_round_robin_next[source] = (
-                        available_targets[1] if chosen_target == available_targets[0] else available_targets[0]
-                    )
-                return chosen_target
-            if len(available_targets) == 1:
-                return available_targets[0]
-        if preferred_target is not None:
-            if preferred_target not in candidates:
-                return None
-            target_place = self._get_place(preferred_target)
-            if (not ignore_cleaning) and target_place.is_cleaning:
-                return None
-            if len(target_place.tokens) < target_place.capacity:
-                return preferred_target
-            return None
-        for target in candidates:
-            target_place = self._get_place(target)
-            if (not ignore_cleaning) and target_place.is_cleaning:
-                continue
-            if len(target_place.tokens) < target_place.capacity:
-                return target
-        return None
+        candidates = tuple(self._u_targets.get(source, ()))
+        pointer_target: Optional[str] = None
+        if source in self._cascade_round_robin_pairs:
+            rr_targets = tuple(self._cascade_round_robin_pairs[source])
+            next_target = self._cascade_round_robin_next.get(source, rr_targets[0])
+            pointer_target = next_target
+        else:
+            pointer_target = candidates[0]
+
+        target_place = self._get_place(pointer_target)
+        if target_place.is_cleaning:
+            return False, None
+        if len(target_place.tokens) >= target_place.capacity:
+            return False, None
+        return True, pointer_target
+
+    def _advance_round_robin_after_u_fire(self, source: str) -> None:
+        if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs:
+            rr_targets = tuple(self._cascade_round_robin_pairs[source])
+            if len(rr_targets) <= 1:
+                return
+            current = self._cascade_round_robin_next.get(source, rr_targets[0])
+            if current not in rr_targets:
+                current = rr_targets[0]
+            current_idx = rr_targets.index(current)
+            self._cascade_round_robin_next[source] = rr_targets[
+                (current_idx + 1) % len(rr_targets)
+            ]
+            return
+        if self.device_mode == "single" and source in self._single_round_robin_pairs:
+            rr_targets = tuple(self._single_round_robin_pairs[source])
+            if len(rr_targets) <= 1:
+                return
+            current = self._single_round_robin_next.get(source, rr_targets[0])
+            if current not in rr_targets:
+                current = rr_targets[0]
+            current_idx = rr_targets.index(current)
+            self._single_round_robin_next[source] = rr_targets[
+                (current_idx + 1) % len(rr_targets)
+            ]
 
     def _next_robot_machine(self) -> int:
         if self.robot_capacity <= 1:
@@ -1719,16 +1602,17 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
+        # 优先检查 u_LP
         u_lp_idx = self._u_transition_by_source.get("LP")
         if u_lp_idx is not None and self._allow_start():
-            if _is_struct_enabled(u_lp_idx) and self._select_target_for_source("LP") is not None:
+            lp_available, _ = self._is_next_stage_available("LP")
+            if _is_struct_enabled(u_lp_idx) and lp_available:
                 t_idx = int(u_lp_idx)
                 if 0 <= t_idx < total_actions:
                     mask[t_idx] = True
 
         has_ready_chamber = False
         ready_chambers = self._ready_chambers_set
-        target_cache: Dict[str, Optional[str]] = {}
         skip = self._MASK_SKIP_PLACES
         timed = self._MASK_TIMED_TYPES
         t_trans_by_transport = self._t_transitions_by_transport
@@ -1736,9 +1620,7 @@ class ClusterTool:
         id2t = self.id2t_name
         route_code_by_idx = self._t_route_code_by_idx
         route_gate_allows = self._route_gate_allows_t
-        token_route_gate = self._token_route_gate
         place_by_name = self._place_by_name
-        _SENTINEL = object()
 
         for place in self.marks:
             tokens = place.tokens
@@ -1756,11 +1638,10 @@ class ClusterTool:
                 for tok in tokens:
                     if is_timed and proc_time > 0 and tok.stay_time < proc_time:
                         continue
-                    tok_gate = token_route_gate(tok)
-                    target_hint = tok._target_place
+                    tok_gate = tok.route_queue[tok.route_head_idx]
                     for t_idx in t_trans_by_transport.get(pname, ()):
                         target = id2t[t_idx][2:]
-                        if target_hint is not None and target_hint != target:
+                        if not self._allow_t_by_machine_round_robin(pname, target, tok_gate):
                             continue
                         if not route_gate_allows(tok_gate, route_code_by_idx[t_idx]):
                             continue
@@ -1776,23 +1657,9 @@ class ClusterTool:
                 if is_timed and proc_time > 0 and head.stay_time < proc_time:
                     continue
                 route_target = self._token_next_target(head)
-                target = route_target
-                if target is not None:
-                    target_place = place_by_name.get(str(target))
-                    if (
-                        target_place is None
-                        or target_place.is_cleaning
-                        or len(target_place.tokens) >= target_place.capacity
-                    ):
-                        target = None
-                if target is None:
-                    cached_target = target_cache.get(pname, _SENTINEL)
-                    if cached_target is _SENTINEL:
-                        cached_target = self._select_target_for_source(pname)
-                        target_cache[pname] = cached_target
-                    target = cached_target
-                if target is not None:
-                    transport = self._transport_for_t_target(target)
+                available, target = self._is_next_stage_available(source=pname)
+                if available and target is not None:
+                    transport = self._transport_for_t_target(str(target))
                     u_idx = self._u_transition_by_source_transport.get((pname, transport))
                     if u_idx is None:
                         u_idx = u_trans_by_source.get(pname)

@@ -50,9 +50,11 @@
 6. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
 7. 旧观测分支（place-obs）不再作为当前实现接口。
 8. 配置驱动路径启用时，所选 `route.sequence` 中 stage 级 `process_time/cleaning_*` 会在 `pn_single` 侧先合并进传入构网的 `process_time_map`/清洗映射；工序时长默认与取整到 5 秒在 `construct_single.build_single_device_net`（`preprocess_process_time_map_for_single_net`）内完成，构网返回值中的 `process_time_map` 与 `marks`/`ptime` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
-9. `u_*` 使能在按 `route_queue` 推断到 `route_target` 时，仍必须满足目标库所可接收（未清洗且未满）；不满足时该分支必须退化为“无目标/不可使能”。
-10. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot（下一跳由 `TM3` 搬运记为 `in`，由 `TM2` 搬运记为 `out`）。
-11. `PetriEnvConfig.llc_tm3_takt_interval > 0` 时，对构网得到的 **LLC→`d_TM3`** 释放变迁（`("LLC","d_TM3")` 对应的 `u_*`）施加节拍门控：口径与 `u_LP` 的 `_takt_required_interval` 一致（**首次发射不因节拍被禁**，第二次起按 `build_fixed_takt_result(interval)` 的 `cycle_takts` 取最小间隔）；`<=0` 为默认关闭。门控同步作用于 `get_action_mask` 与 `get_next_event_delta`。
+9. `u_*` 使能采用“指针目标单点判定”：先按 round-robin 指针选定下一目标，再仅校验该目标可接收（未清洗且未满）；若该指针目标不可接收，则该 `u_*` 直接不可使能，不再回退扫描其它候选目标。
+10. `_fire` 阶段不再执行目标重选；并行目标的放行完全由掩码阶段决定，`_fire` 仅推进指针与执行状态更新。
+11. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
+12. `PetriEnvConfig.llc_tm3_takt_interval > 0` 时，对构网得到的 **LLC→`d_TM3`** 释放变迁（`("LLC","d_TM3")` 对应的 `u_*`）施加节拍门控：口径与 `u_LP` 的 `_takt_required_interval` 一致（**首次发射不因节拍被禁**，第二次起按 `build_fixed_takt_result(interval)` 的 `cycle_takts` 取最小间隔）；`<=0` 为默认关闭。门控同步作用于 `get_action_mask` 与 `get_next_event_delta`。
+13. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
 
 ## Examples
 - 正例:
@@ -73,6 +75,8 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-21: `get_action_mask` 的 d_TM 分支新增并行 gate 机器轮转筛选：当 `tok_gate` 为 `tuple/frozenset` 时，仅允许后置目标命中 `_cascade_round_robin_next.values()` 的 `t_*` 通过 mask。
+- 2026-03-21: 删除 `_peek_target_for_source_for_obs` 与 `_select_target_for_source`；`u_*` 使能改为 `_is_next_stage_available` 的“round-robin 指针单点判定”（指针目标满/清洗即直接屏蔽，不再回退其它候选）；`_fire` 不再执行目标重选与写入 `tok._target_place`；`LLC/LLD` 方向 one-hot 临时固定为全 0。
 - 2026-03-21: `construct_single.build_single_device_net` 收敛为 `route_config`-only；移除函数内部 legacy 手写拓扑分支。影响是：未提供 `single_route_config` 的调用链会直接报错，需要迁移到配置驱动路线输入。
 - 2026-03-21: `ClusterTool` 在 `single_route_name` 已设置时对同一路由只调用一次 `normalize_route_spec`，由该结果同时生成 stage 工时/清洗覆盖、`_route_stages` 与 chambers 顺序；移除后续宽泛 `try/except`，归一化或派生失败时不再静默回退到仅 `chambers` 配置的 chambers 列表。
 - 2026-03-21: `_normalize_route_code` 在非法 `device_mode` 时抛出 `ValueError`（含 `device_mode` 字样），不再因 `_VALID_ROUTE_CODES` 下标访问产生 `KeyError`。
