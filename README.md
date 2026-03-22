@@ -1,29 +1,121 @@
-## 文件
-- 网文件
-  - N1p21t16.CSV "25届两道工序，第一道5个并行腔体"
-  - N4p20t16.csv "毕设案例一网"
-  - PetriNet 文件夹
-    - acstract_of_CT：将组合设备的buffer抽象出来研究控制库所
-      - bm2_controller.ndr  BM容量为2且带控制器
-      - bm2.ndr BM容量为2不带控制器
-      - bm1_controller.ndr BM容量为1且带控制器
-      - bm1.ndr BM容量为1不带控制器
-      - bm2_controller_circle.ndr BM容量为2且带控制器（回环）
-    - N1：毕设案例一网
-    - N2：吴亚丽和刘瑞琼的组合设备例子
-      - N2.ndr 没有控制库所的网
-      - net.ndr 加上控制库所
-    - N3：一个判断死锁的简单案例
-    - N4：离散作业中的网，它可以作为检测坏标识的案例
-  - 程序文件
-    - net.py "Petri网文件"
-    - CT_env.py "组合设备环境文件"
-    - train_CT.py "ppo训练文件"
-    - solutions/PPO/data_collector.py "自定义的PPO采样器，避免SyncDataCollector遇到死锁时截断（详见 solutions/PPO/data_collector.md）"
-    - tmp.py "随机森林识别死锁"
-    - markbuffer.py "获取标识文件"
-- out.csv "输出(变迁时间，变迁序列），matlab那边的程序绘制甘特图"
-- CT.pt "policy模型文件"
+
+
+## Quickstart
+
+在仓库根目录执行；**命令与行为细则以 `docs/` 为准**（本段为入口索引）。
+
+| 目的 | 命令（示例） | 说明 |
+|------|--------------|------|
+| 级联单设备训练 | `python -m solutions.Continuous_model.train_single --device cascade --rollout-n-envs 1` | 训练配置：`data/ppo_configs/s_train.json`；可选 `--compute-device`（`cpu` 或 `cuda`）、`--checkpoint` |
+| 强制 CPU 更新 | `python -m solutions.Continuous_model.train_single --device cascade --compute-device cpu` | 环境步进在 CPU 上，rollout 后再送入计算设备（见 `env_single` 说明） |
+| 并发双机械手训练 | `python -m solutions.Continuous_model.train_concurrent --config data/ppo_configs/concurrent_phase2_config.json` | 跨机器时若默认 config 为绝对路径，请改为显式相对路径（见 `docs/training/training-guide.md`） |
+| 导出推理序列 | `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>` | 默认写入 `seq/tmp.json`，含 `replay_env_overrides` |
+| 可视化界面 | `python -m visualization.main --device cascade --model <model_path>` | 未传 `--model` 时若存在 `solutions/Continuous_model/saved_models/CT_single_phase2_best.pt` 会自动加载；`--no-model` 仅手动或 JSON 回放；`--quiet` 关闭逐步打印；`--debug` 显示变迁调试按钮 |
+
+**说明**：`train_single` 的 CLI 默认 `--device` 为 `single`，但当前 `Env_PN_Single` 仅支持 **cascade**；请使用 `--device cascade`，与 `docs/training/training-guide.md` 一致，行为见 `docs/continuous-model/pn-single.md`。
+
+**DocRef**：`docs/training/training-guide.md`、`docs/visualization/ui-guide.md`、`docs/overview/project-context.md`。
+
+## Continuous_model 架构（概览）
+
+下图描述 **cascade** 主路径上的构网、设备模拟、训练与可视化；并发双机械手见 `solutions/Continuous_model/pn.py` 与 `solutions/Continuous_model/train_concurrent.py`，以 `docs/` 为准。下方「历史 Log」可能与最新实现不一致时，**以 `docs/` 与源码为准**。
+
+```mermaid
+%%{
+  init: {
+    "flowchart": {
+      "curve": "basis",
+      "nodeSpacing": 42,
+      "rankSpacing": 60
+    },
+    "theme": "base",
+    "themeCSS": "
+      .cluster-label text,
+      .cluster-label span {
+        font-size: 40px !important;
+        font-weight: 700 !important;
+      }
+      .nodeLabel {
+        font-size: 20px;
+      }
+    "
+  }
+}%%
+flowchart LR
+
+  subgraph net[Construct Net Module]
+    direction TB
+    A1[Parse Routes]
+    A2[Build Topology]
+    A3[Build Token Route Queue]
+    A4[Build Marks]
+    A1 --> A2 --> A3 --> A4
+  end
+
+  subgraph sim[Cluster Tool Env Module]
+    direction TB
+    B1[Calculate Cycle]
+    B2[Get Action Mask]
+    B3[Advance Time & Fire]
+    B4[Build Observation]
+    B1 --> B2 --> B3 --> B4
+  end
+
+  subgraph train[Training Module]
+    direction TB
+    C1[Vector Env]
+    C2[Collect Rollout]
+    C3[Backward Optimize]
+    C1 --> C2 --> C3
+  end
+
+  subgraph viz[Visualization Module]
+    direction TB
+    D1[Model Evaluation]
+    D2[JSON Replay Evaluation]
+  end
+
+  net --> sim
+  sim --> train
+  sim --> viz
+
+  style net fill:#EEF4FF,stroke:#5B8FF9,stroke-width:2.5px,rx:12,ry:12
+  style sim fill:#F0FDF4,stroke:#34A853,stroke-width:2.5px,rx:12,ry:12
+  style train fill:#FFF7ED,stroke:#F59E0B,stroke-width:2.5px,rx:12,ry:12
+  style viz fill:#F5F3FF,stroke:#8B5CF6,stroke-width:2.5px,rx:12,ry:12
+
+  classDef netNode fill:#FFFFFF,stroke:#5B8FF9,stroke-width:1.2px,color:#1F2937,rx:8,ry:8;
+  classDef simNode fill:#FFFFFF,stroke:#34A853,stroke-width:1.2px,color:#1F2937,rx:8,ry:8;
+  classDef trainNode fill:#FFFFFF,stroke:#F59E0B,stroke-width:1.2px,color:#1F2937,rx:8,ry:8;
+  classDef vizNode fill:#FFFFFF,stroke:#8B5CF6,stroke-width:1.2px,color:#1F2937,rx:8,ry:8;
+
+  class A1,A2,A3,A4 netNode;
+  class B1,B2,B3,B4 simNode;
+  class C1,C2,C3 trainNode;
+  class D1,D2 vizNode;
+
+  linkStyle default stroke-width:3px;
+```
+
+**数据流（摘要）**
+
+1. `data/petri_configs/`（如 `cascade.json`）经 `PetriEnvConfig` 提供构网与环境参数。
+2. `construct_single.build_net`：固定拓扑 + route 编译 → token 路由队列 → `build_marks` 等产出 marks / `process_time_map`。
+3. `pn_single.ClusterTool`：节拍与 `get_action_mask`、时间推进、`step`、reward。
+4. `env_single.Env_PN_Single`：TorchRL 风格 `reset` / `step`、`action_mask`、观测张量。
+5. `train_single` 做 rollout + PPO；`python -m visualization.main` 通过同一后端做在线模型或 JSON 回放。
+
+**文件与模块映射**
+
+| 层级 | 主要职责 | 主要文件 |
+|------|----------|----------|
+| 构网 | `route_config` 预处理；`compile_route_stages` / IR；`build_token_route_queue`；`build_marks_for_single_net`；`get_topology` | `solutions/Continuous_model/construct_single.py`、`construct/preprocess_config.py`、`construct/route_compiler_single.py`、`construct/build_route_queue.py`、`construct/build_marks.py`、`construct/build_topology.py` |
+| 设备模拟 | `ClusterTool`：掩码、时间推进、reward；`Env_PN_Single`：`reset` / `step`、观测 | `solutions/Continuous_model/pn_single.py`、`solutions/Continuous_model/env_single.py` |
+| 训练 | `VectorEnv` / `FastEnvWrapper`；`collect_rollout_ultra`；`MaskedPolicyHead` 与 masked 采样；优化器更新 | `solutions/Continuous_model/train_single.py`、`solutions/PPO/network/models.py` |
+| 可视化 | CLI；`Env_PN_Single` 适配器；Model A 推理 / Model B JSON；PySide6 界面 | `visualization/main.py`、`visualization/petri_single_adapter.py`、`visualization/viewmodel.py`、`visualization/main_window.py`（细则见 `docs/visualization/ui-guide.md`） |
+| 导出 | 写出回放用 JSON（含 `replay_env_overrides`），供可视化 Model B | `solutions/Continuous_model/export_inference_sequence.py` |
+
+**DocRef**：`docs/continuous-model/pn-single.md`（构网链与「构网 → mask → step → reward」）。
 
 ## Docs
 
@@ -35,74 +127,12 @@
 - docs/td-petri/td-petri-guide.md：td_petri 主题文档
 
 
-## Log
-
-#### 构造组合设备的环境（10月15日-10月29日）
-
- 
-
-##### **调度实现**
-
-- [x] 复现：单步贪婪，剪枝
-  - 单步贪婪快，但是到不了最优，特别是wafer数变多的时候
-  - 考虑是不是要把蚁群算法移植到python
-
-- [x] **抽象动作集**：把动作集更换成从工序i到工序i+1，N2可以达到最优，时间也比较短
-- [ ] **训练时间加速思路**：每次模型terminated的时候重置到初始标识，因此走得很慢，可以这样想：因为我是有一个潜势函数的，所以我可以按照加工进度往回退到某一个节点。
-  - 思路一：随机热启动，模型重置后随机走k步，k in [min, max]
-  - 思路二：从死锁处回退k步
-- [x] 局部观察
-  - [x] 去掉闲置库所，使用部分观察进行训练。去掉起始库所和末端的库所observation=observation[1:-1]后还是可以收敛，并且50batch就可以到达最优附近，后面的训练主要收到死锁、死状态的困扰。**这里[1：-1]有问题制库所不是最前面和最后面**
-
-- [x] **单机器手死锁惩罚**：目前想解决“如何识别坏标识”这个问题，在这个环境中，坏标识的产生有两种可能：某一个机器手自己把自己卡住，另一种是两个机器手因为互相影响而卡住，针对第一种情况，可以在一个机器手发生死锁给一个惩罚。根据得到的结果，这个思路好像让模型的最短时间变得更长了！！！通过观察10个batch里面的总deadlock数量，发现训练初期10个batch以内，死锁数很多，而且迅速下降。可以这样认为：**有一些死锁在初期已经被模型学会，剩下的死锁模型即使增加训练也无法识别、学习。**
-- [x] **强化学习训练经验**：
-  - **死锁惩罚够大：**一开始死锁惩罚小500，导致模型故意陷入死锁达到奖励最大。解决方法：令死锁惩罚大于最短总时间（5500），10000的死锁惩罚可以让其跑完整个历程。
-  - 增大sub_batch_size(256)后300个batch到达不了最优，放到autodl-4090也没办法加快训练速度。解决方法：减小sub_batch_size(64)，训练700个batch，最终可以达到5800左右的makespan。
-  - **网络隐藏层：**N1p21t16 这个网如果policy的hidden 太小64或者128它是到不了头的 
-- [ ] 使用多智能体
-
-
-
-##### **死锁控制方面**
-
-- [x] 得到当机器手容量为1、BM2容量为1或2的最大允许控制器
-  - 进行死锁分析时，可以将原始网（复杂）的某个部分进行抽象成简单的网进行测试
-  - 若进行环状连起来之后，还是有死锁孙在的
-
-
-- [x] 训练1个“死锁”检测模型。
-    - [x] Petri.find_bad_mark	找出坏标识和死标识
-    - [x] 使用随机森林算法训练识别模型（当树的最大深度为10时，效果很差。通过调整深度为20时，坏和死标识的正确率显著上升，但是5折交叉验证中，[80   596] 效果还是比较勉强）
-    - [ ] 死锁标识进行聚类分析
-
-
-
-##### helper 函数
-
-- [ ] get_rg 可达图
 
 
 
 
 
 
-
-
-
-组会一
-
-- 信息一：构造链条
-- 
-- 问题一：ppo在遇到驻留时间时没办法处理
-- 问题二：因为硬件动作延迟导致需要纠偏问题（即“重新规划”），及是否需要纠偏
-- 问题三：已有算法不能移植到“清洗机”模型上
-
-
-
-
-
-- 滞留惩罚
-- 并行腔室工作负载差异较大惩罚
 
 
 

@@ -2,6 +2,11 @@
 
 ## 2026-03-22
 
+### 文档：根 README 架构图、可视化模块与 Quickstart (2026-03-22)
+- **What changed**：根目录 `README.md` 在 `## Docs` 前新增 **Quickstart**（级联/并发训练、推理导出、PySide6 可视化 CLI）与 **Continuous_model 架构（概览）**（Mermaid：构网 / 设备模拟 / 训练 / 可视化；文件映射与数据流摘要）。
+- **Why**：为新人提供与 `docs/training/training-guide.md`、`docs/visualization/ui-guide.md`、`docs/overview/project-context.md` 对齐的一页入口，并与 `solutions/Continuous_model/`、`visualization/main.py` 模块边界一致。
+- **Impact**：命令与参数以 README 表格为索引，行为与边界仍以 `docs/` 与源码为准；注明 `train_single` 默认 `--device` 与当前 `Env_PN_Single` cascade-only 的差异，推荐使用 `--device cascade`。
+
 ### single(cascade)：`1-5` 等 LLC|LLD 并行段 TM2 放片被误屏蔽 (2026-03-22)
 - **What changed**：`pn_single.ClusterTool` 构造 `_cascade_round_robin_pairs` 时，对 `len(u_targets)>=2` 的源改为使用**全部**下游候选（不再仅保留 `PM*` 与 `LP_done`）。
 - **Why**：路线 `1-5` 中 `PM7`/`PM8` 的 `u_targets` 为 `LLC` 与 `LLD`；旧过滤使 `PM7`/`PM8` 不进入轮转对，`get_action_mask` 里并行 `t_*` 要求目标 ∈ `_cascade_round_robin_next.values()`，而 `values()` 中永远没有 `LLC`/`LLD`，导致晶圆出 PM7 后无法在 TM2 上使能进入 LLC/LLD 的 `t_*`。
