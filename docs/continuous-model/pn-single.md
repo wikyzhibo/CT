@@ -58,12 +58,14 @@
 14. 配置驱动路径启用时，`construct_single.build_net` 通过 `preprocess_config.py` 先构建“每腔室一块”的预处理真源（包含 stage 覆盖后的 `process_time/cleaning_*`）；`build_marks.py` 仅消费该真源构造 place，返回的 `process_time_map` 只来自该预处理真源并与 `marks` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
 15. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
 16. 级联模式 `TM2/TM3` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 8 维目标集合，不再按 route 动态构造。
-17. `u_*` 使能采用“指针目标单点判定”：先按 round-robin 指针选定下一目标，再仅校验该目标可接收（未清洗且未满）；若该指针目标不可接收，则该 `u_*` 直接不可使能，不再回退扫描其它候选目标。
-18. `_fire` 阶段不再执行目标重选；并行目标的放行完全由掩码阶段决定。对 `_cascade_round_robin_pairs` 中的源（典型为 `LP` / `LLC` / `LLD` 指向多 PM 的 `u_*`），**round-robin 指针在 `t_*` 将晶圆放入对应并行腔室后推进**；在该类源上发射 `u_*` **不**推进指针，以保证 TM2/TM3 上并行 `t_*` 的 `_cascade_round_robin_next.values()` 筛选与刚选定的 `u_*` 目标一致。
+17. 对 `_cascade_round_robin_pairs` 中的源，`u_*` 使能采用“从当前指针起的循环扫描”：在 `ClusterTool._first_receivable_parallel_target` 中按 `self._cascade_round_robin_next[source]` 在并行候选腔室序列上循环，返回**第一个**可接收目标（未满且非清洗）；若一圈内均不可接收，则该源的 `u_*` 不可使能。非并行源（单一 `u_targets` 候选）仍只校验该单一候选。
+18. `_fire` 对 `_cascade_round_robin_pairs` 中的源：在 `pop_head` 之前将 `_cascade_round_robin_next[source]` 设为当前 `_first_receivable_parallel_target(source)`，与 `get_action_mask` 所用判定一致，使 TM2/TM3 上并行 `t_*` 的 `_cascade_round_robin_next.values()` 筛选与本次实际去向一致。该类源发射 `u_*` **不**调用 `_advance_round_robin_after_u_fire`；**round-robin 指针仍在 `t_*` 将晶圆放入其并行候选中的某一腔室后推进**（与既有规则一致）。
 19. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
 20. 驻留 scrap 口径：普通腔室阈值为 `process_time + P_Residual_time`；`LLC/LLD` 阈值为 `process_time + 3 * P_Residual_time`。超过阈值会按 `resident` 类型计入 scrap 判定。
 21. 同一步内先推进时间再发射变迁：若 `_advance_and_compute_reward` 已对本步标 `resident` scrap，且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
 22. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
+23. `ClusterTool` 初始化时，`_cascade_round_robin_pairs` 对 `route_meta.u_targets` 中 **`len(targets) >= 2` 的源** 使用**完整** `tuple(targets)` 作为并行候选序列；**禁止**再丢弃 `LLC`/`LLD` 等非 `PM*`、`LP_done` 的下游名，否则 `values()` 可能永不包含这些库所，规则 22 会误屏蔽对应 `t_*`（典型：路线 `1-5` 上 PM7→LLC|LLD）。
+24. 节拍门控**仅**作用于 `u_LP`（含 `route_code==4` 时的 `route4_takt_interval` 与 `analyze_cycle` 产出的周期节拍）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
 
 ## Examples
 - 正例:
@@ -84,8 +86,10 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-22: 修复 `_cascade_round_robin_pairs` 仅用 `PM*`/`LP_done` 过滤并行目标导致路线 `1-5`（PM7/PM8→LLC|LLD）等场景下 LLC/LLD 从未进入 `values()`，TM2 上 `t_TM2_LLC`/`t_TM2_LLD` 被 `_allow_t_by_machine_round_robin` 永久屏蔽；现对 `len(u_targets)>=2` 的源使用**完整**候选元组。
+- 2026-03-22: 并行下游 `u_*` 使能从「仅指针单点」改为「从指针起循环首个可接收腔室」：`get_action_mask` 与 `_fire`（`pop_head` 前）共用 `_first_receivable_parallel_target`，避免指针落在已满并行腔（如 `PM2`）时忽略其它空腔（如 `PM3`/`PM5`）导致 `u_PM6_TM3` 等永久屏蔽；同步更新行为规则 17/18。
 - 2026-03-22: 修复同一步「驻留超时 + `u_*` 取片」应撤销 scrap 却不生效：`_fire` 的 `u_*` 日志增加 `source_place`，`_should_cancel_resident_scrap_after_fire` 与 `scrap_info["place"]` 对齐；原 `t_name[2:]` 在 `u_*_TM2` 命名下与腔室名不一致导致永远不匹配。
-- 2026-03-22: 移除 `llc_tm3_takt_interval` 全链路：`PetriEnvConfig` 与 `pn_single` 不再提供 LLC→TM3 节拍门控；`get_action_mask/get_next_event_delta` 仅保留 `u_LP` 节拍限制。同时将 `LLD.kind` 与固定缺省口径统一为 `buffer`，并将 `LLC/LLD` 驻留 scrap 阈值调整为 `process_time + 3 * P_Residual_time`。
+- 2026-03-22: 移除 `llc_tm3_takt_interval` 全链路：`PetriEnvConfig` 与 `pn_single` 不再提供 LLC→TM3 节拍门控；`get_action_mask/get_next_event_delta` 仅保留 `u_LP` 节拍限制。同时将 `LLD.kind` 与固定缺省口径统一为 `buffer`，并将 `LLC/LLD` 驻留 scrap 阈值调整为 `process_time + 3 * P_Residual_time`。（后续提交已从代码中删除此前残留的节拍实现，与行为规则 24 一致。）
 - 2026-03-22: 修复并行 stage 下 `u_*` 与 TM2/TM3 上 `t_*` 的 round-robin 错位：对 `_cascade_round_robin_pairs` 覆盖的源，`u_*` 发射不再推进指针，改在 `t_*` 落入该源并行 PM 腔室时推进；避免 `u_LLC_TM3` 后指针已指向下一个 PM 导致仅错误方向 `t_TM3_PM*` 使能（配置路线 `2-1` 等）。
 - 2026-03-22: `construct_single` 的配置预处理拆分到 `preprocess_config.py`，以“预处理后的腔室块”作为 `process_time_map` 唯一真源；`build_marks.py` 新增 marks 构造入口并接管 `m0/md/ptime/capacity/marks` 产出。容量口径固定为 `LP/LP_done=100`、其余 place=1，`m0` 固定全 0，token 仅注入 source place。`TM2/TM3` one-hot 改为固定硬编码集合。
 - 2026-03-22: `construct_single.build_single_device_net` 与内部 `_build_single_device_net_from_route_config` 合并为单一入口 `build_net`（签名与旧 `build_single_device_net` 一致）；外部调用须改用 `build_net`。

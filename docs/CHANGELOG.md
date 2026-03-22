@@ -2,6 +2,16 @@
 
 ## 2026-03-22
 
+### single(cascade)：`1-5` 等 LLC|LLD 并行段 TM2 放片被误屏蔽 (2026-03-22)
+- **What changed**：`pn_single.ClusterTool` 构造 `_cascade_round_robin_pairs` 时，对 `len(u_targets)>=2` 的源改为使用**全部**下游候选（不再仅保留 `PM*` 与 `LP_done`）。
+- **Why**：路线 `1-5` 中 `PM7`/`PM8` 的 `u_targets` 为 `LLC` 与 `LLD`；旧过滤使 `PM7`/`PM8` 不进入轮转对，`get_action_mask` 里并行 `t_*` 要求目标 ∈ `_cascade_round_robin_next.values()`，而 `values()` 中永远没有 `LLC`/`LLD`，导致晶圆出 PM7 后无法在 TM2 上使能进入 LLC/LLD 的 `t_*`。
+- **Impact**：凡并行下游含 LLC/LLD（或其它非 PM 腔室）的级联路线，TM 上对应 `t_*` 与 `u_*` 的轮转/掩码与构网 `u_targets` 一致。
+
+### single(cascade)：并行下游 `u_*` 使能循环扫描可接收腔室 (2026-03-22)
+- **What changed**：`pn_single.ClusterTool` 新增 `_first_receivable_parallel_target`；`_is_next_stage_available` 对 `_cascade_round_robin_pairs` 中的源从当前 `_cascade_round_robin_next[source]` 起在并行候选上循环，取第一个未满且非清洗的下游。`_fire` 在 `u_*` 的 `pop_head` 之前将 `_cascade_round_robin_next[source]` 同步为该次扫描结果，与掩码一致。
+- **Why**：旧实现只检查指针所指单一并行腔；若该腔已满而其它并行腔为空（如路线 `1-4` 上 `PM6→PM2/PM3/PM5` 且指针停在已满的 `PM2`），会导致 `u_PM6_TM3` 等误屏蔽，且与「存在可放片空腔」的直觉不符。
+- **Impact**：多候选并行 stage 下，只要环上至少有一个可接收腔，对应源的 `u_*` 即可使能；`t_*` 并行 gate 与同步后的指针一致。详见 `docs/continuous-model/pn-single.md` 行为规则 17/18。
+
 ### single(cascade)：驻留 scrap 与同步 `u_*` 取片撤销逻辑修复 (2026-03-22)
 - **What changed**：`ClusterTool._fire` 对 `u_*` 发射在 `fire_log` 条目中增加 `source_place`（取片前库所名，与 `marks` 中腔室名一致）。`_should_cancel_resident_scrap_after_fire` 用 `source_place` 与 `scrap_info["place"]` 比较，不再使用 `t_name[2:]`（级联下为 `PM7_TM2` 等，与 `PM7` 永不相等）。**实现约束**：必须先构建 `log_ret`、再按需写入 `source_place`、最后 **一次** `return log_ret`；不得在 `return {…}` 之后再写 `source_place`（该段为不可达代码，`log_entry` 将缺字段，撤销失效）。
 - **Why**：本步先 `_advance_and_compute_reward` 再 `_fire`：恰超驻留阈值时 `scan` 会标 `resident` scrap，但若本步立即 `u_*` 取走同一 token，应撤销该 scrap；旧实现因库所名与变迁名后缀不一致导致永远不撤销。
@@ -11,6 +21,12 @@
 - **What changed**：`visualization/petri_single_adapter.py` 的 `_time_to_scrap` 新增 `place_type=5`（`LLC/LLD`）分支，按 `process_time + 3*P_Residual_time - stay_time` 计算；`visualization/graphics/wafer_item.py` 与 `visualization/widgets/chamber_widget.py` 将 `place_type=5` 且 `proc_time>0` 按加工腔渲染，支持外圈进度、完成橙色、scrap 红色提示。
 - **Why**：`pn_single` 已将 `LLC/LLD` 纳入驻留超时判定，UI 需要展示同口径状态，避免 LLC/LLD 一直显示为次级颜色且无进度反馈。
 - **Impact**：级联回放中 `LLD` 等带工时的 LL 节点会出现外圈进度与颜色状态；`LLC` 若 `proc_time=0` 仍不显示进度环。
+
+### single(cascade)：LLC/LLD 驻留阈值调整并移除 LLC 节拍门控 (2026-03-22)
+- **What changed**：`cascade_routes_1_star.json` 中 `LLD.kind` 改为 `buffer`；构网预处理口径统一 `LLC/LLD` 均为 `buffer`，并保留其 stage `process_time` 覆盖。`pn_single.ClusterTool` 驻留 scrap 判定改为：普通腔室使用 `process_time + P_Residual_time`，`LLC/LLD` 使用 `process_time + 3*P_Residual_time`。同时移除 `llc_tm3_takt_interval` 及对应的 `get_action_mask/get_next_event_delta` LLC→TM3 节拍门控链路。
+- **Why**：`LLC/LLD` 需要与当前工艺口径一致地参与驻留超时判定，并取消对 LLC 出片的额外节拍限制，避免与新驻留约束叠加形成不必要的放行动作屏蔽。
+- **Impact**：`LLC/LLD` 超时将按 `resident` 类型计入 scrap；配置项 `llc_tm3_takt_interval` 不再生效；`route4_takt_interval` 与 `u_LP` 节拍逻辑保持不变。
+- **Follow-up（实现对齐）**：此前同日文档已写移除 LLC→TM3 节拍，但 `solutions/Continuous_model/pn_single.py` 与 `data/petri_configs/env_config.py` 仍保留 `llc_tm3_takt_interval` 及门控；本次从代码删除该字段与 `ClusterTool` 中 LLC→TM3 节拍状态、`get_action_mask`/`get_next_event_delta`/`_fire` 相关分支。JSON 若仍含 `llc_tm3_takt_interval`，`PetriEnvConfig.load` 仅加载 dataclass 已知字段，该键被忽略。
 
 ### 可视化：`--debug` 变迁按钮按顺序两列排布 (2026-03-22)
 - **What changed**：`visualization/transition_labels.py` 用 `build_transition_rows_two_columns` 替代按 `u_LP`/`u_PM*` 等规则配对；`control_panel.update_actions` 中级联与单设备均按变迁列表顺序每行两个按钮。

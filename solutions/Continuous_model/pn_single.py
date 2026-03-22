@@ -41,7 +41,6 @@ REASON_DESC: Dict[str, str] = {
     "dwell_time_not_met": "运输位停留时间未满足",
     "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
     "takt_release_limit": "节拍限制：距上次发片间隔未达当前周期节拍",
-    "llc_tm3_takt_release_limit": "LLC→TM3 节拍限制：距上次 LLC 出片间隔未达当前周期节拍",
     "max_wafers_in_system_limit": "在制品已达上限，禁止继续发片",
     "action_mask": "动作掩码为 False（与 get_action_mask 一致）",
 }
@@ -252,7 +251,6 @@ class ClusterTool:
         self.config.device_mode = self.device_mode
         self.config.route_code = self.route_code
         self.route4_takt_interval = int(getattr(config, "route4_takt_interval", 0) or 0)
-        self.llc_tm3_takt_interval = int(getattr(config, "llc_tm3_takt_interval", 0) or 0)
         self.single_device_mode = self.device_mode
         self.single_route_code = self.route_code
         self.single_route_config = getattr(config, "single_route_config", None)
@@ -437,9 +435,9 @@ class ClusterTool:
         if self.single_route_config is not None:
             for source, targets in self._u_targets.items():
                 if len(targets) >= 2:
-                    pm_targets = [t for t in targets if t.startswith("PM") or t == "LP_done"]
-                    if pm_targets:
-                        self._cascade_round_robin_pairs[source] = tuple(pm_targets)
+                    # 须保留 LLC/LLD 等非 PM 并行下游（如路线 1-5：PM7/PM8→LLC|LLD），否则
+                    # _cascade_round_robin_next.values() 不含 LLC/LLD，TM2 上并行 t_* 被 _allow_t_by_machine_round_robin 永久屏蔽。
+                    self._cascade_round_robin_pairs[source] = tuple(targets)
         self._cascade_round_robin_next = {
             source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
         }
@@ -449,17 +447,8 @@ class ClusterTool:
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
         self._takt_result: Optional[Dict[str, Any]] = self._compute_takt_result()
-        print(self._takt_result)
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
-        self._llc_tm3_takt_result: Optional[Dict[str, Any]] = (
-            build_fixed_takt_result(self.llc_tm3_takt_interval)
-            if self.llc_tm3_takt_interval > 0
-            else None
-        )
-        self._last_u_LLC_tm3_fire_time: int = 0
-        self._u_LLC_tm3_release_count: int = 0
-        self._llc_tm3_u_idx: Optional[int] = None
         self._training = True
         self._profiling_enabled = True
         self._step_profile = {
@@ -669,13 +658,6 @@ class ClusterTool:
         self._takt_result = self._compute_takt_result()
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
-        self._llc_tm3_takt_result = (
-            build_fixed_takt_result(self.llc_tm3_takt_interval)
-            if self.llc_tm3_takt_interval > 0
-            else None
-        )
-        self._last_u_LLC_tm3_fire_time = 0
-        self._u_LLC_tm3_release_count = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in {"LP", "LP_done"}:
@@ -970,6 +952,13 @@ class ClusterTool:
         if len(pre_place.tokens) == 0:
             return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
 
+        if t_name.startswith("u_") and self._is_cascade:
+            src0 = pre_place.name
+            if src0 in self._cascade_round_robin_pairs:
+                sync_tgt = self._first_receivable_parallel_target(src0)
+                if sync_tgt is not None:
+                    self._cascade_round_robin_next[src0] = sync_tgt
+
         tok = pre_place.pop_head()
         wafer_id = tok.token_id
         self._track_leave(tok, pre_place.name)
@@ -1022,13 +1011,6 @@ class ClusterTool:
             self.entered_wafer_count += 1
             self._last_u_LP_fire_time = int(start_time)
             self._u_LP_release_count += 1
-        if (
-            self._llc_tm3_takt_result is not None
-            and self._llc_tm3_u_idx is not None
-            and int(t_idx) == int(self._llc_tm3_u_idx)
-        ):
-            self._last_u_LLC_tm3_fire_time = int(start_time)
-            self._u_LLC_tm3_release_count += 1
         log_ret: Dict[str, Any] = {
             "t_name": t_name,
             "t1": int(start_time),
@@ -1190,45 +1172,6 @@ class ClusterTool:
             required = 0
         return required
 
-    def _llc_tm3_takt_required_interval(self) -> Optional[int]:
-        """
-        返回下一次允许 LLC→TM3（u_LLC）出片的最小间隔（秒）。
-        口径与 _takt_required_interval（u_LP）一致：release_count<=0 时不门控。
-        """
-        takt = self._llc_tm3_takt_result
-        if not takt:
-            return None
-        release_count = int(self._u_LLC_tm3_release_count)
-        if release_count <= 0:
-            return None
-
-        cycle_takts = takt.get("cycle_takts") or []
-        if not cycle_takts:
-            return None
-        cycle_len = int(takt.get("cycle_length") or len(cycle_takts))
-        if cycle_len <= 0:
-            return None
-
-        if release_count == 1:
-            idx = 0
-        else:
-            idx = (release_count - 1) % cycle_len
-
-        required = cycle_takts[idx]
-        if isinstance(required, float):
-            required = int(round(required))
-        else:
-            required = int(required)
-        if required < 0:
-            required = 0
-        return required
-
-    def _allow_llc_tm3_fire_now(self) -> bool:
-        required = self._llc_tm3_takt_required_interval()
-        if required is None:
-            return True
-        return (self.time - self._last_u_LLC_tm3_fire_time) >= int(required)
-
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
         self._u_transition_by_source_transport = {}
@@ -1248,7 +1191,6 @@ class ClusterTool:
                 if transport is None:
                     continue
                 self._t_transitions_by_transport.setdefault(transport, []).append(int(t_idx))
-        self._llc_tm3_u_idx = self._u_transition_by_source_transport.get(("LLC", "TM3"))
 
     def calc_wafer_statistics(self) -> Dict[str, Any]:
         system_times: List[float] = []
@@ -1485,12 +1427,6 @@ class ClusterTool:
             if delta_takt > 0:
                 if best is None or delta_takt < best:
                     best = delta_takt
-        req_llc = self._llc_tm3_takt_required_interval()
-        if req_llc is not None:
-            delta_llc = self._last_u_LLC_tm3_fire_time + int(req_llc) - self.time
-            if delta_llc > 0:
-                if best is None or delta_llc < best:
-                    best = delta_llc
         return best
 
     def _on_processing_unload(self, source_name: str) -> None:
@@ -1523,19 +1459,39 @@ class ClusterTool:
                 }
             )
 
+    def _first_receivable_parallel_target(self, source: str) -> Optional[str]:
+        """级联并行下游：从当前指针起循环，找第一个未满且非清洗的腔室。"""
+        if source not in self._cascade_round_robin_pairs:
+            return None
+        rr_targets = tuple(self._cascade_round_robin_pairs[source])
+        if not rr_targets:
+            return None
+        start = self._cascade_round_robin_next.get(source, rr_targets[0])
+        if start not in rr_targets:
+            start = rr_targets[0]
+        k = rr_targets.index(start)
+        n = len(rr_targets)
+        for i in range(n):
+            name = rr_targets[(k + i) % n]
+            tp = self._get_place(name)
+            if tp.is_cleaning:
+                continue
+            if len(tp.tokens) >= tp.capacity:
+                continue
+            return name
+        return None
+
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
-        先按 robin 指针选目标，再检查该目标是否可接收（未满且非 cleaning）。
+        级联并行源：从 robin 指针起循环选取第一个可接收下游；单候选源：只检查该候选。
         """
         candidates = tuple(self._u_targets.get(source, ()))
-        pointer_target: Optional[str] = None
         if source in self._cascade_round_robin_pairs:
-            rr_targets = tuple(self._cascade_round_robin_pairs[source])
-            next_target = self._cascade_round_robin_next.get(source, rr_targets[0])
-            pointer_target = next_target
-        else:
-            pointer_target = candidates[0]
-
+            tgt = self._first_receivable_parallel_target(source)
+            return (tgt is not None, tgt)
+        if not candidates:
+            return False, None
+        pointer_target = candidates[0]
         target_place = self._get_place(pointer_target)
         if target_place.is_cleaning:
             return False, None
@@ -1705,15 +1661,8 @@ class ClusterTool:
                     if u_idx is None:
                         u_idx = u_trans_by_source.get(pname)
                     struct_enabled = bool(u_idx is not None and _is_struct_enabled(u_idx))
-                    if u_idx is not None and struct_enabled:
-                        llc_takt_blocked = (
-                            self._llc_tm3_takt_result is not None
-                            and self._llc_tm3_u_idx is not None
-                            and int(u_idx) == int(self._llc_tm3_u_idx)
-                            and not self._allow_llc_tm3_fire_now()
-                        )
-                        if not llc_takt_blocked and 0 <= u_idx < total_actions:
-                            mask[u_idx] = True
+                    if u_idx is not None and struct_enabled and 0 <= u_idx < total_actions:
+                        mask[u_idx] = True
 
             if not has_ready_chamber and p_type == CHAMBER and proc_time > 0 and pname in ready_chambers:
                 for tok in tokens:
