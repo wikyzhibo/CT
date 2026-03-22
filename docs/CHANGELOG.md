@@ -2,6 +2,16 @@
 
 ## 2026-03-22
 
+### single(cascade)：驻留 scrap 与同步 `u_*` 取片撤销逻辑修复 (2026-03-22)
+- **What changed**：`ClusterTool._fire` 对 `u_*` 发射在 `fire_log` 条目中增加 `source_place`（取片前库所名，与 `marks` 中腔室名一致）。`_should_cancel_resident_scrap_after_fire` 用 `source_place` 与 `scrap_info["place"]` 比较，不再使用 `t_name[2:]`（级联下为 `PM7_TM2` 等，与 `PM7` 永不相等）。**实现约束**：必须先构建 `log_ret`、再按需写入 `source_place`、最后 **一次** `return log_ret`；不得在 `return {…}` 之后再写 `source_place`（该段为不可达代码，`log_entry` 将缺字段，撤销失效）。
+- **Why**：本步先 `_advance_and_compute_reward` 再 `_fire`：恰超驻留阈值时 `scan` 会标 `resident` scrap，但若本步立即 `u_*` 取走同一 token，应撤销该 scrap；旧实现因库所名与变迁名后缀不一致导致永远不撤销。
+- **Impact**：同一步内「驻留超时 + 从该腔室 unload」时不再误计 scrap/惩罚；导出或回放若重放 `fire_log`，新字段可选；缺 `source_place` 时仍回退 `t_name[2:]`（与修复前行为相同）。
+
+### 可视化：LLC/LLD 显示加工进度、完成与 scrap 提醒 (2026-03-22)
+- **What changed**：`visualization/petri_single_adapter.py` 的 `_time_to_scrap` 新增 `place_type=5`（`LLC/LLD`）分支，按 `process_time + 3*P_Residual_time - stay_time` 计算；`visualization/graphics/wafer_item.py` 与 `visualization/widgets/chamber_widget.py` 将 `place_type=5` 且 `proc_time>0` 按加工腔渲染，支持外圈进度、完成橙色、scrap 红色提示。
+- **Why**：`pn_single` 已将 `LLC/LLD` 纳入驻留超时判定，UI 需要展示同口径状态，避免 LLC/LLD 一直显示为次级颜色且无进度反馈。
+- **Impact**：级联回放中 `LLD` 等带工时的 LL 节点会出现外圈进度与颜色状态；`LLC` 若 `proc_time=0` 仍不显示进度环。
+
 ### 可视化：`--debug` 变迁按钮按顺序两列排布 (2026-03-22)
 - **What changed**：`visualization/transition_labels.py` 用 `build_transition_rows_two_columns` 替代按 `u_LP`/`u_PM*` 等规则配对；`control_panel.update_actions` 中级联与单设备均按变迁列表顺序每行两个按钮。
 - **Why**：拓扑变迁名为 `u_*_TM2`、`t_TM2_*` 等时旧规则几乎无法配对，未命中项独占一行，界面退化为单列。

@@ -308,6 +308,8 @@ class PetriSingleAdapter(AlgorithmAdapter):
     def _time_to_scrap(self, place, stay_time: float) -> float:
         if place.type == 1:
             return float(place.processing_time + getattr(self.net, "P_Residual_time", 0) - stay_time)
+        if place.type == 5 and place.name in {"LLC", "LLD"}:
+            return float(place.processing_time + getattr(self.net, "P_Residual_time", 0) * 3 - stay_time)
         if place.type == 2:
             return float(getattr(self.net, "D_Residual_time", 0) - stay_time)
         return -1.0

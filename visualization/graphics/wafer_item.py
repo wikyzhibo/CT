@@ -114,7 +114,7 @@ class WaferItem(QGraphicsObject):
         p = self._p
         has_ring = False
         
-        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+        if self._is_timed_chamber_wafer(wafer):
             progress = min(1.0, max(0.0, wafer.stay_time / wafer.proc_time))
             if progress < 1.0: # 完成后一般环会填满，这里保留逻辑
                 has_ring = True
@@ -158,7 +158,7 @@ class WaferItem(QGraphicsObject):
         start_y = -total_height / 2
         
         # 内容逻辑
-        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+        if self._is_timed_chamber_wafer(wafer):
             remaining = max(0, int(wafer.proc_time - wafer.stay_time))
             if remaining > 0:
                 main_text = str(remaining)
@@ -186,7 +186,7 @@ class WaferItem(QGraphicsObject):
     # --- 辅助方法 ---
 
     def _get_wafer_color(self, wafer: WaferState):
-        if wafer.place_type == 1:
+        if self._is_timed_chamber_wafer(wafer):
             proc = getattr(wafer, "proc_time", 0) or 0
             stay = int(wafer.stay_time)
             if wafer.time_to_scrap <= 0: return self.theme.danger
@@ -207,7 +207,13 @@ class WaferItem(QGraphicsObject):
 
     def _has_progress_ring(self) -> bool:
         if not self.wafer: return False
-        return self.wafer.place_type == 1 and getattr(self.wafer, "proc_time", 0) > 0
+        return self._is_timed_chamber_wafer(self.wafer)
+
+    def _is_timed_chamber_wafer(self, wafer: WaferState | None) -> bool:
+        if wafer is None:
+            return False
+        proc = float(getattr(wafer, "proc_time", 0) or 0)
+        return wafer.place_type in (1, 5) and proc > 0
 
     # --- 动画事件 ---
 

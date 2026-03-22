@@ -94,7 +94,7 @@ def preprocess_chamber_runtime_blocks(
     for name in FIXED_TIMELINE_CHAMBERS:
         if name in blocks:
             continue
-        kind = "buffer" if name == "LLC" else ("loadlock" if name == "LLD" else "process")
+        kind = "buffer" if name in {"LLC", "LLD"} else "process"
         blocks[name] = ChamberRuntimeBlock(
             name=name,
             kind=kind,
@@ -152,6 +152,8 @@ def preprocess_chamber_runtime_blocks(
     for name, block in blocks.items():
         if name in processed_pt:
             block.process_time = int(processed_pt[name])
+        elif name in route_stage_proc_time:
+            block.process_time = int(route_stage_proc_time[name])
         if name in route_stage_clean_dur:
             block.cleaning_duration = int(route_stage_clean_dur[name])
         if name in route_stage_clean_trig:

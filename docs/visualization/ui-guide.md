@@ -52,6 +52,7 @@
 4. 可视化文档中的命令示例必须与 `visualization/main.py` 参数一致。
 5. 级联 / 单设备 + `--debug`：右侧 **TRANSITIONS** 区按当前网 `id2t_name` 顺序**每两个变迁一行**（左先右后，奇数个时末行右侧留白）；全量列出，用 `enabled` 区分可点/禁用。展示名映射（仅影响按钮文案，不改变 `action_id`）：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`；级联下物理名为 `u_LLD*` 的卸载变迁 tooltip 可附 `LLD` 去向列表。
 6. `adapter_factory` 在级联模式下会把窗口当前选择的 `single_route_name` 以 `setdefault` 写入 `env_overrides`，以便与回放 JSON 中的 `replay_env_overrides` 合并时后者仍可覆盖。
+7. 晶圆可视化口径：`LLC/LLD`（`place_type=5`）在 `proc_time>0` 时按加工腔渲染，显示外圈进度与加工完成橙色；其 scrap 判定阈值与 `pn_single` 一致为 `process_time + 3 * P_Residual_time`，超时显示红色。
 
 ## Examples
 - 正例:
@@ -73,6 +74,7 @@
 - `../deprecated/viz.md`
 
 ## Change Notes
+- 2026-03-22: LLC/LLD 可视化同步：`petri_single_adapter._time_to_scrap` 新增 `place_type=5`（`LLC/LLD`）分支，阈值使用 `process_time + 3*P_Residual_time - stay_time`；`wafer_item/chamber_widget` 在 `proc_time>0` 时将 `place_type=5` 按加工腔渲染（外圈进度、完成橙色、scrap 红色）。
 - 2026-03-22: `--debug` 变迁区：`TRANSITIONS` 按 `id2t_name` 顺序固定两列（顺次两两一排），不再按 `u_LP`/`t_PM*` 等语义规则配对；级联与单设备一致。
 - 2026-03-22: `PetriSingleAdapter` 级联运输位与构网一致：库所名 `TM2`/`TM3`（及历史 `d_TM2`/`d_TM3`）进入 `transport_buffers` 并驱动 TM2/TM3 晶圆绘制；避免仅识别 `d_TM*` 时运输区为空。
 - 2026-03-20: 级联 UI：配置菜单「路径（级联）」、`1-1`…`2-4` 切换重建环境；画布顶栏仅 `routes[*].path`（无「当前路径」标题，粗体 15px，富文本分色）；`--debug` 变迁区双列与 LLC/LLD 展示名；`main.py` 工厂合并 `single_route_name`。

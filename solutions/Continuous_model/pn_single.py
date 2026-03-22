@@ -916,12 +916,15 @@ class ClusterTool:
                                 "processed_wafer_count": p.processed_wafer_count,
                             })
 
-            if has_tok and (not is_scrap) and p_type == CHAMBER:
+            if has_tok and (not is_scrap) and p_type in (CHAMBER, 5):
                 head = tokens[0]
                 post_stay = head.stay_time
                 remaining_proc = p.processing_time - post_stay
-                if remaining_proc < -p_residual:
-                    overtime = -remaining_proc - p_residual
+                resident_limit = (
+                    p_residual * 3 if p.name in {"LLC", "LLD"} else p_residual
+                )
+                if remaining_proc < -resident_limit:
+                    overtime = -remaining_proc - resident_limit
                     scrap_info = {
                         "token_id": head.token_id,
                         "place": p.name,
@@ -1026,12 +1029,15 @@ class ClusterTool:
         ):
             self._last_u_LLC_tm3_fire_time = int(start_time)
             self._u_LLC_tm3_release_count += 1
-        return {
+        log_ret: Dict[str, Any] = {
             "t_name": t_name,
             "t1": int(start_time),
             "t2": int(end_time),
             "token_id": wafer_id,
         }
+        if t_name.startswith("u_"):
+            log_ret["source_place"] = pre_place.name
+        return log_ret
 
     def _should_cancel_resident_scrap_after_fire(
         self,
@@ -1050,7 +1056,8 @@ class ClusterTool:
         t_name = str(log_entry.get("t_name", ""))
         if not t_name.startswith("u_"):
             return False
-        source_name = t_name[2:]
+        _sp = log_entry.get("source_place")
+        source_name = str(_sp) if _sp is not None else t_name[2:]
         if scrap_info.get("place") != source_name:
             return False
         try:
@@ -1570,12 +1577,15 @@ class ClusterTool:
 
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:
-            if p.type != CHAMBER:
+            if p.type not in (CHAMBER, 5):
                 continue
+            resident_limit = (
+                self.P_Residual_time * 1 if p.name in {"LLC", "LLD"} else self.P_Residual_time
+            )
             for tok in p.tokens:
                 remaining = p.processing_time - tok.stay_time
-                if remaining < -self.P_Residual_time:
-                    overtime = -remaining - self.P_Residual_time
+                if remaining < -resident_limit:
+                    overtime = -remaining - resident_limit
                     return True, {
                         "token_id": tok.token_id,
                         "place": p.name,

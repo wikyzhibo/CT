@@ -10,7 +10,7 @@
 - 网格背景: 工业风纹理
 
 晶圆信息规则（对齐 viz.py）:
-- 加工腔 (place_type=1): 主数字=剩余时间，次行=#编号；完成显示 +Ns 或 SCRAP
+- 加工腔 (place_type=1 或 LLC/LLD 的 place_type=5 且 proc_time>0): 主数字=剩余时间，次行=#编号；完成显示 +Ns 或 SCRAP
 - 运输位 (place_type=2): 主数字=#编号，次行=停留时间 Ns
 
 与 ChamberItem (QGraphicsItem) 共用 ui_params.chamber_item 可调参数，便于统一风格。
@@ -164,7 +164,7 @@ class ChamberWidget(QWidget):
         painter.setPen(text_qc)
 
         # 加工腔：上剩余时间，下 #id（完成时下显示 SCRAP / +Ns）
-        if wafer.place_type == 1 and getattr(wafer, "proc_time", 0) > 0:
+        if self._is_timed_chamber_wafer(wafer):
             remaining = max(0, int(wafer.proc_time - wafer.stay_time))
 
             #painter.setFont(QFont(p.font_family, p.wafer_font_pt))
@@ -213,7 +213,7 @@ class ChamberWidget(QWidget):
 
     def _get_wafer_color(self, wafer) -> tuple[int, int, int]:
         """按 place_type 与停留时间返回晶圆填充色，逻辑对齐 viz.py。"""
-        if wafer.place_type == 1:  # 加工腔
+        if self._is_timed_chamber_wafer(wafer):  # 加工腔（含 LLC/LLD 的计时腔室）
             proc = getattr(wafer, "proc_time", 0) or 0
             stay = int(wafer.stay_time)
             if wafer.time_to_scrap <= 0:
@@ -233,3 +233,8 @@ class ChamberWidget(QWidget):
                 return self.theme.warning
             return self.theme.success
         return self.theme.secondary
+
+    @staticmethod
+    def _is_timed_chamber_wafer(wafer) -> bool:
+        proc = float(getattr(wafer, "proc_time", 0) or 0)
+        return wafer.place_type in (1, 5) and proc > 0

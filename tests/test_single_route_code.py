@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from data.petri_configs.env_config import PetriEnvConfig
@@ -29,6 +32,16 @@ FULL_PROCESS_TIME_MAP = {
     "LLD": 70,
     "LLC": 0,
 }
+
+
+def _load_cascade_route_config() -> dict:
+    cfg_path = (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "petri_configs"
+        / "cascade_routes_1_star.json"
+    )
+    return json.loads(cfg_path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
@@ -97,29 +110,30 @@ def test_invalid_route_code_raises_value_error_instead_of_fallback():
         ClusterTool(config=cfg)
 
 
-def test_llc_tm3_takt_first_ungated_then_interval_enforced():
-    """与 u_LP 节拍一致：首次 LLC→TM3 不门控；第二次起需满足 cycle 间隔。"""
+@pytest.mark.parametrize("place_name", ["LLC", "LLD"])
+def test_llc_lld_resident_scrap_uses_three_times_p_residual(place_name: str):
     cfg = PetriEnvConfig(
-        n_wafer=4,
+        n_wafer=1,
         stop_on_scrap=False,
         device_mode="cascade",
         route_code=1,
+        P_Residual_time=10,
         process_time_map=dict(FULL_PROCESS_TIME_MAP),
-        llc_tm3_takt_interval=150,
+        single_route_config=_load_cascade_route_config(),
+        single_route_name="1-1",
     )
     net = ClusterTool(config=cfg)
-    assert net._llc_tm3_u_idx is not None
-    assert net._llc_tm3_takt_required_interval() is None
-    assert net._allow_llc_tm3_fire_now()
+    source = net._get_place("LP")
+    target = net._get_place(place_name)
+    tok = source.pop_head()
+    tok.stay_time = int(target.processing_time) + int(cfg.P_Residual_time) * 3 + 1
+    target.append(tok)
 
-    net._u_LLC_tm3_release_count = 1
-    net._last_u_LLC_tm3_fire_time = 0
-    net.time = 50
-    assert net._llc_tm3_takt_required_interval() == 150
-    assert not net._allow_llc_tm3_fire_now()
-
-    net.time = 150
-    assert net._allow_llc_tm3_fire_now()
+    is_scrap, scrap_info = net._check_scrap()
+    assert is_scrap
+    assert isinstance(scrap_info, dict)
+    assert scrap_info["type"] == "resident"
+    assert scrap_info["place"] == place_name
 
 
 def test_single_route_code0_keeps_legacy_topology():

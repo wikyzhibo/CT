@@ -18,7 +18,7 @@ from solutions.Continuous_model.construct.route_compiler_single import (
     compile_route_stages,
 )
 
-BUFFER_NAMES: Set[str] = {"LLC"}
+BUFFER_NAMES: Set[str] = {"LLC", "LLD"}
 
 
 

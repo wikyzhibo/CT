@@ -104,7 +104,7 @@ class PetriEnvConfig:
     # route_code=4 的手动发片节拍间隔（秒）；<=0 表示不启用节拍门控
     route4_takt_interval: int = 0
     # LLC→d_TM3（u_LLC）发射节拍间隔（秒）；<=0 表示不启用。口径与 u_LP 节拍一致（首次发射不门控）
-    llc_tm3_takt_interval: int = 0
+    llc_tm3_takt_interval: int = 70
     # 单设备配置驱动路径（可选）：提供后优先于 route_code 模板构网
     single_route_config: Optional[Dict[str, Any]] = None
     # 单设备配置驱动路径文件（可选）：在 load(json) 时可自动加载到 single_route_config
