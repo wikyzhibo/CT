@@ -30,6 +30,11 @@ from .algorithm_interface import (
     WaferState,
 )
 
+def _is_transport_place_name(name: str) -> bool:
+    """级联 v3 拓扑运输库所为 TM2/TM3；历史构网为 d_TM1/d_TM2/d_TM3。"""
+    return name.startswith("d_TM") or name in {"TM2", "TM3"}
+
+
 class PetriSingleAdapter(AlgorithmAdapter):
     def __init__(self, env: Env_PN_Single, step_verbose: bool = True) -> None:
         self.env = env
@@ -175,7 +180,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 if int(getattr(tok, "token_id", -1)) >= 0
             ]
             release_schedule[place.name] = list(getattr(place, "release_schedule", []))
-            if place.name.startswith("d_TM"):
+            if _is_transport_place_name(place.name):
                 transports.append(
                     ChamberState(
                         name=place.name,
@@ -245,8 +250,8 @@ class PetriSingleAdapter(AlgorithmAdapter):
         robot_wafers_tm3: List[WaferState] = []
         if transports:
             if self.device_mode == "cascade":
-                d_tm2 = next((c for c in transports if c.name == "d_TM2"), None)
-                d_tm3 = next((c for c in transports if c.name == "d_TM3"), None)
+                d_tm2 = next((c for c in transports if c.name in {"d_TM2", "TM2"}), None)
+                d_tm3 = next((c for c in transports if c.name in {"d_TM3", "TM3"}), None)
                 if d_tm2 is not None:
                     robot_wafers_tm2.extend(d_tm2.wafers)
                 if d_tm3 is not None:
@@ -266,6 +271,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
                         robot_wafers_tm3.append(wafer)
                     else:
                         robot_wafers_tm2.append(wafer)
+
         stats = self.net.calc_wafer_statistics() if hasattr(self.net, "calc_wafer_statistics") else {}
         return StateInfo(
             time=float(getattr(self.net, "time", 0)),

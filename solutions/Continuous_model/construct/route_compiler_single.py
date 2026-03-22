@@ -3,7 +3,7 @@
 
 职责：
 1. 解析 route path / sequence / repeat；
-2. 推断 stage 间 transport robot；
+2. 推断 stage 间 transport robot（级联固定网：`_TM2_SCOPE`/`_TM3_SCOPE` 子集判定，见 `build_topology.infer_cascade_transport_by_scope`）；
 3. 生成 token route plan（含兼容 route_queue 视图）；
 4. 生成与 pn_single 兼容的 route_meta。
 """
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from solutions.Continuous_model.construct.build_topology import infer_cascade_transport_by_scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +311,7 @@ def compile_route_stages(
     chamber_kind_map: Mapping[str, str],
     robots: Mapping[str, RobotSpec],
 ) -> RouteIR:
+    """robots 保留为调用签名；级联 hop 机械手仅由 scope 推断。"""
     stages = normalize_route_spec(
         route_name=route_name,
         route_cfg=route_cfg,
@@ -320,14 +323,14 @@ def compile_route_stages(
     for hop_idx in range(len(stages) - 1):
         left = stages[hop_idx]
         right = stages[hop_idx + 1]
-        rb = infer_transport_robot(left.candidates, right.candidates, robots)
+        transport_place = infer_cascade_transport_by_scope(left.candidates, right.candidates)
         transports.append(
             TransportIR(
                 hop_idx=hop_idx,
                 from_stage_idx=left.stage_idx,
                 to_stage_idx=right.stage_idx,
-                robot_name=rb.name,
-                transport_place=rb.transport_place,
+                robot_name=transport_place,
+                transport_place=transport_place,
             )
         )
     return RouteIR(

@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 2026-03-22
+
+### 可视化：`--debug` 变迁按钮按顺序两列排布 (2026-03-22)
+- **What changed**：`visualization/transition_labels.py` 用 `build_transition_rows_two_columns` 替代按 `u_LP`/`u_PM*` 等规则配对；`control_panel.update_actions` 中级联与单设备均按变迁列表顺序每行两个按钮。
+- **Why**：拓扑变迁名为 `u_*_TM2`、`t_TM2_*` 等时旧规则几乎无法配对，未命中项独占一行，界面退化为单列。
+- **Impact**：仅影响调试面板布局；`action_id` 与使能逻辑不变。级联下 `u_LLD*` 仍附加 LLD 去向 tooltip。
+
+### 可视化：级联运输库所名 `TM2`/`TM3` 与 `PetriSingleAdapter` 对齐 (2026-03-22)
+- **What changed**：`visualization/petri_single_adapter.py` 将运输库所识别为 `d_TM*` **或** 库所名 `TM2`/`TM3`；级联下机械手晶圆列表从 `TM2`/`TM3`（及兼容 `d_TM2`/`d_TM3`）读取。`solutions/Continuous_model/construct/__init__.py` 从同级 `construct.py` 转发导出 `BasedToken`/`SuperPetriBuilder` 等，避免子包目录遮蔽原模块导致 `import ...construct` 失败。
+- **Why**：固定拓扑 v3 中运输库所名为 `TM2`/`TM3`（见 `construct/build_topology.py`），旧逻辑仅匹配 `d_TM*`，`transport_buffers` 为空导致 TM2/TM3 不显示晶圆。
+- **Impact**：级联可视化与统计面板的运输位/机械手状态恢复；依赖 `from solutions.Continuous_model.construct import BasedToken` 的代码在存在 `construct/` 子包时仍可导入。
+
+### 构网预处理拆分到 `preprocess_config` + marks 构造迁移 (2026-03-22)
+- **What changed**：新增 `solutions/Continuous_model/preprocess_config.py`，将 route/chamber 的 stage 覆盖、工时取整、清洗参数归并收敛为“每腔室一块”的预处理真源；新增 `solutions/Continuous_model/build_marks.py`，集中产出 `m0/md/ptime/capacity/marks/process_time_map`。`construct_single.py` 删除 `SingleModuleSpec/modules` 与内联 marks 构造路径，改为调用新模块。
+- **Why**：去除构网阶段散乱 map 与重复合并，统一 `process_time_map` 口径并缩短 `build_net` 主路径。
+- **Impact**：构网容量固定为 `LP/LP_done=100`、其他库所=1；`m0` 固定全 0，token 仅在 source 注入；`TM2/TM3` one-hot 固定硬编码。`ClusterTool._base_proc_time_map` 继续直接消费构网返回 `process_time_map`。
+
+### `construct_single` 构网入口合并为 `build_net` (2026-03-22)
+- **What changed**：删除 `build_single_device_net` 与 `_build_single_device_net_from_route_config`，合并为 `build_net`（形参、返回值与旧 `build_single_device_net` 相同）。`pn_single.ClusterTool` 与相关测试改为调用 `build_net`。
+- **Why**：单一入口，去掉薄包装与私有实现分裂。
+- **Impact**：直接 `from construct_single import build_single_device_net` 的代码须改为 `build_net`；校验失败时 `ValueError` 文案中的函数名为 `build_net`。
+
+### `transition_id` 缓存与按 scope 选 hop 机械手 (2026-03-22)
+- **What changed**：`build_topology` 拓扑版本升为 v3；`get_topology()` 返回 `transition_id`（键 `(TM2|TM3, 目标腔室)` → `t_*` 全名），并写入 `data/cache/transition_id_v3.npz`。`route_compiler_single.compile_route_stages` 用 `infer_cascade_transport_by_scope` 替代原 `infer_transport_robot` 的 hop 判定；`construct_single` 装配 `active_t_names` 时查 `transition_id`。
+- **Why**：单一真源索引 `t_*`；hop 与 `_TM2_SCOPE`/`_TM3_SCOPE` 对齐。
+- **Impact**：旧 `topology_v2.npz` 会被忽略并重建；双 scope 同时覆盖同一 hop 时取 **TM3**。
+
+### 晶圆 route_queue 迁至 `build_route_queue.py` (2026-03-22)
+- **What changed**：新增 `solutions/Continuous_model/build_route_queue.py` 中 `build_cascade_token_route_queue`；`construct_single` 仅调用该函数生成 `t_route_code_map`、`token_route_queue_template`、`token_route_plan_template`（内部仍调用 `route_compiler_single.build_token_route_plan`）。
+- **Why**：路由队列构造与构网主流程分离，不塞进 `route_compiler_single` 的解析/归一化模块。
+- **Impact**：行为与迁出前一致；扩展队列逻辑时改 `build_route_queue.py`。
+
 ## 2026-03-20
 
 ### 工序时长预处理迁入构网 (`construct_single`) (2026-03-20)

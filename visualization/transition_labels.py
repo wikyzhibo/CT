@@ -1,10 +1,9 @@
 """
-级联模式变迁按钮：展示名映射与两列排布顺序（物理变迁名 / action_id 不变）。
+级联模式变迁按钮：展示名映射；调试区按变迁顺序固定两列（每行最多两个按钮）。
 """
 
 from __future__ import annotations
 
-import re
 from typing import Dict, List, Optional, Tuple
 
 from .algorithm_interface import ActionInfo
@@ -25,56 +24,16 @@ def cascade_button_label(phys_name: str) -> str:
     return CASCADE_DISPLAY_NAMES.get(phys_name, phys_name)
 
 
-def _pm_sort_key(name: str) -> Optional[int]:
-    m = re.match(r"^[ut]_PM(\d+)$", name)
-    return int(m.group(1)) if m else None
-
-
-def build_cascade_transition_rows(
-    ordered_names: List[str],
-    by_name: Dict[str, ActionInfo],
-    lld_targets: Optional[List[str]] = None,
+def build_transition_rows_two_columns(
+    actions: List[ActionInfo],
 ) -> List[Tuple[Optional[ActionInfo], Optional[ActionInfo]]]:
-    """
-    生成 (左, 右) 行序列：左/右 可为 None（单行单钮时另一侧留白）。
-    ordered_names: 与 net.id2t_name 顺序一致的去重变迁名列表。
-    """
-    consumed: set[str] = set()
+    """按 `actions` 顺序每两个一排：(a0,a1), (a2,a3), … 奇数个时末行右侧为空。"""
     rows: List[Tuple[Optional[ActionInfo], Optional[ActionInfo]]] = []
-
-    def pair(left_name: str, right_name: str) -> None:
-        la = by_name.get(left_name)
-        ra = by_name.get(right_name)
-        if la is None and ra is None:
-            return
-        if la is not None:
-            consumed.add(left_name)
-        if ra is not None:
-            consumed.add(right_name)
-        rows.append((la, ra))
-
-    # 1) LP 出入口
-    pair("u_LP", "t_LP_done")
-    # 2) LLC / LLD（TM2/TM3 语义展示名在 UI 层套）
-    pair("t_LLC", "u_LLC")
-    pair("t_LLD", "u_LLD")
-    # 3) PM*：u_PMx 与 t_PMx 同行
-    pm_nums = sorted(
-        {_pm_sort_key(n) for n in by_name if _pm_sort_key(n) is not None}
-    )
-    for n in pm_nums:
-        pair(f"u_PM{n}", f"t_PM{n}")
-
-    # 4) 其余按 id2t 顺序各一行（每行一个按钮占左格，右格空）
-    for name in ordered_names:
-        if name in consumed:
-            continue
-        a = by_name.get(name)
-        if a is None:
-            continue
-        consumed.add(name)
-        rows.append((a, None))
-
+    n = len(actions)
+    for i in range(0, n, 2):
+        left = actions[i]
+        right = actions[i + 1] if i + 1 < n else None
+        rows.append((left, right))
     return rows
 
 

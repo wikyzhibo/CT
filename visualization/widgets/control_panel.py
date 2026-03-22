@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLa
 
 from ..algorithm_interface import ActionInfo
 from ..theme import ColorTheme
-from ..transition_labels import build_cascade_transition_rows, cascade_button_label, u_lld_tooltip_extra
+from ..transition_labels import build_transition_rows_two_columns, cascade_button_label, u_lld_tooltip_extra
 from ..ui_params import ui_params
 
 
@@ -322,22 +322,7 @@ class ControlPanel(QWidget):
                 continue
             transition_actions.append(action)
 
-        if device_mode != "cascade":
-            for action in transition_actions:
-                btn = QPushButton(action.action_name)
-                btn.setEnabled(action.enabled)
-                tip = (action.description or "Condition not met") if not action.enabled else "点击执行"
-                btn.setToolTip(tip)
-                btn.setObjectName("TransitionButton")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _=False, a=action.action_id: self.action_clicked.emit(a))
-                self.transition_group.addWidget(btn)
-                self.buttons.append(btn)
-            return
-
-        ordered_names = [a.action_name for a in transition_actions]
-        by_name = {a.action_name: a for a in transition_actions}
-        rows = build_cascade_transition_rows(ordered_names, by_name, lld_targets=lld_targets)
+        rows = build_transition_rows_two_columns(transition_actions)
         for left, right in rows:
             row = QWidget()
             h = QHBoxLayout(row)
@@ -348,7 +333,8 @@ class ControlPanel(QWidget):
                 if act is None:
                     h.addStretch(1)
                     return
-                extra = u_lld_tooltip_extra(lld_targets) if act.action_name == "u_LLD" else ""
+                is_lld_u = str(act.action_name).startswith("u_LLD")
+                extra = u_lld_tooltip_extra(lld_targets) if (device_mode == "cascade" and is_lld_u) else ""
                 h.addWidget(self._make_transition_button(act, extra_tip=extra), 1)
 
             add_side(left)

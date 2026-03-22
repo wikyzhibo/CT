@@ -50,7 +50,7 @@
 2. `--no-model` 启用时，仍可使用 Model B 进行离线回放。
 3. 回放时序列来源若为 single，应保证 `actions` 与 `action` 字段兼容。
 4. 可视化文档中的命令示例必须与 `visualization/main.py` 参数一致。
-5. 级联 + `--debug`：右侧 **TRANSITIONS** 区以**每行两个按钮**展示；变迁集合与当前网 `id2t_name` 一致（全量列出，用 `enabled` 区分可点/禁用，不子集隐藏）。展示名映射：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`（`u_LLD` 的 tooltip 可附 `LLD` 去向列表）；`u_LP`/`t_LP_done` 保持原名；`u_PM*` 与 `t_PM*` 同行。单设备模式下行内布局与命名保持原样。
+5. 级联 / 单设备 + `--debug`：右侧 **TRANSITIONS** 区按当前网 `id2t_name` 顺序**每两个变迁一行**（左先右后，奇数个时末行右侧留白）；全量列出，用 `enabled` 区分可点/禁用。展示名映射（仅影响按钮文案，不改变 `action_id`）：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`；级联下物理名为 `u_LLD*` 的卸载变迁 tooltip 可附 `LLD` 去向列表。
 6. `adapter_factory` 在级联模式下会把窗口当前选择的 `single_route_name` 以 `setdefault` 写入 `env_overrides`，以便与回放 JSON 中的 `replay_env_overrides` 合并时后者仍可覆盖。
 
 ## Examples
@@ -73,6 +73,8 @@
 - `../deprecated/viz.md`
 
 ## Change Notes
+- 2026-03-22: `--debug` 变迁区：`TRANSITIONS` 按 `id2t_name` 顺序固定两列（顺次两两一排），不再按 `u_LP`/`t_PM*` 等语义规则配对；级联与单设备一致。
+- 2026-03-22: `PetriSingleAdapter` 级联运输位与构网一致：库所名 `TM2`/`TM3`（及历史 `d_TM2`/`d_TM3`）进入 `transport_buffers` 并驱动 TM2/TM3 晶圆绘制；避免仅识别 `d_TM*` 时运输区为空。
 - 2026-03-20: 级联 UI：配置菜单「路径（级联）」、`1-1`…`2-4` 切换重建环境；画布顶栏仅 `routes[*].path`（无「当前路径」标题，粗体 15px，富文本分色）；`--debug` 变迁区双列与 LLC/LLD 展示名；`main.py` 工厂合并 `single_route_name`。
 - 2026-03-20: 回放环境重建新增透传 `single_route_name/single_route_config`；当序列来自配置驱动路线（如 `1-2`）时，UI 回放将按原路线构网，不再退化为仅 `route_code` 的默认拓扑。
 - 2026-03-19: 建立可视化主文档，统一入口参数、模型加载与回放数据契约。

@@ -31,7 +31,7 @@
 | PM  | PM1, PM3, PM4... | 9 | P_Residual_time, cleaning_* |
 | LL  | LLC, LLD | 6（基础 4 维 + `in/out` 两维） | - |
 
-构网时由 `construct_single.build_single_device_net(obs_config=...)` 创建。详见 `docs/架构.md`。
+构网时由 `construct_single.build_net(obs_config=...)` 创建。详见 `docs/架构.md`。
 
 ### Petri
 
@@ -116,7 +116,7 @@ class BasedToken:
 - 单设备清洗与腔室配置：支持全局扁平字段或腔室集成块 `chambers`。
   - **扁平方式**：`cleaning_enabled`、`cleaning_targets`、`cleaning_trigger_wafers`、`cleaning_duration`；所有在 `cleaning_targets` 内的腔室共用同一触发次数与清洁时长。
   - **腔室集成方式**：在配置中提供 `chambers`，每腔室可配置 `process_time`、`cleaning_duration`、`cleaning_trigger_wafers`。若提供 `chambers`，会生成/覆盖 `process_time_map`、`cleaning_trigger_wafers_map`、`cleaning_duration_map`。
-  - ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_single_device_net`，每个 PM 实例获得对应腔室的清洁参数。
+  - ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_net`，每个 PM 实例获得对应腔室的清洁参数。
 
 **工艺路线**
 - `single_device_mode="cascade"`：

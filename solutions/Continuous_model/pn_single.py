@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
 from solutions.Continuous_model.helper_function import _normalize_wait_durations
 
@@ -16,8 +16,8 @@ except Exception:  # pragma: no cover - numba 可选依赖
 
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.construct import BasedToken
-from solutions.Continuous_model.construct_single import build_single_device_net
-from solutions.Continuous_model.route_compiler_single import normalize_route_spec
+from solutions.Continuous_model.construct_single import build_net
+from solutions.Continuous_model.construct.route_compiler_single import normalize_route_spec
 from solutions.Continuous_model.pn import Place
 from solutions.Continuous_model.takt_cycle_analyzer import (
     analyze_cycle,
@@ -337,7 +337,7 @@ class ClusterTool:
             "cleaning_trigger_wafers_map": self._cleaning_trigger_map,
             "scrap_clip_threshold": 20.0,
         }
-        info = build_single_device_net(
+        info = build_net(
             n_wafer=self.n_wafer,
             ttime=max(1, self.T_transport),
             robot_capacity=self.robot_capacity,

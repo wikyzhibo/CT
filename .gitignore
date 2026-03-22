@@ -59,3 +59,4 @@ Thumbs.db
 solutions/Td_petri/RL2_job8.png
 solutions/Td_petri/planB_sequence.json
 *.pt
+*.npz

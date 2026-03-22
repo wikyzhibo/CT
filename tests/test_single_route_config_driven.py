@@ -1,4 +1,4 @@
-from solutions.Continuous_model.construct_single import build_single_device_net
+from solutions.Continuous_model.construct_single import build_net
 from data.petri_configs.env_config import PetriEnvConfig
 from solutions.Continuous_model.pn_single import ClusterTool
 from pathlib import Path
@@ -64,7 +64,7 @@ def _demo_route_config():
 
 
 def test_config_driven_route_d_builds_transport_and_token_queue():
-    info = build_single_device_net(
+    info = build_net(
         n_wafer=1,
         ttime=5,
         robot_capacity=1,
@@ -97,8 +97,41 @@ def test_config_driven_route_d_builds_transport_and_token_queue():
     assert q[-1] == info["t_route_code_map"]["t_TM2_LP_done"]
 
 
+def test_build_net_uses_fixed_capacity_and_zero_m0_then_source_inject():
+    info = build_net(
+        n_wafer=3,
+        ttime=5,
+        robot_capacity=1,
+        process_time_map={"PM7": 5, "PM8": 5, "PM9": 5, "PM10": 5},
+        route_code=5,
+        device_mode="cascade",
+        obs_config={"P_Residual_time": 15, "D_Residual_time": 10},
+        route_config=_demo_route_config(),
+        route_name="route_D",
+    )
+
+    name_to_idx = {name: i for i, name in enumerate(info["id2p_name"])}
+    cap = info["capacity"]
+    m0 = info["m0"]
+    marks = info["marks"]
+
+    assert cap[name_to_idx["LP"]] == 100
+    assert cap[name_to_idx["LP_done"]] == 100
+    for name, idx in name_to_idx.items():
+        if name in {"LP", "LP_done"}:
+            continue
+        assert cap[idx] == 1
+
+    assert (m0 == 0).all()
+    for place in marks:
+        if place.name == "LP":
+            assert len(place.tokens) == 3
+        else:
+            assert len(place.tokens) == 0
+
+
 def test_config_driven_repeat_route_generates_loop_u_targets_and_queue():
-    info = build_single_device_net(
+    info = build_net(
         n_wafer=1,
         ttime=5,
         robot_capacity=1,
@@ -158,6 +191,9 @@ def test_petri_env_config_loads_single_route_config_from_path():
     assert pm7.processing_time == 80  # route 1-1: 78s -> round to 80
     assert pm3.processing_time == 110
     assert lld.processing_time == 75
+    assert net._base_proc_time_map.get("PM7") == 80
+    assert net._base_proc_time_map.get("PM3") == 110
+    assert net._base_proc_time_map.get("LLD") == 75
     assert net._cleaning_duration_map.get("PM3") == 88
     assert net._cleaning_trigger_map.get("PM3") == 1
 

@@ -19,7 +19,7 @@
   - 可视化 UI 实现细节。
 
 ## Architecture or Data Flow
-1. `construct_single.py` 的 `build_single_device_net` 仅基于 `route_config(+route_name)` 构建网络结构与元数据。
+1. `construct_single.py` 的 `build_net` 仅基于 `route_config(+route_name)` 构建网络结构与元数据；晶圆 `route_queue` / `t_route_code_map` / `token_route_plan` 由 `build_route_queue.build_token_route_queue` 生成。
 2. `ClusterTool` 维护标识、使能判定、时间推进、reward 计算、违规统计。
 3. `Env_PN_Single` 封装 TorchRL 风格 `reset/step`，并暴露固定动作空间下的 `action_mask`。
 4. 训练脚本 `train_single.py` 调用 `collect_rollout_ultra` 执行 CPU rollout + batched PPO update。
@@ -42,23 +42,27 @@
   - `--sequence` 必填，脚本按仓库根目录 `seq/<json_name>` 解析。
 
 ## Behavior Rules
-1. 构网输入严格校验：`build_single_device_net` 必须提供 `route_config` 且 `device_mode` 必须是 `cascade`，否则直接报错。
+1. 构网输入严格校验：`build_net` 必须提供 `route_config` 且 `device_mode` 必须是 `cascade`，否则直接报错。
 2. 构网固定走“固定拓扑 + 配置驱动 route 编译链”（`load/build static topology -> parse/normalize -> route IR -> token route -> dynamic marks/token`）；`route_code` 仅用于兼容 alias 选择，不再触发 legacy 手写拓扑分支。
 3. 固定拓扑包含 `LP, PM1-PM10, LLC, LLD, LP_done, TM2, TM3`。
 4. 变迁命名统一为 `u_src_dst` 与 `t_src_dst`；其中 `u_src_dst` 的 `dst` 是 `TM2/TM3`，`t_src_dst` 的 `src` 是 `TM2/TM3`。
-5. 不再兼容旧命名（`d_TM*`、`t_PM*` 等）；运行时仅消费新命名。
-6. 固定动作空间下，未被当前 route 使用的变迁必须在 `get_action_mask` 中恒为 0。
-3. 当通过 `PetriEnvConfig.load(json)` 加载且 json 中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`。
-4. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
-5. 导出脚本的 `--out-name` 当前不参与文件命名，仅保留兼容。
-6. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
-7. 旧观测分支（place-obs）不再作为当前实现接口。
-8. 配置驱动路径启用时，所选 `route.sequence` 中 stage 级 `process_time/cleaning_*` 会在 `pn_single` 侧先合并进传入构网的 `process_time_map`/清洗映射；工序时长默认与取整到 5 秒在 `construct_single.build_single_device_net`（`preprocess_process_time_map_for_single_net`）内完成，构网返回值中的 `process_time_map` 与 `marks`/`ptime` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
-9. `u_*` 使能采用“指针目标单点判定”：先按 round-robin 指针选定下一目标，再仅校验该目标可接收（未清洗且未满）；若该指针目标不可接收，则该 `u_*` 直接不可使能，不再回退扫描其它候选目标。
-10. `_fire` 阶段不再执行目标重选；并行目标的放行完全由掩码阶段决定，`_fire` 仅推进指针与执行状态更新。
-11. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
-12. `PetriEnvConfig.llc_tm3_takt_interval > 0` 时，对构网得到的 **LLC→`d_TM3`** 释放变迁（`("LLC","d_TM3")` 对应的 `u_*`）施加节拍门控：口径与 `u_LP` 的 `_takt_required_interval` 一致（**首次发射不因节拍被禁**，第二次起按 `build_fixed_takt_result(interval)` 的 `cycle_takts` 取最小间隔）；`<=0` 为默认关闭。门控同步作用于 `get_action_mask` 与 `get_next_event_delta`。
-13. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
+5. 固定拓扑除 `data/cache/topology_vN.npz` 外，另存 `data/cache/transition_id_vN.npz`：`transition_id` 映射 **键** `(TM2 或 TM3, 目标腔室)` → **值** 对应 `t_*` 全名。`get_topology()` 返回的 dict 必含 `transition_id`（与缓存同版本）。
+6. `compile_route_stages` 相邻 stage 的机械手由 `build_topology.infer_cascade_transport_by_scope` 判定：左、右 stage 的 candidates 须同时落在 `_TM2_SCOPE` 或 `_TM3_SCOPE` 之一；若两套 scope 同时满足则取 **TM3**。
+7. 不再兼容旧命名（`d_TM*`、`t_PM*` 等）；运行时仅消费新命名。
+8. 固定动作空间下，未被当前 route 使用的变迁必须在 `get_action_mask` 中恒为 0。
+9. 当通过 `PetriEnvConfig.load(json)` 加载且 json 中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`。
+10. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
+11. 导出脚本的 `--out-name` 当前不参与文件命名，仅保留兼容。
+12. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
+13. 旧观测分支（place-obs）不再作为当前实现接口。
+14. 配置驱动路径启用时，`construct_single.build_net` 通过 `preprocess_config.py` 先构建“每腔室一块”的预处理真源（包含 stage 覆盖后的 `process_time/cleaning_*`）；`build_marks.py` 仅消费该真源构造 place，返回的 `process_time_map` 只来自该预处理真源并与 `marks` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
+15. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
+16. 级联模式 `TM2/TM3` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 8 维目标集合，不再按 route 动态构造。
+17. `u_*` 使能采用“指针目标单点判定”：先按 round-robin 指针选定下一目标，再仅校验该目标可接收（未清洗且未满）；若该指针目标不可接收，则该 `u_*` 直接不可使能，不再回退扫描其它候选目标。
+18. `_fire` 阶段不再执行目标重选；并行目标的放行完全由掩码阶段决定，`_fire` 仅推进指针与执行状态更新。
+19. 级联观测中 `TM2/TM3` 的目标 one-hot 采用固定 8 维逐目标编码（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
+20. `PetriEnvConfig.llc_tm3_takt_interval > 0` 时，对构网得到的 **LLC→`d_TM3`** 释放变迁（`("LLC","d_TM3")` 对应的 `u_*`）施加节拍门控：口径与 `u_LP` 的 `_takt_required_interval` 一致（**首次发射不因节拍被禁**，第二次起按 `build_fixed_takt_result(interval)` 的 `cycle_takts` 取最小间隔）；`<=0` 为默认关闭。门控同步作用于 `get_action_mask` 与 `get_next_event_delta`。
+21. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
 
 ## Examples
 - 正例:
@@ -79,12 +83,16 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-22: `construct_single` 的配置预处理拆分到 `preprocess_config.py`，以“预处理后的腔室块”作为 `process_time_map` 唯一真源；`build_marks.py` 新增 marks 构造入口并接管 `m0/md/ptime/capacity/marks` 产出。容量口径固定为 `LP/LP_done=100`、其余 place=1，`m0` 固定全 0，token 仅注入 source place。`TM2/TM3` one-hot 改为固定硬编码集合。
+- 2026-03-22: `construct_single.build_single_device_net` 与内部 `_build_single_device_net_from_route_config` 合并为单一入口 `build_net`（签名与旧 `build_single_device_net` 一致）；外部调用须改用 `build_net`。
+- 2026-03-22: 拓扑缓存版本升为 v3；新增 `data/cache/transition_id_v3.npz`（`transition_id`：`t_*` 的 `(TMx, 目标腔室)` 索引）。`compile_route_stages` 的 hop 机械手改为 `infer_cascade_transport_by_scope`（`_TM2_SCOPE`/`_TM3_SCOPE`）；双覆盖时取 TM3。`construct_single` 装配 `active_t_names` 时查 `transition_id`。
+- 2026-03-22: 晶圆路由队列构造从 `construct_single` 迁至 `build_route_queue.py`（`build_cascade_token_route_queue`），`route_compiler_single` 仍只负责解析/归一化与 `build_token_route_plan` 等编译逻辑。
 - 2026-03-21: 运输位命名从 `d_TM2/d_TM3` 统一为 `TM2/TM3`；变迁命名统一为 `u_src_dst/t_src_dst`，不再兼容旧命名。
-- 2026-03-21: 下线 single 路径：`Env_PN_Single`/`ClusterTool`/`build_single_device_net` 均收敛到 cascade-only；传入 `device_mode!=cascade` 会直接报错。
+- 2026-03-21: 下线 single 路径：`Env_PN_Single`/`ClusterTool`/构网入口均收敛到 cascade-only；传入 `device_mode!=cascade` 会直接报错。
 - 2026-03-21: 构网切换为“固定全拓扑 + 动态 route 变迁集合 + 跨进程缓存”；未使用变迁在 mask 中恒为 0。
 - 2026-03-21: `get_action_mask` 的 d_TM 分支新增并行 gate 机器轮转筛选：当 `tok_gate` 为 `tuple/frozenset` 时，仅允许后置目标命中 `_cascade_round_robin_next.values()` 的 `t_*` 通过 mask。
 - 2026-03-21: 删除 `_peek_target_for_source_for_obs` 与 `_select_target_for_source`；`u_*` 使能改为 `_is_next_stage_available` 的“round-robin 指针单点判定”（指针目标满/清洗即直接屏蔽，不再回退其它候选）；`_fire` 不再执行目标重选与写入 `tok._target_place`；`LLC/LLD` 方向 one-hot 临时固定为全 0。
-- 2026-03-21: `construct_single.build_single_device_net` 收敛为 `route_config`-only；移除函数内部 legacy 手写拓扑分支。影响是：未提供 `single_route_config` 的调用链会直接报错，需要迁移到配置驱动路线输入。
+- 2026-03-21: `construct_single` 构网收敛为 `route_config`-only；移除函数内部 legacy 手写拓扑分支。影响是：未提供 `single_route_config` 的调用链会直接报错，需要迁移到配置驱动路线输入。
 - 2026-03-21: `ClusterTool` 在 `single_route_name` 已设置时对同一路由只调用一次 `normalize_route_spec`，由该结果同时生成 stage 工时/清洗覆盖、`_route_stages` 与 chambers 顺序；移除后续宽泛 `try/except`，归一化或派生失败时不再静默回退到仅 `chambers` 配置的 chambers 列表。
 - 2026-03-21: `_normalize_route_code` 在非法 `device_mode` 时抛出 `ValueError`（含 `device_mode` 字样），不再因 `_VALID_ROUTE_CODES` 下标访问产生 `KeyError`。
 - 2026-03-20: 移除单设备「按 episode 随机缩放工序时长」能力：删除 `PetriEnvConfig.proc_rand_enabled`、`proc_time_rand_scale_map`、`chambers[].proc_rand_scale` 与 route stage `proc_rand_scale`；`train_single` 去掉 `--proc-time-rand-enabled`。
