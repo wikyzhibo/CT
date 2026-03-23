@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-03-23
+
+### PDR：记录发射时刻并导出 5s 粒度回放序列 (2026-03-23)
+- **What changed**：`solutions/PDR/net.py` 在 DFS 路径上新增 `full_transition_records`（`transition + fire_time`），叶子容器新增 `LEAF_PATH_RECORDS`。新增 `solutions/PDR/parse_sequences.py`：将 `full_transition_records` 转换为 `schema_version=2` 的 single 回放序列；当相邻真实动作时间差超过 5 秒时自动插入 `WAIT_5s`。`solutions/PDR/run_pdr.py` 在 `search()` 后自动导出 `seq/pdr_sequence.json`，并保留解析脚本 CLI 独立导出能力。
+- **Why**：仅有变迁名无法还原时间轴；可视化回放需要带时间的动作序列，并需要 5 秒粒度的等待动作补齐间隔。
+- **Impact**：PDR 搜索结果可直接转换为 UI Model B 可加载序列；`full_transition_path` 兼容保留，新增消费者可切到 `full_transition_records` 获取时序信息。
+
 ## 2026-03-22
 
 ### train_single：`--artifact-dir` 下恢复甘特与图标题路径后缀 (2026-03-22)

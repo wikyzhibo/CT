@@ -1,12 +1,9 @@
-from collections import deque
 import numpy as np
 import pandas as pd
-import torch
-from tensordict import TensorDict
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from solutions.model.pn_models import Place, BasedToken
-from solutions.model.guard import ZeroBufferWindowController
 from solutions.PDR.construct import build_pdr_net
+
 
 def get_pre_pst(net_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """把 -1 / +1 网络表转为 Pre / Pst 矩阵（P, T）。"""
@@ -20,6 +17,8 @@ INF = 10**6
 LEAF_NODES = []
 LEAF_CLOCKS = []
 LEAF_PATHS = []
+LEAF_PATH_RECORDS = []
+LEAF_LP_RELEASE_COUNTS = []
 
 class Petri:
     def __init__(self, **kwargs) -> None:
@@ -65,7 +64,11 @@ class Petri:
         self.mask_record = []
 
         self.expand_mark = 0
-        self.search_depth = 3
+        self.search_depth = 5
+        self.full_transition_path: List[str] = []
+        self.full_transition_records: List[Dict[str, int | str]] = []
+
+        self.takt_cycle = list(kwargs.get("takt_cycle", [0] + [170] * (self.n_wafer - 1)))
 
     def _init_marks_from_m(self, m: np.ndarray, two_mode=0) -> List[Place]:
         """
@@ -167,7 +170,8 @@ class Petri:
                               t: int,
                               m,
                               marks,
-                              start_from: Optional[int] = None) -> int:
+                              start_from: Optional[int] = None,
+                              lp_release_count: int = 0) -> int:
         """
         返回最早时刻 τ（>= start_from，默认当前 self.time），使变迁 t 可触发：
           - 每个前置库所有至少一枚 token，且它们的 enter_time <= τ；
@@ -200,7 +204,17 @@ class Petri:
         # 由于容量是静态上限，简单检查“现在的 m + Pst[:,t] <= k”即可：
         if not ((m + self.pst[:, t]) <= self.k).all():
             return -1
+        if self.id2t_name[t] == "u_LP_TM2":
+            earliest = max(earliest, self._lp_takt_ready_time(lp_release_count))
         return earliest
+
+    def _lp_takt_ready_time(self, lp_release_count: int) -> int:
+        """
+        返回下一次 u_LP_TM2 允许发射的最早时刻。
+        lp_release_count 表示当前路径上已发射 u_LP_TM2 的次数。
+        """
+        upper = min(int(lp_release_count) + 1, len(self.takt_cycle))
+        return int(sum(self.takt_cycle[:upper]))
 
     def _tpn_fire(self,
              t: int,
@@ -247,63 +261,26 @@ class Petri:
 
         return new_m, new_marks, enter_new
 
-    def _if_violation(self,t,firetime,mark):
+    def check_scrap(self, t, firetime, mark):
 
-        """检查是否存在违反约束：运输时间约束返回2，驻留时间约束返回1，否则返回0"""
+        """
+        检查当前动作是否触发驻留时间违规（resident scrap）。
+        返回 True 表示该分支需要剪枝。
+        """
         pre_places = np.nonzero(self.pre[:, t] > 0)[0]
         for p in pre_places:
             place = mark[p]
             if place.type == 1:
                 if firetime > place.head().enter_time + place.processing_time + 15:
-                    return 1
-            if place.type == 2:
-                if firetime > place.head().enter_time + 30:
-                    return 2
-        return 0
+                    return True
+            #if place.type == 2:
+            #    if firetime > place.head().enter_time + 30:
+            #        return 2
+        return False
 
     # ---------- 一步接口（若需要返回 mask / 完成标志） ----------
     def step(self,t: int):
-        """
-        use for the PPO training algorithm
-        """
-        t_name = self.id2t_name[t]
-        marks = self.marks
-        m = self.m
-        et = self._earliest_enable_time(t,m,marks,self.time)
-
-        if t_name == 'u2':
-            ft = self.zb.peek_time('t3',et)
-        else:
-            ft = self.zb.peek_time(t_name,et)
-        job_id = self._get_t_job_id(t,marks)
-        self.zb.commit(t_name,ft,job_id)
-        start_from = int(ft)
-
-        new_m, new_marks, time = self._tpn_fire(t,m,marks,start_from=start_from)
-        mask = self.mask_t(new_m,new_marks)
-        finish = bool((new_m == self.md).all())
-        deadlock = (not finish) and  (not mask.any())
-        time_violation_type = self._if_violation(t,time,marks)
-
-
-        self.m = new_m
-        self.marks = new_marks
-        self.time = time
-
-        if t_name == 't8':
-            finish_a_wafer = 1
-        else:
-            finish_a_wafer = 0
-
-        info = {"m": new_m,
-                "marks": new_marks,
-                "mask": mask,
-                "finish_a_wafer": finish_a_wafer,
-                "finish": finish,
-                "deadlock": deadlock,
-                "time": time,
-                "time_violation_type": time_violation_type}
-        return info
+        pass
 
     def _search_fire(self, t: int, m, marks, start_from: int):
         """
@@ -341,111 +318,172 @@ class Petri:
                 return -1
         return -1
 
-    def check_scrap(self, t: int, firetime: int, marks: List[Place]) -> bool:
-        """
-        检查当前动作是否触发驻留时间违规（resident scrap）。
-        返回 True 表示该分支需要剪枝。
-        """
-        return self._if_violation(t, firetime, marks) == 1
-
-    def get_leaf_node(self, m: np.ndarray, marks: List[Place], clock: int) -> None:
+    def get_leaf_node(
+            self,
+            m: np.ndarray,
+            marks: List[Place],
+            clock: int,
+            path: List[int],
+            path_records: List[Dict[str, int | str]],
+            lp_release_count: int,
+    ) -> None:
         """
         记录深度叶子节点（全局收集）。
         """
-        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS
+        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS, LEAF_LP_RELEASE_COUNTS
         LEAF_NODES.append({
             "m": m.copy(),
             "marks": self._clone_marks(marks),
         })
         LEAF_CLOCKS.append(int(clock))
-        LEAF_PATHS.append([self.id2t_name[t] for t in self.transitions])
+        LEAF_PATHS.append([self.id2t_name[t] for t in path])
+        LEAF_PATH_RECORDS.append([{"transition": str(item["transition"]), "fire_time": int(item["fire_time"])} for item in path_records])
+        LEAF_LP_RELEASE_COUNTS.append(int(lp_release_count))
 
-    def _dfs_collect_leaves(self, m, marks, clock: int, depth: int) -> None:
+    def collect_leaves_iterative(
+            self,
+            m: np.ndarray,
+            marks: List[Place],
+            clock: int,
+            depth: int,
+            lp_release_count: int,
+    ) -> None:
+        """
+        使用显式栈执行 DFS，避免递归。
+        栈帧: (m, marks, clock, depth, path, path_records, lp_release_count)
+        """
+        stack = [(m.copy(), self._clone_marks(marks), int(clock), int(depth), [], [], int(lp_release_count))]
 
-        # 到达第五层，收集叶子节点信息并返回
-        if depth == 0:
-            self.get_leaf_node(m, marks, clock)
-            return
+        while stack:
+            cur_m, cur_marks, cur_clock, cur_depth, cur_path, cur_path_records, cur_lp_release_count = stack.pop()
 
-        mask = self.mask_t(m, marks)
-        enabled_transitions = np.nonzero(mask)[0]
-        # 死锁剪枝
-        if len(enabled_transitions) == 0:
-            return
-
-        transition_queue = []
-        for t in enabled_transitions:
-            et = self._earliest_enable_time(t, m, marks, clock)
-            transition_queue.append((int(t), int(et), self.id2t_name[t]))
-
-        for t, enable_time, _ in transition_queue:
-            if self.check_scrap(t, enable_time, marks):
-                self.over_time += 1
+            if bool((cur_m == self.md).all()) or cur_depth == 0:
+                self.get_leaf_node(
+                    m=cur_m,
+                    marks=cur_marks,
+                    clock=cur_clock,
+                    path=cur_path,
+                    path_records=cur_path_records,
+                    lp_release_count=cur_lp_release_count,
+                )
                 continue
 
-            info = self._search_fire(t, m, marks, enable_time)
-            new_m = info["m"]
-            new_marks = info["marks"]
-            new_clock = int(info["time"])
+            mask = self.mask_t(cur_m, cur_marks)
+            enabled_transitions = np.nonzero(mask)[0]
+            if len(enabled_transitions) == 0:
+                continue
 
-            self.transitions.append(t)
-            self.time_record.append(new_clock)
-            self._dfs_collect_leaves(new_m, new_marks, new_clock, depth=depth - 1)
-            self.transitions.pop(-1)
-            self.time_record.pop(-1)
-
-    def search(self, mode=0):
-        """
-        深度优先搜索：
-        - 输入当前 mark + clock
-        - 固定深度（默认 5）
-        - 遇到驻留违规即剪枝
-        - 用全局变量收集深度叶子与对应 clock
-        """
-        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS
-        LEAF_NODES = []
-        LEAF_CLOCKS = []
-        LEAF_PATHS = []
-
-        self.transitions = []
-        self.time_record = []
-        m = self.m.copy()
-        marks = self._clone_marks(self.marks)
-
-        self._dfs_collect_leaves(m=m, marks=marks, clock=0, depth=self.search_depth)
-        return len(LEAF_NODES) > 0
-
-    def _select_mode(self,queue,mode: int=0) :
-        '''
-        根据mode选择不同的Te
-        0：贪婪，动作按照时间顺序从小到大
-        1：剪枝，动作按照时间顺序从小到大并且只保留2个动作
-        2：随机
-        '''
-        if mode == 0: #贪婪
-            queue.sort(key=lambda x: x[1])
-        elif mode == 1: #剪枝
-            queue.sort(key=lambda x: x[1])
-            if len(queue) > 2:
-                queue = queue[:2]
-        elif mode == 2:
-            np.random.shuffle(queue)
-        elif mode == 3:
-            DEADLINE_TH = 20
-
-            def sort_key(x):
-                _, deadline, earliest,t_name,job_id = x
-                is_urgent = deadline <= DEADLINE_TH
-                # is_urgent: True -> 0（排前），False -> 1
-                return (
-                    0 if is_urgent else 1,
-                    deadline if is_urgent else 0,
-                    earliest,
-                    t_name
+            transition_queue = []
+            for t in enabled_transitions:
+                et = self._earliest_enable_time(
+                    int(t),
+                    cur_m,
+                    cur_marks,
+                    cur_clock,
+                    lp_release_count=cur_lp_release_count,
                 )
+                if et < 0:
+                    continue
+                transition_queue.append((int(t), int(et), self.id2t_name[t]))
 
-            queue.sort(key=sort_key)
-        return queue
+            # 反向压栈，保持与原列表顺序一致的展开优先级
+            for t, enable_time, _ in reversed(transition_queue):
+                if self.check_scrap(t, enable_time, cur_marks):
+                    self.over_time += 1
+                    continue
+
+                info = self._search_fire(t, cur_m, cur_marks, enable_time)
+                new_m = info["m"]
+                new_marks = info["marks"]
+                new_clock = int(info["time"])
+                new_path = cur_path + [int(t)]
+                new_path_records = cur_path_records + [{"transition": self.id2t_name[t], "fire_time": int(enable_time)}]
+                new_lp_release_count = cur_lp_release_count + (1 if self.id2t_name[t] == "u_LP_TM2" else 0)
+                stack.append((new_m, new_marks, new_clock, cur_depth - 1, new_path, new_path_records, new_lp_release_count))
+
+    def search(self):
+        """
+        迭代 DFS：
+        1) 以当前状态做深度受限 DFS，收集叶子
+        2) 随机抽取一个叶子作为当前状态
+        3) 清空叶子集合，继续下一轮 DFS
+        4) 直到到达终止状态 self.md
+        """
+        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS, LEAF_LP_RELEASE_COUNTS
+        self.full_transition_path = []
+        self.full_transition_records = []
+        current_m = self.m.copy()
+        current_marks = self._clone_marks(self.marks)
+        current_clock = int(self.time)
+        current_lp_release_count = 0
+
+        max_round = 100
+        round = 0
+        while True:
+            if round >= max_round:
+                print(f"Reached max round {max_round}, terminating search.")
+                break
+            round += 1
+            if bool((current_m == self.md).all()):
+                self.m = current_m.copy()
+                self.marks = self._clone_marks(current_marks)
+                self.time = int(current_clock)
+                self.makespan = int(current_clock)
+                return True
+
+            LEAF_NODES = []
+            LEAF_CLOCKS = []
+            LEAF_PATHS = []
+            LEAF_PATH_RECORDS = []
+            LEAF_LP_RELEASE_COUNTS = []
+            self.transitions = []
+            self.time_record = []
+
+            self.collect_leaves_iterative(
+                m=current_m,
+                marks=current_marks,
+                clock=int(current_clock),
+                depth=self.search_depth,
+                lp_release_count=current_lp_release_count,
+            )
+            assert len(LEAF_NODES) != 0, "DFS should collect at least one leaf node"
+
+            # 收集候选状态
+            candidate_indices = []
+            for idx, leaf in enumerate(LEAF_NODES):
+                candidate_indices.append(idx)
+            if not candidate_indices:
+                candidate_indices = list(range(len(LEAF_NODES)))
+
+            # 根据规则选择最优节点
+            selected = self.select_node(candidate_indices, current_clock=current_clock)
+            leaf_idx = int(selected[0][0])
+            self.full_transition_path.extend(LEAF_PATHS[leaf_idx])
+            self.full_transition_records.extend(LEAF_PATH_RECORDS[leaf_idx])
+
+            # 更新当前状态为选中叶子节点
+            current_m = LEAF_NODES[leaf_idx]["m"].copy()
+            current_marks = self._clone_marks(LEAF_NODES[leaf_idx]["marks"])
+            current_clock = int(LEAF_CLOCKS[leaf_idx])
+            current_lp_release_count = int(LEAF_LP_RELEASE_COUNTS[leaf_idx])
+
+            # 清空叶子节点集合，为下一轮 DFS 做准备
+            LEAF_NODES = []
+            LEAF_CLOCKS = []
+            LEAF_PATHS = []
+            LEAF_PATH_RECORDS = []
+            LEAF_LP_RELEASE_COUNTS = []
+
+    @staticmethod
+    def select_node(queue, current_clock: Optional[int] = None):
+        """根据SPT原则在候选叶子节点中选择一个节点"""
+        scored: List[Tuple[int, int]] = []
+        for leaf_idx in queue:
+            delta_clock = abs(int(LEAF_CLOCKS[int(leaf_idx)]) - int(current_clock))
+            scored.append((int(leaf_idx), int(delta_clock)))
+        scored.sort(key=lambda x: x[1])
+        return scored
+
 
 
 
@@ -453,3 +491,4 @@ if __name__ == "__main__":
     petri = Petri(n_wafer=7, ttime=5)
     petri.reset()
     petri.search()
+    print(petri.full_transition_path)
