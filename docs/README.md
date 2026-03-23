@@ -19,6 +19,7 @@
 ## Appendices
 - [`pn_api.md`](./pn_api.md)：`pn.py` API 说明（补充参考）。
 - [`pn_design.md`](./pn_design.md)：`pn.py` 设计说明（补充参考）。
+- [`pdr-search.md`](./pdr-search.md)：PDR 构网命名与 DFS 搜索约束（补充参考）。
 - [`routes.md`](./routes.md)：调度技术路线与约束说明（历史与背景）。
 - [`rl-design.md`](./rl-design.md)：强化学习奖励设计与状态示例（补充参考）。
 - [`modeling.md`](./modeling.md)：Petri 网建模基础说明。

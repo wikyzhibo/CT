@@ -12,15 +12,12 @@ def main():
     search_mode = 3
     start = time.time()
     params_N8['n_wafer']=75
-    net = Petri(with_controller=True,
-                with_capacity_controller=True,
-                with_zhiliu_controller = True,
-                **params_N8)
+    net = Petri()
     print(f'|p={net.P}|t={net.T}')
 
     m = net.m.copy()
     marks = net.marks.copy()
-    net.search(m,marks,0,search_mode)
+    net.search(search_mode)
     print(f'makespan={net.makespan}|search time = {time.time()-start:.2f}|back_time={net.back_time}'
           f'|expand marks={net.expand_mark}|search mode={search_mode}|'
           f'residual_violation={net.over_time}|Q_time_violation={net.qtime_violation}')

@@ -4,8 +4,9 @@ import pandas as pd
 import torch
 from tensordict import TensorDict
 from typing import List, Optional, Tuple
-from solutions.model.pn_models import Place, Token
+from solutions.model.pn_models import Place, BasedToken
 from solutions.model.guard import ZeroBufferWindowController
+from solutions.PDR.construct import build_pdr_net
 
 def get_pre_pst(net_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """把 -1 / +1 网络表转为 Pre / Pst 矩阵（P, T）。"""
@@ -16,70 +17,44 @@ def get_pre_pst(net_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
 
 
 INF = 10**6
+LEAF_NODES = []
+LEAF_CLOCKS = []
+LEAF_PATHS = []
 
 class Petri:
-    def __init__(self, use_super_net=False,
-                       with_controller=False,
-                       with_capacity_controller=False,
-                        with_zhiliu_controller=False,
-                        **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
 
-        self.back_time = 0
-        # 训练分段信号（代），由 environment 传入
-        self.generation = kwargs.get('generation', 0)
-        # 提供便捷接口以便在训练过程中更新代信号
-        # 使用示例：petri.set_generation(new_gen)
-        self.id2p_name = None
-        self.id2t_name = None
-        self.place_names = None
-        self.pst = None
-        self.pre = None
-        self.md = None
-        self.m0 = None
-        self.T = None
-        self.P = None
-        self.idle_idx = None
-        self.k = None
-        self.marks = None
-        self.ready = [0,0,0]
 
-        proc_time = {1: 70, 2: 300, 3:70}
-        capacity = {1: 2, 2: 2, 3:1}
         self.over_time = 0
         self.qtime_violation = 0
         self.shot = "s"
 
+        self.ttime = int(kwargs.get("ttime", 5))
 
-        # 弹出参数
-        path = kwargs.get('path', None)
-        self.n_wafer = kwargs.get("n_wafer", None)
-        self.process_time = kwargs.get("process_time", None)
-        self.capacity = kwargs.get("capacity", None)
-        self.branch_info = kwargs.get("branch_info", None)  # 双晶圆需要屏蔽某些变迁 dict, {pre:'place_name', 'branch':[b1,b2]}
-        self.capacity_xianzhi = kwargs.get('capacity_xianzhi',
-                                           None)  # 进入真空区的晶圆数量限制，dict {place_id:transition_id} int->int
-
-        # 解析.ndr文件
-        info = self.parse_file(path)
-        self.pre = np.ascontiguousarray(self.pre, dtype=np.int32)
-        self.pst = np.ascontiguousarray(self.pst, dtype=np.int32)
-        self.net = np.ascontiguousarray(self.pst - self.pre, dtype=np.int32)
-
-        self.m0 = info['m0']
-        self.m = info['m0']
-        if self.process_time is not None:
-            self._arrange_time(info)
-            self.marks: List[Place] = self._init_marks_from_m(self.m, two_mode=kwargs.get('two_mode', 0))
-            self.k = np.ascontiguousarray(self.k, dtype=np.int32)
-
-        # 设置时间
-        self.ttime = kwargs.get('ttime', 2)
-
-
-        # petri网系统时钟
         self.time = 1
 
         self.log = []
+
+        n_wafer = int(kwargs.get("n_wafer", 7))
+        info = build_pdr_net(n_wafer=n_wafer)
+        self.pre = np.ascontiguousarray(info["pre"], dtype=np.int32)
+        self.pst = np.ascontiguousarray(info["pst"], dtype=np.int32)
+        self.net = np.ascontiguousarray(self.pst - self.pre, dtype=np.int32)
+
+        self.id2p_name = list(info["id2p_name"])
+        self.id2t_name = list(info["id2t_name"])
+        self.place_names = list(self.id2p_name)
+        self.P = int(len(self.id2p_name))
+        self.T = int(len(self.id2t_name))
+        self.m0 = np.ascontiguousarray(info["m0"], dtype=np.int32)
+        self.m = self.m0.copy()
+        self.md = np.ascontiguousarray(info["md"], dtype=np.int32)
+        self.ptime = np.ascontiguousarray(info["ptime"], dtype=np.int32)
+        self.k = np.ascontiguousarray(info["capacity"], dtype=np.int32)
+        self.idle_idx = dict(info["idle_idx"])
+        self._init_marks = [p.clone() for p in info["marks"]]
+        self.marks = [p.clone() for p in self._init_marks]
+        self.n_wafer = int(info.get("n_wafer", n_wafer))
 
         # search 函数服务变量
         self.makespan = 0
@@ -88,19 +63,9 @@ class Petri:
         self.marks_record = []
         self.time_record = []
         self.mask_record = []
-        # 超时配对记录（对应之前 env 中的 record）
-        self._overtime_record = {'pm1': [],'llc':[] ,'pm2': [],'time':0}
-
-        self.rg_marks = []
-        self.visited = []
-        self.unvisited = deque()
 
         self.expand_mark = 0
-
-        self._id_of = {}  # dict[bytes -> int]：标识 -> id
-        self._seen = set()
-        self.dead_mark = []
-        self.bad_mark = []
+        self.search_depth = 3
 
     def _init_marks_from_m(self, m: np.ndarray, two_mode=0) -> List[Place]:
         """
@@ -109,7 +74,7 @@ class Petri:
             row0: enter_time
             row1: token_id  (1..n_tokens)
         """
-        idle_place = self.idle_idx['L1']
+        idle_place = self.idle_idx.get('L1', self.idle_idx.get('start', 0))
         marks: List[Place] = []
         start_from = 0
         for i, cnt in enumerate(m.astype(int).tolist()):
@@ -150,9 +115,9 @@ class Petri:
                 else:
                     type = np.repeat(-1, cnt)
                 for e, id_, tp in zip(enter, ids, type):
-                    if i != self.idle_idx['L1']:
-                        id_ = -1
-                    place.append(Token(int(id_),int(e), int(tp)))
+                    _ = id_
+                    _ = tp
+                    place.append(BasedToken(enter_time=int(e)))
             marks.append(place)
         return marks
 
@@ -162,7 +127,7 @@ class Petri:
     def reset(self):
         self.time = 0
         self.m = self.m0.copy()
-        self.marks: List[Place] = self._init_marks_from_m(self.m)
+        self.marks = [p.clone() for p in self._init_marks]
 
         self.m_record = []
         self.marks_record = []
@@ -170,11 +135,6 @@ class Petri:
         self.visited = []
         self.transitions = []
         self.time_record = []
-        # 清除超时配对记录
-        self._overtime_record = {'pm1': [], 'pm2': []}
-        self.u5_record = []
-        self.u3_record = []
-        self.zb.reset()
 
     def mask_t(self, m: np.ndarray,marks: Optional[List[Place]] = None, with_clf=False) -> np.ndarray[bool]:
         """
@@ -278,7 +238,7 @@ class Petri:
                 tok.enter_time = enter_new
                 new_marks[p].append(tok)
             else:
-                new_tok = Token(job_id=-1, enter_time=enter_new, wafer_type=-1)
+                new_tok = BasedToken(enter_time=enter_new)
                 new_marks[p].append(new_tok)
             new_m[p] += 1
 
@@ -293,7 +253,7 @@ class Petri:
         pre_places = np.nonzero(self.pre[:, t] > 0)[0]
         for p in pre_places:
             place = mark[p]
-            if place.name == 'p3' or place.name == 'p5':
+            if place.type == 1:
                 if firetime > place.head().enter_time + place.processing_time + 15:
                     return 1
             if place.type == 2:
@@ -373,87 +333,87 @@ class Petri:
         pre_place = np.nonzero(self.pre[:, t] > 0)[0]
         for p in pre_place:
             if mark[p].type == 1 or mark[p].type == 2 or mark[p].type == 3:
-                return mark[p].head().job_id
+                tok = mark[p].head()
+                if hasattr(tok, "job_id"):
+                    return tok.job_id
+                if hasattr(tok, "token_id"):
+                    return tok.token_id
+                return -1
         return -1
 
-    def search(self, m, marks, time, mode=0):
+    def check_scrap(self, t: int, firetime: int, marks: List[Place]) -> bool:
+        """
+        检查当前动作是否触发驻留时间违规（resident scrap）。
+        返回 True 表示该分支需要剪枝。
+        """
+        return self._if_violation(t, firetime, marks) == 1
 
-        #self.snapshot(m,True)
-        self.expand_mark+=1
-        mask = self.mask_t(m,marks)
+    def get_leaf_node(self, m: np.ndarray, marks: List[Place], clock: int) -> None:
+        """
+        记录深度叶子节点（全局收集）。
+        """
+        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS
+        LEAF_NODES.append({
+            "m": m.copy(),
+            "marks": self._clone_marks(marks),
+        })
+        LEAF_CLOCKS.append(int(clock))
+        LEAF_PATHS.append([self.id2t_name[t] for t in self.transitions])
+
+    def _dfs_collect_leaves(self, m, marks, clock: int, depth: int) -> None:
+
+        # 到达第五层，收集叶子节点信息并返回
+        if depth == 0:
+            self.get_leaf_node(m, marks, clock)
+            return
+
+        mask = self.mask_t(m, marks)
         enabled_transitions = np.nonzero(mask)[0]
-        names = [self.id2t_name[x] for x in enabled_transitions]
+        # 死锁剪枝
+        if len(enabled_transitions) == 0:
+            return
 
         transition_queue = []
         for t in enabled_transitions:
-            et = self._earliest_enable_time(t, m, marks, time)  # 逻辑最早
-            dt = self._deadline_fire_time(t,marks,time)
-            job_id = self._get_t_job_id(t,marks)
-            name = self.id2t_name[t]
-            if self.with_zhuliu_controller:
-                if name == 'u2':
-                    ft = self.zb.peek_time('t3', et)
-                else:
-                    ft = self.zb.peek_time(name, et)  # 加上零缓冲+30s的反推下界（无副作用）
-            else:
-                ft = et
-            transition_queue.append((t, dt, ft, self.id2t_name[t],job_id))
+            et = self._earliest_enable_time(t, m, marks, clock)
+            transition_queue.append((int(t), int(et), self.id2t_name[t]))
 
-        transition_queue = self._select_mode(transition_queue, mode=mode)
-
-        while transition_queue:
-
-            t, deadline, enable_time,t_name,job_id = transition_queue.pop(0)
-            if t_name == 't5':
-                self.log.append(enable_time)
-
-            time_violation_type = 0
-            time_violation_type = self._if_violation(t,enable_time,marks)
-            if time_violation_type == 2:
-                self.qtime_violation += 1
-            elif time_violation_type == 1:
+        for t, enable_time, _ in transition_queue:
+            if self.check_scrap(t, enable_time, marks):
                 self.over_time += 1
-            #ready_time = self.cal_ready_time(t,enable_time)
-            #mxx = self._fire(t,m)
-            #self.snapshot(mxx,partial_disp=True)
-
-            if self.with_zhuliu_controller :
-                self.zb.commit(t_name, enable_time,job_id)
-
-            info = self._search_fire(t,m,marks,enable_time)
-            finish = info["finish"]
-            new_m = info["m"]
-            new_marks = info["marks"]
-            time = info["time"]
-
-            if finish:
-                self.makespan = info["time"]
-                return True
-
-            if any(np.array_equal(new_m, mx) for mx in self.visited):
                 continue
 
-            self.visited.append(new_m)
+            info = self._search_fire(t, m, marks, enable_time)
+            new_m = info["m"]
+            new_marks = info["marks"]
+            new_clock = int(info["time"])
+
             self.transitions.append(t)
-            self.time_record.append(time)
-            self.m_record.append(new_m)
-            self.marks_record.append(new_marks)
-            self.mask_record.append(mask)
-
-            if self.search(new_m, new_marks, time, mode=mode):
-                return True
-
-            #self.snapshot(new_m,partial_disp=True)
-            self.back_time += 1
+            self.time_record.append(new_clock)
+            self._dfs_collect_leaves(new_m, new_marks, new_clock, depth=depth - 1)
             self.transitions.pop(-1)
             self.time_record.pop(-1)
-            self.m_record.pop(-1)
-            self.marks_record.pop(-1)
-            self.mask_record.pop(-1)
-            self.bad_mark.append(new_m)
 
-        self.expand_mark += 1
-        return False
+    def search(self, mode=0):
+        """
+        深度优先搜索：
+        - 输入当前 mark + clock
+        - 固定深度（默认 5）
+        - 遇到驻留违规即剪枝
+        - 用全局变量收集深度叶子与对应 clock
+        """
+        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS
+        LEAF_NODES = []
+        LEAF_CLOCKS = []
+        LEAF_PATHS = []
+
+        self.transitions = []
+        self.time_record = []
+        m = self.m.copy()
+        marks = self._clone_marks(self.marks)
+
+        self._dfs_collect_leaves(m=m, marks=marks, clock=0, depth=self.search_depth)
+        return len(LEAF_NODES) > 0
 
     def _select_mode(self,queue,mode: int=0) :
         '''
@@ -487,3 +447,9 @@ class Petri:
             queue.sort(key=sort_key)
         return queue
 
+
+
+if __name__ == "__main__":
+    petri = Petri(n_wafer=7, ttime=5)
+    petri.reset()
+    petri.search()

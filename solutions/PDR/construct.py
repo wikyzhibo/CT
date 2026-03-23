@@ -1,0 +1,404 @@
+import numpy as np
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
+from solutions.model.pn_models import Place
+
+# 支持路线中分叉：Stage = "PM7" 或 ["PM7","PM8"]
+Stage = Union[str, List[str]]
+
+INF = 10 ** 9
+
+@dataclass(slots=True)
+class BasedToken:
+    enter_time: int
+    stay_time: int = 0
+    token_id: int = -1
+    machine: int = -1
+    route_type: int = 0
+    step: int = 0
+    where: int = 0
+    route_queue: Tuple[Any, ...] = ()
+    route_head_idx: int = 0
+    _target_place: Optional[str] = None
+    _dst_level_targets: Optional[Tuple[str, ...]] = None
+    _dst_level_full_on_pick: bool = False
+    _place_idx: int = -1
+
+    def clone(self):
+        return BasedToken(
+            enter_time=self.enter_time,
+            stay_time=self.stay_time,
+            token_id=self.token_id,
+            machine=self.machine,
+            route_type=self.route_type,
+            step=self.step,
+            where=self.where,
+            route_queue=tuple(self.route_queue),
+            route_head_idx=int(self.route_head_idx),
+        )
+
+@dataclass
+class RobotSpec:
+    """机械手配置（仅用于边归属与可达性约束）"""
+    tokens: int  # 兼容字段：保留但在连续模型构图中不再显式建资源库所
+    reach: Set[str]  # 该机械手可以触达的模块集合（用于自动选 robot）
+
+
+@dataclass
+class ModuleSpec:
+    """模块库所（LP/AL/LL*/PM*/BUF...）"""
+    tokens: int = 0
+    ptime: int = 0  # 你手动输入的模块 place time
+    capacity: int = 1  # place capacity（PM一般=1；LL可=2；LP按需）
+
+
+@dataclass
+class SharedGroup:
+    """共享容量组：组内多个库所共享一个 k 资源池，总和<=cap"""
+    name: str
+    places: Set[str]
+    cap: int = 2
+
+
+class SuperPetriBuilder:
+    """
+    输出字段：
+      nodes[name] = {
+          'type': 'p'/'t', 'id':..., 'tokens':..., 'time':..., 'capacity':..., 'x':..., 'y':...
+      }
+      edges = [(src_name, dst_name, w)]
+      m0 (P,), pre(P,T), pst(P,T)
+      ptime(P,), ttime(T,), capacity(P,)
+      id2p_name, id2t_name
+    """
+
+    def __init__(self, d_ptime: int = 3, default_ttime: int = 2):
+        self.d_ptime = int(d_ptime)
+        self.default_ttime = int(default_ttime)
+
+        self.nodes: Dict[str, Dict] = {}
+        self.edges: List[Tuple[str, str, int]] = []
+        self.id2p_name: List[str] = []
+        self.id2t_name: List[str] = []
+
+        self._p_count = 0
+        self._t_count = 0
+
+        # 按 id 存
+        self._ptime_by_pid: List[int] = []
+        self._cap_by_pid: List[int] = []
+        self._ttime_by_tid: List[int] = []
+
+
+    # ----------------- 基础创建 -----------------
+    def add_place(
+            self,
+            name: str,
+            tokens: int = 0,
+            ptime: int = 0,
+            capacity: int = INF,
+            x: float = 0.0,
+            y: float = 0.0,
+    ):
+        if name in self.nodes:
+            return
+        pid = self._p_count
+        self.nodes[name] = {
+            "type": "p",
+            "x": float(x),
+            "y": float(y),
+            "tokens": int(tokens),
+            "id": pid,
+            "time": int(ptime),
+            "capacity": int(capacity),
+        }
+        self.id2p_name.append(name)
+        self._ptime_by_pid.append(int(ptime))
+        self._cap_by_pid.append(int(capacity))
+        self._p_count += 1
+
+    def add_transition(
+            self,
+            name: str,
+            ttime: Optional[int] = None,
+            x: float = 0.0,
+            y: float = 0.0,
+    ):
+        if name in self.nodes:
+            return
+        tid = self._t_count
+        if ttime is None:
+            ttime = self.default_ttime
+        self.nodes[name] = {
+            "type": "t",
+            "x": float(x),
+            "y": float(y),
+            "tokens": 0,
+            "id": tid,
+            "time": int(ttime),
+        }
+        self.id2t_name.append(name)
+        self._ttime_by_tid.append(int(ttime))
+        self._t_count += 1
+
+    def add_arc(self, src: str, dst: str, w: int = 1):
+        arc = (src, dst, int(w))
+        if arc in self.edges:
+            return
+        self.edges.append((src, dst, int(w)))
+
+    # ----------------- 路线展开（支持分叉） -----------------
+    @staticmethod
+    def _as_list(stage: Stage) -> List[str]:
+        return stage if isinstance(stage, list) else [stage]
+
+    @classmethod
+    def expand_route_to_edges(cls, route: List[Stage]) -> Set[Tuple[str, str]]:
+        """
+        例如 [A, [B1,B2], C] =>
+          A->B1, A->B2, B1->C, B2->C
+        """
+        out = set()
+        for i in range(len(route) - 1):
+            left = cls._as_list(route[i])
+            right = cls._as_list(route[i + 1])
+            for a in left:
+                for b in right:
+                    out.add((a, b))
+        return out
+
+    @staticmethod
+    def pick_robot_for_edge(a: str, b: str, robots: Dict[str, RobotSpec]) -> str:
+        cand = [r for r, spec in robots.items() if (a in spec.reach and b in spec.reach)]
+        if len(cand) != 1:
+            raise ValueError(f"Edge {a}->{b} robot ambiguous/none, candidates={cand}")
+        return cand[0]
+
+    # ----------------- 构建主流程 -----------------
+    def build(
+            self,
+            modules: Dict[str, ModuleSpec],
+            robots: Dict[str, RobotSpec],
+            routes: List[List[Stage]],
+            shared_groups: Optional[List[SharedGroup]] = None,
+            edge_weight: int = 1,
+    ):
+        """
+        modules: 所有模块库所（共享）
+        robots: 机械手资源库所（r__TMx）
+        routes: 多条加工路线（可分叉）
+        shared_groups: 共享容量组（如 LLA/LLB, LLC/LLD）
+        """
+        shared_groups = shared_groups or []
+        self._modules = modules
+
+        for m, spec in modules.items():
+            self.add_place(m, tokens=spec.tokens, ptime=spec.ptime, capacity=spec.capacity)
+
+        # 1) 建机器人资源 place：capacity=tokens；ptime=0
+        # 连续模型优化：不再显式构造 r_TMx 资源库所，机械手通过动作通道分工与 d_TMx 运输库所建模
+
+        # 3) 汇总所有路线的相邻模块边
+        all_edges: Set[Tuple[str, str]] = set()
+        for route in routes:
+            all_edges |= self.expand_route_to_edges(route)
+
+        # 2) 创建按机械手分组的运输库所 (容量=1)
+        self.add_place("d_TM2", tokens=0, ptime=self.d_ptime, capacity=1)
+        self.add_place("d_TM3", tokens=0, ptime=self.d_ptime, capacity=1)
+
+        # 4) 为每条模块边 a->b 创建 u-d-t 子结构
+        # 命名规则：
+        #   u_<src>_<TMx>   表示从 src 卸载到 TMx
+        #   t_<TMx>_<dst>   表示从 TMx 装载到 dst
+        for a, b in sorted(all_edges):
+            if a not in modules or b not in modules:
+                raise KeyError(f"Unknown module in route: {a}->{b}")
+
+            robot = self.pick_robot_for_edge(a, b, robots)
+            
+            # 根据机械手选择运输库所
+            d_place = f"d_{robot}"  # d_TM2 or d_TM3
+
+            # 命名：u_<src>_<TMx>, t_<TMx>_<dst>
+            u = f"u_{a}_{robot}"
+            t = f"t_{robot}_{b}"
+
+            # u/t 变迁：ttime=2（统一）
+            self.add_transition(u, ttime=self.default_ttime)
+            self.add_transition(t, ttime=self.default_ttime)
+
+            # 基本弧：
+            # A -> u -> d_robot -> t -> B
+            self.add_arc(a, u, edge_weight)
+            self.add_arc(u, d_place, edge_weight)
+            self.add_arc(d_place, t, edge_weight)
+            self.add_arc(t, b, edge_weight)
+
+        return self.finalize()
+
+    # ----------------- 输出 pre/pst 等 -----------------
+    def finalize(self):
+        P = self._p_count
+        T = self._t_count
+
+        # m0
+        m0 = np.zeros(P, dtype=int)
+        for name, nd in self.nodes.items():
+            if nd["type"] == "p":
+                m0[nd["id"]] = nd["tokens"]
+
+        # 支持双起点 LP1/LP2 或单起点 LP
+        if 'LP1' in self.id2p_name:
+            # 双起点模式
+            idle_idx = {
+                'start1': self.id2p_name.index('LP1'),
+                'start2': self.id2p_name.index('LP2'),
+                'end': self.id2p_name.index('LP_done'),
+            }
+            n_wafer_route1 = m0[self.id2p_name.index("LP1")]
+            n_wafer_route2 = m0[self.id2p_name.index("LP2")]
+            n_wafer = n_wafer_route1 + n_wafer_route2
+            
+            md = m0.copy()
+            md[self.id2p_name.index("LP_done")] = n_wafer
+            md[self.id2p_name.index("LP1")] = 0
+            md[self.id2p_name.index("LP2")] = 0
+        else:
+            # 单起点模式（向后兼容）
+            idle_idx = {'start': self.id2p_name.index('LP'),
+                        'end': self.id2p_name.index('LP_done'), }
+            n_wafer = m0[self.id2p_name.index("LP")]
+            n_wafer_route1 = n_wafer
+            n_wafer_route2 = 0
+            
+            md = m0.copy()
+            md[self.id2p_name.index("LP_done")] = n_wafer
+            md[self.id2p_name.index("LP")] = 0
+
+        # pre/pst
+        pre = np.zeros((P, T), dtype=int)
+        pst = np.zeros((P, T), dtype=int)
+
+        for src, dst, w in self.edges:
+            sn = self.nodes[src]
+            dn = self.nodes[dst]
+            if sn["type"] == "p" and dn["type"] == "t":
+                pre[sn["id"], dn["id"]] += w
+            elif sn["type"] == "t" and dn["type"] == "p":
+                pst[dn["id"], sn["id"]] += w
+            else:
+                raise ValueError(f"Illegal arc: {src}({sn['type']}) -> {dst}({dn['type']})")
+
+        matrix = pst - pre
+        module_x = {}
+        for i in range(P):
+            if self.id2p_name[i][0] == 'P':
+                a = np.where(matrix[i, :] > 0)[0]
+                b = np.where(matrix[i, :] < 0)[0]
+                module_x[self.id2p_name[i]] = (a, b)
+
+        ptime = np.array(self._ptime_by_pid, dtype=int)
+        capacity = np.array(self._cap_by_pid, dtype=int)
+        ttime = np.array(self._ttime_by_tid, dtype=int)
+
+        marks = []
+        # idle_places: 非工艺晶圆 token（若存在）不需要 ID
+        # 通过名称判断而非硬编码索引，兼容是否存在 r_ 资源库所
+        token_id_counter = 0  # 全局 token ID 计数器
+        
+        for i in range(P):
+            pname = self.id2p_name[i]
+            if pname.startswith('LP') and pname in getattr(self, '_modules', {}):
+                ptype = 3
+            elif pname.startswith('d'):
+                ptype = 2
+            elif pname in getattr(self, '_modules', {}):
+                ptype = 1
+            else:
+                ptype = 4
+
+            place = Place(
+                name=pname,
+                capacity=int(capacity[i]),
+                processing_time=int(ptime[i]),
+                type=ptype
+            )
+
+            cnt = m0[i]
+            if cnt > 0:
+                # 资源库所（r_ 开头）的 token 不需要 ID
+                if pname.startswith('r_'):
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0))
+                # LP1 库所的初始 token 分配唯一 ID，路线1，步骤0
+                elif pname == "LP1":
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, route_type=1, step=0))
+                        token_id_counter += 1
+                # LP2 库所的初始 token 分配唯一 ID，路线2，步骤0
+                elif pname == "LP2":
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=token_id_counter, route_type=2, step=0))
+                        token_id_counter += 1
+                # 单起点 LP 库所（向后兼容）
+                elif pname == "LP":
+                    for tok_id in range(cnt):
+                        place.append(BasedToken(enter_time=0, token_id=tok_id, route_type=0, step=0))
+                else:
+                    for _ in range(cnt):
+                        place.append(BasedToken(enter_time=0))
+            marks.append(place)
+
+        return {
+            "m0": m0,
+            "md": md,
+            "pre": pre,
+            "pst": pst,
+            "ptime": ptime,
+            "ttime": ttime,
+            "capacity": capacity,
+            "id2p_name": self.id2p_name,
+            "id2t_name": self.id2t_name,
+            "idle_idx": idle_idx,
+            "module_x": module_x,
+            "marks": marks,
+            "n_wafer": n_wafer,
+            "n_wafer_route1": n_wafer_route1,
+            "n_wafer_route2": n_wafer_route2,
+        }
+
+
+def build_pdr_net(n_wafer: int = 7) -> Dict[str, Any]:
+    """
+    构造默认 PDR 路线：
+      LP -> PM7/PM8(70s) -> LLC -> PM1/PM2(300s) -> LLD -> LP_done
+
+    机械手分工：
+      - TM2 管理 LP, PM7/PM8 的取送；LLC 的送；LLD 的取
+      - TM3 管理 PM1/PM2 的取送；LLC 的取；LLD 的送
+    """
+    modules = {
+        "LP": ModuleSpec(tokens=int(n_wafer), ptime=0, capacity=int(n_wafer)),
+        "PM7": ModuleSpec(tokens=0, ptime=70, capacity=1),
+        "PM8": ModuleSpec(tokens=0, ptime=70, capacity=1),
+        "LLC": ModuleSpec(tokens=0, ptime=0, capacity=1),
+        "PM1": ModuleSpec(tokens=0, ptime=300, capacity=1),
+        "PM2": ModuleSpec(tokens=0, ptime=300, capacity=1),
+        "LLD": ModuleSpec(tokens=0, ptime=0, capacity=1),
+        "LP_done": ModuleSpec(tokens=0, ptime=0, capacity=int(n_wafer)),
+    }
+    robots = {
+        "TM2": RobotSpec(
+            tokens=1,
+            reach={"LP", "PM7", "PM8", "LLC", "LLD", "LP_done"},
+        ),
+        "TM3": RobotSpec(
+            tokens=1,
+            reach={"LLC", "PM1", "PM2", "LLD"},
+        ),
+    }
+    route = ["LP", ["PM7", "PM8"], "LLC", ["PM1", "PM2"], "LLD", "LP_done"]
+    builder = SuperPetriBuilder(d_ptime=5, default_ttime=5)
+    return builder.build(modules=modules, robots=robots, routes=[route])
+

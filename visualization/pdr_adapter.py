@@ -17,12 +17,7 @@ class PDRAdapter(AlgorithmAdapter):
 
     def __init__(self) -> None:
         params = dict(params_N8)
-        self.net = Petri(
-            with_controller=True,
-            with_capacity_controller=True,
-            with_zhiliu_controller=True,
-            **params,
-        )
+        self.net = Petri()
         self._last_actions: List[Dict[str, Any]] = []
 
     def reset(self) -> StateInfo:
