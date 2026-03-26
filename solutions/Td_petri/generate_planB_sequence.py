@@ -9,17 +9,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT))
 
-from visualization.plot import plot_gantt_hatched_residence,Op
-from solutions.PPO.enviroment import CT_v2
-from torchrl.envs import TransformedEnv, ActionMask
+from solutions.Td_petri.enviroment import CT_v2
 from solutions.PPO.network.models import MaskedPolicyHead
 from tensordict.nn import TensorDictModule
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tdpn_parser import TDPNParser
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
-from typing import List, Optional, Tuple
-from solutions.Td_petri.tdpn import res_occ_to_ops
+
 
 def res_occ_to_event(res_occ: dict):
     events = []

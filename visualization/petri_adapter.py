@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple, Any
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
+from solutions.Td_petri.enviroment import Env_PN_Concurrent
 
 from .algorithm_interface import (
     AlgorithmAdapter,

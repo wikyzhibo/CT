@@ -1,14 +1,12 @@
 import argparse
 import torch
-from solutions.PPO.enviroment import CT_v2
-from solutions.PPO.train import train
+from solutions.Td_petri.enviroment import CT_v2
+from solutions.Td_petri.train import train
 from torchrl.envs import Compose, DTypeCastTransform, TransformedEnv, ActionMask
-from torchrl.envs.utils import check_env_specs
 import time
 from data.ppo_configs.training_config import PPOTrainingConfig
 import warnings
 import os
-import sys
 
 warnings.filterwarnings(
     "ignore",

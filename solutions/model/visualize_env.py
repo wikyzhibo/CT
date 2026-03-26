@@ -38,7 +38,7 @@ sys.path.insert(0, r"C:\Users\khand\OneDrive\code\dqn\CT")
 import pygame
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 from torchrl.envs.utils import set_exploration_type, ExplorationType
-from solutions.PPO.enviroment import Env_PN
+from solutions.Td_petri.enviroment import Env_PN
 from solutions.PPO.network.models import MaskedPolicyHead
 
 

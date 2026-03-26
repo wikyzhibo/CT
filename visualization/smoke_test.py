@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
+from solutions.Td_petri.enviroment import Env_PN_Concurrent
 
 from .petri_adapter import PetriAdapter
 

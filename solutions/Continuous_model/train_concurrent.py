@@ -5,27 +5,17 @@
 使用 Env_PN_Concurrent 环境和 DualHeadPolicyNet 网络。
 """
 import os
-import time
 from datetime import datetime
 from collections import defaultdict
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 from tensordict import TensorDict
-from tensordict.nn import TensorDictModule
 
-from torchrl.envs.utils import ExplorationType, set_exploration_type
-from torchrl.objectives import ClipPPOLoss
-from torchrl.objectives.value import GAE
-from torchrl.modules import ProbabilisticActor, ValueOperator
-from torchrl.data.replay_buffers import ReplayBuffer
-from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
-from torchrl.data.replay_buffers.storages import LazyTensorStorage
 from torchrl.modules import MaskedCategorical
 
-from solutions.PPO.enviroment import Env_PN_Concurrent
+from solutions.Td_petri.enviroment import Env_PN_Concurrent
 from solutions.PPO.network.models import DualHeadPolicyNet
 from data.ppo_configs.training_config import PPOTrainingConfig
 
