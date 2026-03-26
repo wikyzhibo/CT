@@ -40,9 +40,10 @@ data/
 - 行为克隆: `lambda_bc0`, `bc_decay_batches`
 
 **使用示例:**
+
 ```python
 from data.ppo_configs.training_config import PPOTrainingConfig
-from solutions.PPO.train import train
+from solutions.Td_petri.train import train
 
 # 加载配置
 config = PPOTrainingConfig.load("data/ppo_configs/s_train.json")

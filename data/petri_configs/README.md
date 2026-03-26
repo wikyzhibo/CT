@@ -208,7 +208,7 @@ net = Petri(config=config)
 
 ```python
 from data.petri_configs.env_config import PetriEnvConfig
-from solutions.PPO.enviroment import Env_PN
+from solutions.Td_petri.enviroment import Env_PN
 
 # 创建环境配置
 petri_config = PetriEnvConfig.load("data/petri_configs/s_train.json")

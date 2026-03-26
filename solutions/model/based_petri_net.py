@@ -1,8 +1,5 @@
-from collections import deque
 import numpy as np
 import pandas as pd
-import torch
-from tensordict import TensorDict
 from typing import List, Optional, Tuple
 import warnings
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -14,8 +11,6 @@ def get_pre_pst(net_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     pre = (net_df == -1).to_numpy(dtype=np.int64)
     pst = (net_df ==  1).to_numpy(dtype=np.int64)
     return pre, pst
-
-from dataclasses import dataclass
 
 
 INF = 10**6
@@ -608,7 +603,7 @@ class Petri:
         time = 0
 
         self.search(m, marks, time,mode=0)
-        from solutions.PPO.enviroment import impress_m,low_dim
+        from solutions.Td_petri.enviroment import impress_m,low_dim
         press_m = [impress_m(mx,self.idle_idx) for mx in self.m_record]
         low_m = [low_dim(mx,self.low_dim_idx) for mx in press_m]
         return low_m, np.array(self.transitions),self.mask_record
@@ -813,8 +808,7 @@ class Petri:
                 state.extend(tokens[0,:])
         return state
 
-import sys
-import time
+
 from data.config.params_N8 import params_N8
 
 def main():
