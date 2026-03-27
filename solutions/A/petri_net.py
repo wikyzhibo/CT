@@ -1867,20 +1867,28 @@ class ClusterTool:
         capacity: Dict[int, int] = {}
 
         route_stages: List[List[str]] = list(getattr(self, "_route_stages", []) or [])
-        for stage_idx, stage_places in enumerate(route_stages, start=1):
+        flat_names = [str(name) for stage in route_stages for name in (stage or [])]
+        seen_chambers: Set[str] = set()
+        lane_stage_idx = 1
+        for stage_places in route_stages:
             names = [str(x) for x in (stage_places or [])]
             if not names:
                 continue
-            stage_module_names[int(stage_idx)] = names
-            capacity[int(stage_idx)] = int(len(names))
+            lane_names = [name for name in names if name not in seen_chambers]
+            if not lane_names:
+                continue
+            stage_module_names[int(lane_stage_idx)] = lane_names
+            capacity[int(lane_stage_idx)] = int(len(lane_names))
             max_p = 0
-            for machine_idx, name in enumerate(names):
-                stage_map[name] = (int(stage_idx), int(machine_idx))
+            for machine_idx, name in enumerate(lane_names):
+                seen_chambers.add(name)
+                stage_map[name] = (int(lane_stage_idx), int(machine_idx))
                 place = getattr(self, "_place_by_name", {}).get(name)
                 ptime = int(getattr(place, "processing_time", 0)) if place is not None else 0
                 if ptime > max_p:
                     max_p = ptime
-            proc_time[int(stage_idx)] = float(max_p)
+            proc_time[int(lane_stage_idx)] = float(max_p)
+            lane_stage_idx += 1
 
         if not stage_map:
             print("警告: _route_stages 为空，无法构建 stage 映射，跳过甘特图绘制")
