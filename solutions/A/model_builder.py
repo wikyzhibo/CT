@@ -296,6 +296,8 @@ def build_net(
     ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
 
     route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
+    has_repeat_syntax_reentry = any(stage.repeat_origin is not None for stage in route_ir.stages)
+    route_meta["has_repeat_syntax_reentry"] = bool(has_repeat_syntax_reentry)
     full_timeline_chambers = tuple(
         name for name in id2p_name
         if (name.startswith("PM") or name in {"LLC", "LLD"})

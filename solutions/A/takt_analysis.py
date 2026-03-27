@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 
 TAKT_HORIZON = 100
-DELIVERY_TIME = 10
+DELIVERY_TIME = 0
 
 def _normalize_number(value: float) -> float | int:
     """若是整数值则返回 int，否则返回 float。"""

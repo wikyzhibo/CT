@@ -20,6 +20,7 @@ from solutions.A.model_builder import build_net
 from solutions.A.construct.route_compiler_single import normalize_route_spec
 from solutions.A.deprecated.pn import Place
 from solutions.A.takt_analysis import (
+    TAKT_HORIZON,
     analyze_cycle,
     build_fixed_takt_result,
 )
@@ -315,6 +316,7 @@ class ClusterTool:
         self._release_station_aliases = {}
         self._release_chain_by_u = {}
         self._system_entry_places = set()
+        self._has_repeat_syntax_reentry = False
         self._ready_chambers = self.chambers
         self._single_process_chambers = self.chambers
 
@@ -364,6 +366,7 @@ class ClusterTool:
         self._release_station_aliases = dict(route_meta.get("release_station_aliases", {}))
         self._release_chain_by_u = dict(route_meta.get("release_chain_by_u", {}))
         self._system_entry_places = set(route_meta.get("system_entry_places", set()))
+        self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
         self._ready_chambers = tuple(route_meta.get("chambers", ()))
         self._single_process_chambers = self.chambers
 
@@ -1403,6 +1406,14 @@ class ClusterTool:
         失败或无可分析工序时返回 None。
         """
         self._validate_takt_stage_inputs()
+        if self._has_repeat_syntax_reentry:
+            horizon = int(TAKT_HORIZON)
+            return {
+                "fast_takt": 0.0,
+                "peak_slow_takts": [],
+                "cycle_length": horizon,
+                "cycle_takts": [0.0 for _ in range(horizon)],
+            }
         if self.device_mode == "cascade" and self.route_code == 4:
             if self.route4_takt_interval > 0:
                 return build_fixed_takt_result(self.route4_takt_interval)

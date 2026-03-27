@@ -2,6 +2,18 @@
 
 ## 2026-03-27
 
+### 级联路线配置新增 `3-1/3-2/3-3`（2026-03-27）
+
+- **What changed**：在 `config/cluster_tool/cascade_routes_1_star.json` 新增 `routes.3-1`、`routes.3-2`、`routes.3-3`。`3-1` 为 `LP->PM7/PM8/PM9(267s)[320s/6片]->LP_done`，`3-2` 为 `LP->PM7(267s)[320s/6片]->LP_done`，`3-3` 为 `LP->[PM8(267s)->PM10(267s)]*5->LP_done`（无清洗字段）。
+- **Why**：补充 3 组新工艺路径模板，便于在配置驱动路由下直接按 `single_route_name` 切换实验路线。
+- **Impact**：可直接使用 `single_route_name=3-1|3-2|3-3`；`legacy.route_code_alias.cascade` 保持不变，不影响既有 `1-*` 与 `2-*` 路线映射。
+
+### A 方案：repeat 重入路径节拍自动归零（2026-03-27）
+
+- **What changed**：`solutions/A/model_builder.py` 在构网时基于 `route_ir.stages[*].repeat_origin` 写入 `route_meta.has_repeat_syntax_reentry`。`solutions/A/petri_net.py` 初始化时读取该标记；`_compute_takt_result` 在常规 `analyze_cycle` 前短路，若命中重入则直接返回全 0 节拍结果结构（`cycle_length=100`、`cycle_takts` 全 0）。
+- **Why**：repeat 语法代表路径存在重入，需要统一按“自动零节拍”口径处理，避免重入路径继续走常规节拍分析。
+- **Impact**：仅当路线通过 `repeat` 语法展开时触发该行为；非 repeat 路线保持原有节拍分析流程不变。
+
 ### requirements：补充可视化依赖 PySide6（2026-03-27）
 
 - **What changed**：根目录 `requirements.txt` 新增 `PySide6>=6.0`。`README.md` 的 Quickstart 同步增加 `pip install -r requirements.txt` 安装提示。
