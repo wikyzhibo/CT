@@ -66,6 +66,10 @@
 22. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
 23. `ClusterTool` 初始化时，`_cascade_round_robin_pairs` 对 `route_meta.u_targets` 中 **`len(targets) >= 2` 的源** 使用**完整** `tuple(targets)` 作为并行候选序列；**禁止**再丢弃 `LLC`/`LLD` 等非 `PM*`、`LP_done` 的下游名，否则 `values()` 可能永不包含这些库所，规则 22 会误屏蔽对应 `t_*`（典型：路线 `1-5` 上 PM7→LLC|LLD）。
 24. 节拍门控**仅**作用于 `u_LP`（含 `route_code==4` 时的 `route4_takt_interval` 与 `analyze_cycle` 产出的周期节拍）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
+25. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。`robot_capacity` 始终为 1，不因双臂改变。`swap_duration` 固定为 10s。
+26. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。仍检查清洗和 round-robin。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
+27. 双臂模式 `_is_next_stage_available` 和 `_fire` u_* round-robin 同步：**跳过** `_first_receivable_parallel_target`（含容量检查），改用 `_first_parallel_target_dual_arm`（仅检查非清洗）。单候选源也跳过容量检查。
+28. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数），推进 round-robin。`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
 
 ## Examples
 - 正例:
@@ -86,6 +90,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-27: 新增双臂 swap 模式：`PetriEnvConfig.dual_arm=True` 启用。`get_action_mask` 双臂 `t_*` 对 PM 目标仅检查加工完成 + 路由匹配 + 运输完成（跳过容量约束）；`_fire` 在 `t_*` 目标 PM 满载且加工完成时执行 swap（原子交换 TM/PM token，`m` 不变，时长 10s）；`_is_next_stage_available` / `_fire` u_* 同步改用 `_first_parallel_target_dual_arm`（跳过容量检查）。仅 PM 可 swap，LLC/LLD/LP_done 沿用单臂逻辑。
 - 2026-03-22: 修复 `_cascade_round_robin_pairs` 仅用 `PM*`/`LP_done` 过滤并行目标导致路线 `1-5`（PM7/PM8→LLC|LLD）等场景下 LLC/LLD 从未进入 `values()`，TM2 上 `t_TM2_LLC`/`t_TM2_LLD` 被 `_allow_t_by_machine_round_robin` 永久屏蔽；现对 `len(u_targets)>=2` 的源使用**完整**候选元组。
 - 2026-03-22: 并行下游 `u_*` 使能从「仅指针单点」改为「从指针起循环首个可接收腔室」：`get_action_mask` 与 `_fire`（`pop_head` 前）共用 `_first_receivable_parallel_target`，避免指针落在已满并行腔（如 `PM2`）时忽略其它空腔（如 `PM3`/`PM5`）导致 `u_PM6_TM3` 等永久屏蔽；同步更新行为规则 17/18。
 - 2026-03-22: 修复同一步「驻留超时 + `u_*` 取片」应撤销 scrap 却不生效：`_fire` 的 `u_*` 日志增加 `source_place`，`_should_cancel_resident_scrap_after_fire` 与 `scrap_info["place"]` 对齐；原 `t_name[2:]` 在 `u_*_TM2` 命名下与腔室名不一致导致永远不匹配。

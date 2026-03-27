@@ -225,8 +225,9 @@ class ClusterTool:
         self.stop_on_scrap = bool(config.stop_on_scrap)
         
         self.reward_config = dict(config.reward_config)
-        # 临时执行策略：固定单臂，不启用双臂分支。
         self.robot_capacity = 1
+        self._dual_arm = bool(getattr(config, 'dual_arm', False))
+        self.swap_duration = 10
 
         self.cleaning_enabled = bool(config.cleaning_enabled)
         self.cleaning_targets = set(config.cleaning_targets)
@@ -556,13 +557,15 @@ class ClusterTool:
                     reward_result -= float(self.idle_event_penalty)
         else:
             self._consecutive_wait_time = 0
-            t2 = t1 + self.ttime
+            is_swap = self._will_swap(int(action))
+            action_duration = self.swap_duration if is_swap else self.ttime
+            t2 = t1 + action_duration
             if _pf: t_ar = perf_counter()
             reward_result, scan_info = self._advance_and_compute_reward(
-                self.ttime, t1, t2, detailed=detailed_reward)
+                action_duration, t1, t2, detailed=detailed_reward)
             if _pf: advance_and_reward_s += perf_counter() - t_ar
             if _pf: t_fire = perf_counter()
-            log_entry = self._fire(int(action), start_time=t1, end_time=t2)
+            log_entry = self._fire(int(action), start_time=t1, end_time=t2, is_swap=is_swap)
             if _pf: fire_s += perf_counter() - t_fire
             self.fire_log.append(log_entry)
 
@@ -941,7 +944,7 @@ class ClusterTool:
             return parts, scan_info
         return total_reward, scan_info
 
-    def _fire(self, t_idx: int, start_time: int, end_time: int) -> Dict[str, Any]:
+    def _fire(self, t_idx: int, start_time: int, end_time: int, is_swap: bool = False) -> Dict[str, Any]:
         t_name = self.id2t_name[t_idx]
         pre_places = self._pre_place_indices[t_idx]
         pst_places = self._pst_place_indices[t_idx]
@@ -952,10 +955,16 @@ class ClusterTool:
         if len(pre_place.tokens) == 0:
             return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
 
+        pre_place_idx = int(pre_places[0])
+        pst_place_idx = int(pst_places[0])
+
         if t_name.startswith("u_") and self._is_cascade:
             src0 = pre_place.name
             if src0 in self._cascade_round_robin_pairs:
-                sync_tgt = self._first_receivable_parallel_target(src0)
+                if self._dual_arm:
+                    sync_tgt = self._first_parallel_target_dual_arm(src0)
+                else:
+                    sync_tgt = self._first_receivable_parallel_target(src0)
                 if sync_tgt is not None:
                     self._cascade_round_robin_next[src0] = sync_tgt
 
@@ -972,8 +981,6 @@ class ClusterTool:
             if self._is_cascade:
                 transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
                 tok.machine = 2 if transport == "TM3" else 1
-            # 并行 stage（LP/LLC/LLD 多 PM）：指针在 t_* 放入腔室后推进，避免 u_* 已推进导致
-            # TM2/TM3 上 t_* 的 _allow_t_by_machine_round_robin 与 u_* 选定目标错位（见 debug-15c637）。
             if not (self._is_cascade and src in self._cascade_round_robin_pairs):
                 self._advance_round_robin_after_u_fire(src)
             if src in self._chamber_active and wafer_id in self._chamber_active[src]:
@@ -983,6 +990,53 @@ class ClusterTool:
             self._on_processing_unload(src)
         elif t_name.startswith("t_"):
             target = pst_place.name
+
+            if is_swap and self._is_swap_eligible(pst_place):
+                old_tok = pst_place.pop_head()
+                old_wafer_id = old_tok.token_id
+
+                self._track_leave(old_tok, target)
+                if target in self._chamber_active and old_wafer_id in self._chamber_active[target]:
+                    tl_idx = self._chamber_active[target].pop(old_wafer_id)
+                    e, _, wid = self._chamber_timeline[target][tl_idx]
+                    self._chamber_timeline[target][tl_idx] = (e, start_time, wid)
+                self._on_processing_unload(target)
+
+                old_tok.enter_time = self.time
+                old_tok.stay_time = 0
+                old_tok._dst_level_targets = tuple(self._u_targets.get(target, []))
+                old_tok.machine = tok.machine
+                old_tok.route_head_idx += 1
+
+                tok._dst_level_targets = None
+                tok.step = max(tok.step, self._step_map.get(target, 0))
+                self._track_enter(tok, target)
+                tok.route_head_idx += 1
+                pst_place.append(tok)
+                tok._place_idx = pst_place_idx
+                if target in self._chamber_timeline and wafer_id >= 0:
+                    tl_idx2 = len(self._chamber_timeline[target])
+                    self._chamber_timeline[target].append((end_time, None, wafer_id))
+                    self._chamber_active[target][wafer_id] = tl_idx2
+
+                pre_place.append(old_tok)
+                old_tok._place_idx = pre_place_idx
+
+                if self._is_cascade:
+                    for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
+                        if target in rr_tgts:
+                            self._advance_round_robin_after_u_fire(rr_source)
+                            break
+
+                return {
+                    "t_name": t_name,
+                    "t1": int(start_time),
+                    "t2": int(end_time),
+                    "token_id": wafer_id,
+                    "swap": True,
+                    "swapped_token_id": old_wafer_id,
+                }
+
             tok._dst_level_targets = None
             tok.step = max(tok.step, self._step_map.get(target, 0))
             self._track_enter(tok, target)
@@ -1002,8 +1056,6 @@ class ClusterTool:
 
         tok.route_head_idx += 1
         pst_place.append(tok)
-        pre_place_idx = int(pre_places[0])
-        pst_place_idx = int(pst_places[0])
         tok._place_idx = pst_place_idx
         self.m[pre_place_idx] -= 1
         self.m[pst_place_idx] += 1
@@ -1459,6 +1511,53 @@ class ClusterTool:
                 }
             )
 
+    def _is_swap_eligible(self, pst_place: Place) -> bool:
+        """目标 PM 是否可执行 swap（仅在 _fire 中调用）。"""
+        if not self._dual_arm:
+            return False
+        if not pst_place.is_pm:
+            return False
+        if len(pst_place.tokens) < pst_place.capacity:
+            return False
+        if not pst_place.tokens:
+            return False
+        if pst_place.tokens[0].stay_time < pst_place.processing_time:
+            return False
+        return not pst_place.is_cleaning
+
+    def _will_swap(self, t_idx: int) -> bool:
+        """判断 t_idx 变迁当前是否会触发 swap（用于 step 计算时长）。"""
+        if not self._dual_arm:
+            return False
+        t_name = self.id2t_name[t_idx]
+        if not t_name.startswith("t_"):
+            return False
+        pst_idx = self._pst_place_indices[t_idx]
+        if pst_idx.size == 0:
+            return False
+        pst_place = self.marks[int(pst_idx[0])]
+        return self._is_swap_eligible(pst_place)
+
+    def _first_parallel_target_dual_arm(self, source: str) -> Optional[str]:
+        """双臂模式：从当前指针起循环，找第一个非清洗的腔室（不检查容量）。"""
+        if source not in self._cascade_round_robin_pairs:
+            return None
+        rr_targets = tuple(self._cascade_round_robin_pairs[source])
+        if not rr_targets:
+            return None
+        start = self._cascade_round_robin_next.get(source, rr_targets[0])
+        if start not in rr_targets:
+            start = rr_targets[0]
+        k = rr_targets.index(start)
+        n = len(rr_targets)
+        for i in range(n):
+            name = rr_targets[(k + i) % n]
+            tp = self._get_place(name)
+            if tp.is_cleaning:
+                continue
+            return name
+        return None
+
     def _first_receivable_parallel_target(self, source: str) -> Optional[str]:
         """级联并行下游：从当前指针起循环，找第一个未满且非清洗的腔室。"""
         if source not in self._cascade_round_robin_pairs:
@@ -1484,10 +1583,14 @@ class ClusterTool:
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
         级联并行源：从 robin 指针起循环选取第一个可接收下游；单候选源：只检查该候选。
+        双臂模式跳过容量检查，只检查非清洗。
         """
         candidates = tuple(self._u_targets.get(source, ()))
         if source in self._cascade_round_robin_pairs:
-            tgt = self._first_receivable_parallel_target(source)
+            if self._dual_arm:
+                tgt = self._first_parallel_target_dual_arm(source)
+            else:
+                tgt = self._first_receivable_parallel_target(source)
             return (tgt is not None, tgt)
         if not candidates:
             return False, None
@@ -1495,7 +1598,7 @@ class ClusterTool:
         target_place = self._get_place(pointer_target)
         if target_place.is_cleaning:
             return False, None
-        if len(target_place.tokens) >= target_place.capacity:
+        if not self._dual_arm and len(target_place.tokens) >= target_place.capacity:
             return False, None
         return True, pointer_target
 
@@ -1646,8 +1749,12 @@ class ClusterTool:
                         target_place = place_by_name.get(target)
                         if target_place is None or target_place.is_cleaning:
                             continue
-                        if not _is_struct_enabled(t_idx):
-                            continue
+                        if self._dual_arm and target_place.is_pm:
+                            if len(target_place.tokens) > 0 and target_place.tokens[0].stay_time < target_place.processing_time:
+                                continue
+                        else:
+                            if not _is_struct_enabled(t_idx):
+                                continue
                         if 0 <= t_idx < total_actions:
                             mask[t_idx] = True
             else:

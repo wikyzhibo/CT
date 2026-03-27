@@ -89,7 +89,7 @@ def load_model(model_path: str, adapter: PetriSingleAdapter):
     from torchrl.modules import ProbabilisticActor, MaskedCategorical
     from tensordict.nn import TensorDictModule
     from torchrl.envs.utils import ExplorationType, set_exploration_type
-    from solutions.PPO.network.models import MaskedPolicyHead
+    from solutions.model.network import MaskedPolicyHead
     
     try:
         # 获取环境参数

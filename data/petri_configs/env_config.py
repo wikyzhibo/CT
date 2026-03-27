@@ -82,6 +82,7 @@ class PetriEnvConfig:
     reward_config: Optional[Dict[str, int]] = None
 
     single_robot_capacity: int = 1 # 单设备机械手容量
+    dual_arm: bool = False  # 双臂模式：启用后 t_* 可对满载 PM 执行 swap
     device_mode: str = "single" # 单设备模式：single=原单设备路径，cascade=级联路径模板
     # 单设备清洗配置（训练简化版）
     cleaning_enabled: bool = True

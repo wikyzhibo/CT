@@ -22,6 +22,7 @@
   - `single_robot_capacity=1`：`d_TM1.capacity=1`（Single Arm）
   - `single_robot_capacity=2`：`d_TM1.capacity=2`（Dual Arm）
 - `d_TM1` 使用 FIFO 队列；token 进入 `d_TM1` 时按机器轮换分配 `machine` 标识（单臂固定 1，双臂在 1/2 间交替）。
+- 级联双臂 swap（`PetriEnvConfig.dual_arm=True`）：`robot_capacity` 保持 1，`t_*` 对满载且加工完成的 PM 执行原子 swap（交换 TM/PM token，`m` 不变，时长 10s）。仅 PM 可 swap。action mask 对 PM 目标跳过容量约束，仅检查加工完成、路由匹配、运输完成。
 - 单设备死锁判定采用两阶段使能：
   - Stage1（结构使能）：`pre/pst` + 容量 + 防死锁规则
   - Stage2（就绪使能）：在 Stage1 上追加加工完成与 dwell 条件
