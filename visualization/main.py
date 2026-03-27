@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from solutions.A.env_single import Env_PN_Single
+from solutions.A.rl_env import Env_PN_Single
 
 from .petri_single_adapter import PetriSingleAdapter
 from .viewmodel import PetriViewModel

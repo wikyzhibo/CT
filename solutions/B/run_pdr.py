@@ -39,8 +39,6 @@ def search(net: ClusterTool) -> bool:
     current_m = net.m.copy()
     current_fm = net.marks.clone()
     current_clock = 0
-    current_lp_release_count = 0
-    current_last_lp_release_time = -1
 
     max_round = 1000
     round_idx = 0
@@ -55,7 +53,6 @@ def search(net: ClusterTool) -> bool:
             net.marks = current_fm.clone()
             net.time = int(current_clock)
             net.makespan = int(current_clock)
-            net._last_lp_release_time = int(current_last_lp_release_time)
             return True
 
         _clear_leaf_buffers()
@@ -66,10 +63,10 @@ def search(net: ClusterTool) -> bool:
             fm=current_fm,
             clock=int(current_clock),
             depth=net.search_depth,
-            lp_release_count=current_lp_release_count,
-            last_lp_release_time=current_last_lp_release_time,
         )
-        assert len(core_module.LEAF_NODES) != 0, "DFS should collect at least one leaf node"
+        if len(core_module.LEAF_NODES) == 0:
+            print("[WARN] no DFS leaf node can be expanded, terminating search.")
+            break
 
         candidate_indices = list(range(len(core_module.LEAF_NODES)))
         leaf_idx = select_node(candidate_indices, current_clock=current_clock, mode=1)
@@ -79,8 +76,6 @@ def search(net: ClusterTool) -> bool:
         current_m = core_module.LEAF_NODES[leaf_idx]["m"].copy()
         current_fm = core_module.LEAF_NODES[leaf_idx]["marks"].clone()
         current_clock = int(core_module.LEAF_CLOCKS[leaf_idx])
-        current_lp_release_count = int(core_module.LEAF_LP_RELEASE_COUNTS[leaf_idx])
-        current_last_lp_release_time = int(core_module.LEAF_LAST_LP_RELEASE_TIMES[leaf_idx])
 
         _clear_leaf_buffers()
 

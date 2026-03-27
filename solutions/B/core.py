@@ -9,17 +9,13 @@ LEAF_NODES = []
 LEAF_CLOCKS = []
 LEAF_PATHS = []
 LEAF_PATH_RECORDS = []
-LEAF_LP_RELEASE_COUNTS = []
-LEAF_LAST_LP_RELEASE_TIMES = []
 
 def _clear_leaf_buffers() -> None:
-    global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS, LEAF_LP_RELEASE_COUNTS, LEAF_LAST_LP_RELEASE_TIMES
+    global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS
     LEAF_NODES = []
     LEAF_CLOCKS = []
     LEAF_PATHS = []
     LEAF_PATH_RECORDS = []
-    LEAF_LP_RELEASE_COUNTS = []
-    LEAF_LAST_LP_RELEASE_TIMES = []
 
 class ClusterTool:
     def __init__(self) -> None:
@@ -38,7 +34,7 @@ class ClusterTool:
         self.ttime = cfg.ttime
         self.search_depth = cfg.search_depth
         self.candidate_k = cfg.candidate_k
-        info = build_pdr_net(n_wafer=cfg.n_wafer)
+        info = build_pdr_net(n_wafer=cfg.n_wafer, takt_cycle=cfg.takt_cycle)
         self.id2p_name: List[str] = list(info["id2p_name"])
         self.id2t_name: List[str] = list(info["id2t_name"])
         self.P = int(len(self.id2p_name))
@@ -58,7 +54,6 @@ class ClusterTool:
         self.marks: FlatMarks = self._init_fm.clone()
         self._pre_places_idx: List[np.ndarray] = info["pre_place_cache"]
         self._pst_places_idx: List[np.ndarray] = info["pst_place_cache"]
-        self.lp_t_idx: List[int] = info["lp_t_idx"]
         self._downstream_block_tids: Dict[int, np.ndarray] = {}
         downstream_block_map: Dict[str, List[str]] = dict(info.get("downstream_block_map", {}))
         p_name_to_idx = {name: idx for idx, name in enumerate(self.id2p_name)}
@@ -78,11 +73,8 @@ class ClusterTool:
                 self._downstream_block_tids[tid] = np.asarray(dst_idx, dtype=np.int32)
         self.full_transition_path: List[str] = []
         self.full_transition_records: List[Dict[str, int | str]] = []
-        self.takt_cycle = [0] + [180] * (self.n_wafer - 1)
         self.train_current_marks: Optional[FlatMarks] = None
         self._cur_clock: int = 0
-        self._release_count: int = 0
-        self._last_lp_release_time: int = -1
         self._train_cached_candidates: Optional[Dict[str, object]] = None
         self._lp_done_idx: int = int(self.terminal_place_idx)
         self._obs_place_indices = np.asarray(
@@ -95,6 +87,13 @@ class ClusterTool:
         )
         self.obs_dim: int = int(self._obs_global_dim + 2 * len(self._obs_place_indices))
         self._obs_buffer = np.zeros(self.obs_dim, dtype=np.float32)
+        self._lp_place_idx: int = int(self.id2p_name.index("LP")) if "LP" in self.id2p_name else -1
+        self._lp_min_release_interval: int = 180
+        self._u_lp_tm2_tids: set[int] = {
+            int(tid)
+            for tid, t_name in enumerate(self.id2t_name)
+            if t_name.startswith("u_LP_TM2_")
+        }
         self._is_lp_like = np.asarray(
             [name.startswith("LP") for name in self.id2p_name],
             dtype=bool,
@@ -129,8 +128,6 @@ class ClusterTool:
         self.marks = self._init_fm.clone()
         self.train_current_marks = self.marks.clone()
         self._cur_clock = 0
-        self._release_count = 0
-        self._last_lp_release_time = -1
         self._train_cached_candidates = None
         _clear_leaf_buffers()
 
@@ -188,8 +185,6 @@ class ClusterTool:
             fm=self.train_current_marks,
             clock=int(self._cur_clock),
             depth=self.search_depth,
-            lp_release_count=self._release_count,
-            last_lp_release_time=self._last_lp_release_time,
         )
 
 
@@ -221,8 +216,6 @@ class ClusterTool:
                     "m": leaf["m"].copy(),
                     "marks": leaf["marks"].clone(),
                     "clock": int(LEAF_CLOCKS[int(leaf_idx)]),
-                    "lp_release_count": int(LEAF_LP_RELEASE_COUNTS[int(leaf_idx)]),
-                    "last_lp_release_time": int(LEAF_LAST_LP_RELEASE_TIMES[int(leaf_idx)]),
                     "transition_path": list(LEAF_PATHS[int(leaf_idx)]),
                     "transition_records": [dict(item) for item in LEAF_PATH_RECORDS[int(leaf_idx)]],
                 }
@@ -249,8 +242,6 @@ class ClusterTool:
         m: np.ndarray,
         fm: FlatMarks,
         start_from: Optional[int] = None,
-        lp_release_count: int = 0,
-        last_lp_release_time: int = -1,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         单次遍历所有变迁：先做 m/k 下的结构使能，再读 marks 算最早使能时刻。
@@ -276,34 +267,24 @@ class ClusterTool:
             for p in pre_idx:
                 tok_enter = self._head_enter_time(int(p), fm) + int(self.ptime[p])
                 earliest = max(earliest, tok_enter)
-            if t in self.lp_t_idx:
-                lp_ready_time = self._lp_takt_ready_time(
-                    lp_release_count=lp_release_count,
-                    last_lp_release_time=last_lp_release_time,
-                )
-                earliest = max(earliest, lp_ready_time)
             ts_list.append(t)
             ets_list.append(earliest)
         if not ts_list:
             return np.empty((0,), dtype=np.int32), np.empty((0,), dtype=np.int32)
         return np.asarray(ts_list, dtype=np.int32), np.asarray(ets_list, dtype=np.int32)
 
-    def _lp_takt_ready_time(self, lp_release_count: int, last_lp_release_time: int) -> int:
+    def _state_key_from_m(self, m: np.ndarray, fm: FlatMarks) -> Tuple[object, ...]:
         """
-        返回下一次 u_LP_TM2 允许发射的最早时刻。
-        lp_release_count 表示当前路径上已发射 u_LP_TM2 的次数。
+        将标识与关键 marks 状态共同转换为可哈希键，用于 DFS 去重。
         """
-        idx = min(int(lp_release_count), len(self.takt_cycle) - 1)
-        interval = int(self.takt_cycle[idx])
-        if int(last_lp_release_time) < 0:
-            return int(interval)
-        return int(last_lp_release_time) + int(interval)
-
-    def _state_key_from_m(self, m: np.ndarray, lp_release_count: int, last_lp_release_time: int) -> Tuple[int, ...]:
-        """
-        将标识与 LP 约束状态共同转换为可哈希键，用于 DFS 去重。
-        """
-        return tuple(int(x) for x in m.tolist()) + (int(lp_release_count), int(last_lp_release_time))
+        return (
+            tuple(int(x) for x in m.tolist()),
+            tuple(int(x) for x in fm.token_place.tolist()),
+            tuple(int(x) for x in fm.token_enter_time.tolist()),
+            tuple(int(x) for x in fm.place_token.tolist()),
+            tuple((int(p), tuple(int(tid) for tid in q)) for p, q in sorted(fm.wafer_queues.items())),
+            tuple((int(p), tuple(int(t) for t in q)) for p, q in sorted(fm.resource_queues.items())),
+        )
 
     def _fire(self,
               t: int,
@@ -335,6 +316,15 @@ class ClusterTool:
             else:
                 new_fm.resource_queues[p].pop(0)
             new_m[p] -= 1
+
+        if int(t) in self._u_lp_tm2_tids and self._lp_place_idx >= 0:
+            lp_queue = new_fm.wafer_queues.get(self._lp_place_idx, [])
+            if lp_queue:
+                next_head_tid = int(lp_queue[0])
+                min_enter_time = int(te) + int(self._lp_min_release_interval)
+                old_enter_time = int(new_fm.token_enter_time[next_head_tid])
+                if old_enter_time < min_enter_time:
+                    new_fm.token_enter_time[next_head_tid] = int(min_enter_time)
 
         for p in self._pst_places_idx[t]:
             p = int(p)
@@ -456,8 +446,6 @@ class ClusterTool:
         self.m = selected_state["m"].copy()
         self.train_current_marks = selected_state["marks"].clone()
         self._cur_clock = int(selected_state["clock"])
-        self._release_count = int(selected_state["lp_release_count"])
-        self._last_lp_release_time = int(selected_state["last_lp_release_time"])
 
         cur_done_wafer = int(self.m[self.terminal_place_idx])
         done_wafer_delta = max(0, cur_done_wafer - prev_done_wafer)
@@ -501,13 +489,11 @@ class ClusterTool:
             clock: int,
             path: List[int],
             path_records: List[Dict[str, int | str]],
-            lp_release_count: int,
-            last_lp_release_time: int,
     ) -> None:
         """
         记录深度叶子节点（全局收集）。
         """
-        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS, LEAF_LP_RELEASE_COUNTS, LEAF_LAST_LP_RELEASE_TIMES
+        global LEAF_NODES, LEAF_CLOCKS, LEAF_PATHS, LEAF_PATH_RECORDS
         LEAF_NODES.append({
             "m": m.copy(),
             "marks": fm.clone(),
@@ -515,8 +501,6 @@ class ClusterTool:
         LEAF_CLOCKS.append(int(clock))
         LEAF_PATHS.append([self.id2t_name[t] for t in path])
         LEAF_PATH_RECORDS.append([{"transition": str(item["transition"]), "fire_time": int(item["fire_time"])} for item in path_records])
-        LEAF_LP_RELEASE_COUNTS.append(int(lp_release_count))
-        LEAF_LAST_LP_RELEASE_TIMES.append(int(last_lp_release_time))
 
     def collect_leaves_iterative(
             self,
@@ -524,18 +508,16 @@ class ClusterTool:
             fm: FlatMarks,
             clock: int,
             depth: int,
-            lp_release_count: int,
-            last_lp_release_time: int,
     ) -> None:
         """
         使用显式栈执行 DFS，避免递归。
-        栈帧: (m, fm, clock, depth, path, path_records, lp_release_count, last_lp_release_time)
+        栈帧: (m, fm, clock, depth, path, path_records)
         """
-        stack = [(m.copy(), fm.clone(), int(clock), int(depth), [], [], int(lp_release_count), int(last_lp_release_time))]
-        seen: set[Tuple[int, ...]] = {self._state_key_from_m(m, lp_release_count, last_lp_release_time)}
+        stack = [(m.copy(), fm.clone(), int(clock), int(depth), [], [])]
+        seen: set[Tuple[object, ...]] = {self._state_key_from_m(m, fm)}
 
         while stack:
-            cur_m, cur_fm, cur_clock, cur_depth, cur_path, cur_path_records, cur_lp_release_count, cur_last_lp_release_time = stack.pop()
+            cur_m, cur_fm, cur_clock, cur_depth, cur_path, cur_path_records = stack.pop()
 
             if bool(int(cur_m[self.terminal_place_idx]) == self.n_wafer) or cur_depth == 0:
                 self.get_leaf_node(
@@ -544,8 +526,6 @@ class ClusterTool:
                     clock=cur_clock,
                     path=cur_path,
                     path_records=cur_path_records,
-                    lp_release_count=cur_lp_release_count,
-                    last_lp_release_time=cur_last_lp_release_time,
                 )
                 continue
 
@@ -553,8 +533,6 @@ class ClusterTool:
                 cur_m,
                 cur_fm,
                 cur_clock,
-                lp_release_count=cur_lp_release_count,
-                last_lp_release_time=cur_last_lp_release_time,
             )
             if len(ts) == 0:
                 continue
@@ -572,10 +550,8 @@ class ClusterTool:
 
                 new_path = cur_path + [int(t)]
                 new_path_records = cur_path_records + [{"transition": self.id2t_name[t], "fire_time": int(enable_time)}]
-                new_lp_release_count = cur_lp_release_count + (1 if self.id2t_name[t].startswith("u_LP_TM2") else 0)
-                new_last_lp_release_time = int(enable_time) if self.id2t_name[t].startswith("u_LP_TM2") else int(cur_last_lp_release_time)
-                state_key = self._state_key_from_m(new_m, new_lp_release_count, new_last_lp_release_time)
+                state_key = self._state_key_from_m(new_m, new_fm)
                 if state_key in seen:
                     continue
                 seen.add(state_key)
-                stack.append((new_m, new_fm, new_clock, cur_depth - 1, new_path, new_path_records, new_lp_release_count, new_last_lp_release_time))
+                stack.append((new_m, new_fm, new_clock, cur_depth - 1, new_path, new_path_records))

@@ -26,10 +26,10 @@ from torchrl.modules import MaskedCategorical, ProbabilisticActor, ValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 
-from .clustertool_config import ClusterToolCfg
-from .training_config import TrainingConfig
-from .Env import Env
-from .ppo_models import MaskedPolicyHead
+from solutions.B.clustertool_config import ClusterToolCfg
+from solutions.B.training_config import TrainingConfig
+from solutions.B.Env import Env
+from solutions.B.ppo_models import MaskedPolicyHead
 
 
 def build_policy_actor(

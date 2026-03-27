@@ -60,3 +60,4 @@ solutions/C/RL2_job8.png
 solutions/C/planB_sequence.json
 *.pt
 *.npz
+*.ipynb

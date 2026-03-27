@@ -70,6 +70,11 @@
   - 若本步未收集到任何叶子（原本会触发断言），训练路径不抛断言，改为 `scrap=True`、附加惩罚 `-1000`，并立即 `reset` 训练状态。
   - 训练日志必须输出 `makespan`（按 batch 统计 `finish=True` 样本的平均 `time`）。
   - 训练态与推理态分离：`search()` 仍按现有 SPT 规则选叶，不读取 PPO 模型。
+12. `solutions/B` 的 `u_LP` 节拍口径：
+  - 构网时仍会给 `LP` 队列各 wafer 写入初始 `token_enter_time` 前缀：第 `k` 片（`k` 从 0 开始）使用 `sum(takt_cycle[:k])`，第 1 片为 `0`。
+  - 每次发射 `u_LP_TM2_*` 后，必须动态抬升 `LP` 新队头 wafer 的 `token_enter_time` 到 `max(old_enter_time, fire_time + 180)`，保证任意相邻两次 `u_LP` 实际发射时间差 `>= 180`。
+  - `get_enable_t` 不追加 `u_LP` 专门分支，统一沿用通用 `max(head_enter_time + ptime)`；节拍约束通过上述 `token_enter_time` 动态更新生效。
+  - DFS 不再传递 `lp_release_count/last_lp_release_time`。
 
 ## Configuration / API
 - `solutions/PDR/construct.py`
@@ -108,4 +113,6 @@
 - `docs/routes.md`
 
 ## Change Notes
+- 2026-03-27: 修复 `solutions/B` 的 `u_LP` 节拍漂移：在 `u_LP_TM2_*` 发射后动态更新 `LP` 新队头 `token_enter_time=max(old, fire_time+180)`，将节拍口径从“仅静态前缀时间”收敛为“严格相邻发射间隔 >=180”。
+- 2026-03-27: `solutions/B` 中 `u_LP` 节拍门控改为在构造 `marks` 时写入 `LP token_enter_time`（前缀和口径 `sum(takt_cycle[:k])`，首片=0）；`get_enable_t` 删除 `u_LP` 专门门控，DFS 同步删除 `lp_release_count/last_lp_release_time` 传递链路。
 - 2026-03-26: 修复 `solutions.PDR` 模块内引用为包内导入；`parse_sequences.py` 导出目录统一到仓库根 `seq/` 并收口文件名；`train.py` 默认训练指标输出改为 `results/training_metrics.json`；`plot_train_metrics.py` 单文件/对比模式统一使用 `--output` 输出 PNG。

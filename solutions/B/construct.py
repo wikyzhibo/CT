@@ -402,14 +402,11 @@ class SuperPetriBuilder:
 
         _pre_places_idx = []
         _pst_places_idx = []
-        lp_t_idx = []
         for t in range(T):
             pre_idx = np.nonzero(pre[:, t] > 0)[0].astype(np.int32)
             pst_idx = np.nonzero(pst[:, t] > 0)[0].astype(np.int32)
             _pre_places_idx.append(pre_idx)
             _pst_places_idx.append(pst_idx)
-            if self.id2t_name[t].startswith("u_LP_TM2"):
-                lp_t_idx.append(t)
 
         return {
             "m0": m0,
@@ -418,7 +415,6 @@ class SuperPetriBuilder:
             "pst": pst,
             "pre_place_cache": _pre_places_idx,
             "pst_place_cache": _pst_places_idx,
-            "lp_t_idx": lp_t_idx,
             "ptime": ptime,
             "ttime": ttime,
             "capacity": capacity,
@@ -441,7 +437,7 @@ class SuperPetriBuilder:
         }
 
 
-def build_pdr_net(n_wafer: int = 7) -> Dict[str, Any]:
+def build_pdr_net(n_wafer: int = 7, takt_cycle: Optional[List[int]] = None) -> Dict[str, Any]:
     """
     构造默认 PDR 路线：
       LP -> PM7/PM8(70s) -> LLC -> PM1/PM2(300s) -> LLD -> LP_done
@@ -472,5 +468,20 @@ def build_pdr_net(n_wafer: int = 7) -> Dict[str, Any]:
     }
     route = ["LP", ["PM7", "PM8"], "LLC", ["PM1", "PM2"], "LLD", "LP_done"]
     builder = SuperPetriBuilder(d_ptime=5, default_ttime=5)
-    return builder.build(modules=modules, robots=robots, routes=[route])
+    info = builder.build(modules=modules, robots=robots, routes=[route])
+
+    if takt_cycle is None:
+        takt_intervals = [180] * max(0, int(n_wafer) - 1)
+    else:
+        takt_intervals = [int(v) for v in takt_cycle]
+    takt_prefix = [0]
+    for interval in takt_intervals:
+        takt_prefix.append(takt_prefix[-1] + int(interval))
+
+    lp_idx = info["id2p_name"].index("LP")
+    lp_queue = info["marks"].wafer_queues[lp_idx]
+    for pos, tid in enumerate(lp_queue):
+        prefix_idx = min(int(pos), len(takt_prefix) - 1)
+        info["marks"].token_enter_time[int(tid)] = int(takt_prefix[prefix_idx])
+    return info
 

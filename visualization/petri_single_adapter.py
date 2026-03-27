@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from solutions.A.env_single import Env_PN_Single
+from solutions.A.rl_env import Env_PN_Single
 
 REWARD_DESC_VIZ: Dict[str, str] = {
     "total": "本步总奖励",
