@@ -425,6 +425,7 @@ class ClusterTool:
         self._next_machine_id = 1
         self._cascade_round_robin_pairs: Dict[str, Tuple[str, ...]] = {}
         self._cascade_round_robin_next: Dict[str, str] = {}
+        self._cascade_round_robin_owner: Dict[str, str] = {}
         self._single_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
         self._single_round_robin_next: Dict[str, str] = {}
         self._u_transition_by_source: Dict[str, int] = {}
@@ -438,6 +439,13 @@ class ClusterTool:
                     # 须保留 LLC/LLD 等非 PM 并行下游（如路线 1-5：PM7/PM8→LLC|LLD），否则
                     # _cascade_round_robin_next.values() 不含 LLC/LLD，TM2 上并行 t_* 被 _allow_t_by_machine_round_robin 永久屏蔽。
                     self._cascade_round_robin_pairs[source] = tuple(targets)
+        group_owner: Dict[Tuple[str, ...], str] = {}
+        for source, pair in self._cascade_round_robin_pairs.items():
+            owner = group_owner.get(pair)
+            if owner is None:
+                owner = source
+                group_owner[pair] = owner
+            self._cascade_round_robin_owner[source] = owner
         self._cascade_round_robin_next = {
             source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
         }
@@ -965,7 +973,7 @@ class ClusterTool:
                 else:
                     sync_tgt = self._first_receivable_parallel_target(src0)
                 if sync_tgt is not None:
-                    self._cascade_round_robin_next[src0] = sync_tgt
+                    self._rr_set_next(src0, sync_tgt)
 
         tok = pre_place.pop_head()
         wafer_id = tok.token_id
@@ -976,6 +984,7 @@ class ClusterTool:
         if t_name.startswith("u_"):
             src = pre_place.name
             tok._dst_level_targets = tuple(self._u_targets.get(src, []))
+            tok.last_u_source = str(src)
             tok.machine = int(self._next_robot_machine())
             if self._is_cascade:
                 transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
@@ -1022,10 +1031,14 @@ class ClusterTool:
                 old_tok._place_idx = pre_place_idx
 
                 if self._is_cascade:
-                    for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
-                        if target in rr_tgts:
-                            self._advance_round_robin_after_u_fire(rr_source)
-                            break
+                    rr_source = str(getattr(tok, "last_u_source", "") or "")
+                    if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
+                        self._advance_round_robin_after_u_fire(rr_source)
+                    else:
+                        for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
+                            if target in rr_tgts:
+                                self._advance_round_robin_after_u_fire(rr_source)
+                                break
 
                 return {
                     "t_name": t_name,
@@ -1048,10 +1061,14 @@ class ClusterTool:
                 self._chamber_timeline[target].append((end_time, None, wafer_id))
                 self._chamber_active[target][wafer_id] = idx
             if self._is_cascade:
-                for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
-                    if target in rr_tgts:
-                        self._advance_round_robin_after_u_fire(rr_source)
-                        break
+                rr_source = str(getattr(tok, "last_u_source", "") or "")
+                if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
+                    self._advance_round_robin_after_u_fire(rr_source)
+                else:
+                    for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
+                        if target in rr_tgts:
+                            self._advance_round_robin_after_u_fire(rr_source)
+                            break
 
         tok.route_head_idx += 1
         pst_place.append(tok)
@@ -1120,6 +1137,19 @@ class ClusterTool:
             idx += 1
         return None
 
+    def _rr_owner(self, source: str) -> str:
+        return str(self._cascade_round_robin_owner.get(str(source), str(source)))
+
+    def _rr_get_next(self, source: str) -> Optional[str]:
+        owner = self._rr_owner(source)
+        return self._cascade_round_robin_next.get(owner)
+
+    def _rr_set_next(self, source: str, target: str) -> None:
+        owner = self._rr_owner(source)
+        for src, src_owner in self._cascade_round_robin_owner.items():
+            if src_owner == owner:
+                self._cascade_round_robin_next[src] = str(target)
+
     @staticmethod
     def _route_gate_allows_t(gate: object, t_code: int) -> bool:
         if t_code < 0:
@@ -1139,10 +1169,17 @@ class ClusterTool:
         transport_name: str,
         target_name: str,
         tok_gate: object,
+        tok: Optional[BasedToken] = None,
     ) -> bool:
         if not isinstance(tok_gate, (tuple, frozenset)):
             return True
-        return target_name in self._cascade_round_robin_next.values()
+        rr_source = str(getattr(tok, "last_u_source", "") or "")
+        expected_target = self._rr_get_next(rr_source)
+        if rr_source in self._cascade_round_robin_pairs and expected_target is not None:
+            allowed = str(target_name) == str(expected_target)
+        else:
+            allowed = target_name in self._cascade_round_robin_next.values()
+        return allowed
 
     def _route4_next_target_from_token(self, tok: BasedToken) -> Optional[str]:
         """从 route_queue 下一 gate 推断目标库所名（route4 专用）。"""
@@ -1544,7 +1581,7 @@ class ClusterTool:
         rr_targets = tuple(self._cascade_round_robin_pairs[source])
         if not rr_targets:
             return None
-        start = self._cascade_round_robin_next.get(source, rr_targets[0])
+        start = self._rr_get_next(source) or rr_targets[0]
         if start not in rr_targets:
             start = rr_targets[0]
         k = rr_targets.index(start)
@@ -1564,7 +1601,7 @@ class ClusterTool:
         rr_targets = tuple(self._cascade_round_robin_pairs[source])
         if not rr_targets:
             return None
-        start = self._cascade_round_robin_next.get(source, rr_targets[0])
+        start = self._rr_get_next(source) or rr_targets[0]
         if start not in rr_targets:
             start = rr_targets[0]
         k = rr_targets.index(start)
@@ -1606,13 +1643,11 @@ class ClusterTool:
             rr_targets = tuple(self._cascade_round_robin_pairs[source])
             if len(rr_targets) <= 1:
                 return
-            current = self._cascade_round_robin_next.get(source, rr_targets[0])
+            current = self._rr_get_next(source) or rr_targets[0]
             if current not in rr_targets:
                 current = rr_targets[0]
             current_idx = rr_targets.index(current)
-            self._cascade_round_robin_next[source] = rr_targets[
-                (current_idx + 1) % len(rr_targets)
-            ]
+            self._rr_set_next(source, rr_targets[(current_idx + 1) % len(rr_targets)])
             return
         if self.device_mode == "single" and source in self._single_round_robin_pairs:
             rr_targets = tuple(self._single_round_robin_pairs[source])
@@ -1741,7 +1776,13 @@ class ClusterTool:
                         target = self._transition_target_place(int(t_idx))
                         if target is None:
                             continue
-                        if not self._allow_t_by_machine_round_robin(pname, target, tok_gate):
+                        allow_rr = self._allow_t_by_machine_round_robin(
+                            pname,
+                            target,
+                            tok_gate,
+                            tok,
+                        )
+                        if not allow_rr:
                             continue
                         if not route_gate_allows(tok_gate, route_code_by_idx[t_idx]):
                             continue
