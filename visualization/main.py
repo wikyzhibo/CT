@@ -26,7 +26,7 @@ from results.paths import model_output_path
 
 def set_app_icon(app: QApplication) -> QIcon | None:
     """设置应用图标，返回图标对象或 None"""
-    assets_dir = Path(__file__).resolve().parent.parent / "assets"
+    assets_dir = Path(__file__).resolve().parent.parent / "results" / "image"
     icon_candidates = ["app.ico", "app.png", "icon.ico", "icon.png"]
     
     for icon_name in icon_candidates:

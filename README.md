@@ -2,19 +2,51 @@
 
 ## Quickstart
 
-在仓库根目录执行；**命令与行为细则以 `docs/` 为准**（本段为入口索引）。
+在仓库根目录执行。下面 3 步是当前最小可用主路径：训练 `solutions.A`，导出动作序列，再启动可视化界面。
 
-| 目的 | 命令（示例） | 说明 |
-|------|--------------|------|
-| 级联单设备训练 | `python -m solutions.Continuous_model.train_single --device cascade --rollout-n-envs 1` | 训练配置：`data/ppo_configs/s_train.yaml`；可选 `--compute-device`（`cpu` 或 `cuda`）、`--checkpoint` |
-| 强制 CPU 更新 | `python -m solutions.Continuous_model.train_single --device cascade --compute-device cpu` | 环境步进在 CPU 上，rollout 后再送入计算设备（见 `env_single` 说明） |
-| 并发双机械手训练 | `python -m solutions.Continuous_model.train_concurrent --config data/ppo_configs/concurrent_phase2_config.json` | 跨机器时若默认 config 为绝对路径，请改为显式相对路径（见 `docs/training/training-guide.md`） |
-| 导出推理序列 | `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>` | 默认写入 `results/action_sequences/tmp.json`，含 `replay_env_overrides` |
-| 可视化界面 | `python -m visualization.main --device cascade --model <model_path>` | 未传 `--model` 时进入手动模式；`--no-model` 仅手动或 JSON 回放；`--quiet` 关闭逐步打印；`--debug` 显示变迁调试按钮 |
+先安装依赖：
 
-**说明**：`train_single` 的 CLI 默认 `--device` 为 `single`，但当前 `Env_PN_Single` 仅支持 **cascade**；请使用 `--device cascade`，与 `docs/training/training-guide.md` 一致，行为见 `docs/continuous-model/pn-single.md`。
+```bash
+pip install -r requirements.txt
+```
 
-**DocRef**：`docs/training/training-guide.md`、`docs/visualization/ui-guide.md`、`docs/overview/project-context.md`。
+1. 训练 A 方案
+
+```bash
+python -m solutions.A.ppo_trainer --device cascade --rollout-n-envs 1 --artifact-dir quickstart
+```
+
+默认读取 `config/training/s_train.yaml`，并写出模型到 `results/models/quickstart_best.pt` 与 `results/models/quickstart_final.pt`。
+
+2. 导出推理序列
+
+```bash
+python -m solutions.A.eval.export_inference_sequence --device cascade --model results/models/quickstart_final.pt --out-name quickstart
+```
+
+输出文件为 `results/action_sequences/quickstart.json`。
+
+3. 启动可视化界面
+
+```bash
+python -m visualization.main --device cascade --model results/models/quickstart_final.pt
+```
+
+可视化依赖 `PySide6`。未传 `--model` 时会进入手动模式；如需回放导出的序列，在界面中加载 `results/action_sequences/quickstart.json`。
+
+## Python 导入入口
+
+`solutions` 顶层支持直接导入 `A` / `B` 下的无重名模块；重名模块不会扁平化到顶层。
+
+```python
+from solutions import A, B
+from solutions import petri_net, rl_env, core, train
+from solutions.A import construct
+from solutions.B import construct
+```
+
+- `construct` 同时存在于 `A` 和 `B`，必须保留命名空间导入，不支持 `from solutions import construct`。
+- `eval`、`deprecated` 仅存在于 `A`，可直接 `from solutions import eval, deprecated`。
 
 ## 输出路径规范（强制）
 
@@ -108,7 +140,7 @@ flowchart LR
   linkStyle default stroke-width:3px;
 ```
 
-<img src="assets\image-20260325231830208.png" alt="image-20260325231830208" style="zoom: 67%;" />
+<img src="results\image\image-20260325231830208.png" alt="image-20260325231830208" style="zoom: 67%;" />
 
 
 

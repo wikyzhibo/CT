@@ -2,6 +2,18 @@
 
 ## 2026-03-27
 
+### requirements：补充可视化依赖 PySide6（2026-03-27）
+
+- **What changed**：根目录 `requirements.txt` 新增 `PySide6>=6.0`。`README.md` 的 Quickstart 同步增加 `pip install -r requirements.txt` 安装提示。
+- **Why**：当前可视化入口 `python -m visualization.main` 直接依赖 `PySide6`，未声明时按 README 主路径执行会在导入阶段失败。
+- **Impact**：新环境按 `requirements.txt` 安装后即可满足可视化界面的基础 GUI 依赖。
+
+### `solutions` 顶层导入入口兼容 A/B 模块（2026-03-27）
+
+- **What changed**：`solutions/__init__.py` 新增懒加载导出入口，可直接 `from solutions import petri_net, rl_env, core, train`，也可继续 `from solutions import A, B`。`construct` 在 `A` 与 `B` 中同名，保持为命名空间导入，不做顶层扁平化。`README.md` 与 `docs/overview/project-context.md` 已同步加入导入规则与示例。
+- **Why**：减少 A/B 方案脚本中的重复长路径导入，同时避免同名模块扁平化后的歧义。
+- **Impact**：需要顶层导入时，只能直接导入无重名模块；`construct` 仍必须写成 `solutions.A.construct` 或 `solutions.B.construct`。
+
 ### PetriEnvConfig：Pydantic + YAML；移除 reward_config（2026-03-27）
 
 - **What changed**：`data/petri_configs/env_config.py` 改为 Pydantic 模型；默认级联配置为 `data/petri_configs/cascade.yaml`；删除 `cascade.json`。`PetriEnvConfig` 不再包含 `reward_config` 字段；`load` 会丢弃文件中的 `reward_config` 键。`ClusterTool` 中奖励分项布尔开关固定为 `True`；`solutions/A/deprecated/pn.py` 内 `Petri.reward_config` 仍为全开字典。`Env_PN_Single` 默认加载 `cascade.yaml` 并去掉 `reward_config` 形参。`warn_coef_penalty` 类型改为 `float`（与 `cascade.yaml` 一致）。可视化 `config_editor` 去掉 `reward_config` 表单项并支持 YAML 读写。

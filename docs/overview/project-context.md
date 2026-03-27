@@ -38,6 +38,10 @@
   - 推理导出: `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>`（默认 `results/action_sequences/tmp.json`；`--out-name` 控制文件名）
   - 可视化: `python -m visualization.main --device cascade`
   - Td_petri 主入口: `python -m solutions.Td_petri.tdpn`
+- Python 导入入口:
+  - `from solutions import A, B`
+  - `from solutions import petri_net, rl_env, core, train`
+  - `construct` 为重名模块，只能使用 `solutions.A.construct` 或 `solutions.B.construct`
 - 关键配置:
   - `data/petri_configs/single.json`
   - `data/petri_configs/cascade.yaml`
@@ -48,14 +52,18 @@
 2. 旧文档文件名仅作为兼容跳转页，不再承载规范说明。
 3. 命令示例必须可在当前代码入口中找到同名参数。
 4. 涉及“已移除接口”时，只允许写在 `docs/deprecated/` 或迁移说明中。
+5. `solutions` 顶层只会扁平导出 `A` / `B` 下无重名模块；重名模块必须保留命名空间导入。
 
 ## Examples
 - 正例:
   - 先读 `docs/README.md`，再按主题进入 `overview -> continuous-model -> training -> visualization`。
   - 新增功能文档时，先更新主文档，再在兼容页补迁移说明。
+  - 需要 `petri_net` 或 `core` 时使用 `from solutions import petri_net, core`。
+  - 需要 `construct` 时使用 `from solutions.A import construct` 或 `from solutions.B import construct`。
 - 反例:
   - 直接在旧文件（如历史单页说明）写新规范。
   - 文档命令与脚本参数不一致。
+  - 对 `construct` 使用 `from solutions import construct`。
 
 ## Edge Cases
 - 根 `README.md` 含历史日志，可能与最新实现存在差异；架构和入口以 `docs/` 主文档为准。
@@ -70,3 +78,4 @@
 
 ## Change Notes
 - 2026-03-19: 新建规范化项目描述文档，作为后续主题文档的统一上下文入口。
+- 2026-03-27: 新增 `solutions` 顶层 A/B 导入入口；无重名模块可直接从 `solutions` 导入，重名模块保留命名空间访问。
