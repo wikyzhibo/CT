@@ -549,18 +549,20 @@ class Petri:
         
         # 将配置参数设置为实例属性
         self.n_wafer = config.n_wafer
-        self.time_coef = config.time_coef
+        self.time_coef = float(getattr(config, "time_coef", getattr(config, "time_coef_penalty", 1.0)))
         self.done_event_reward = config.done_event_reward
         self.finish_event_reward = config.finish_event_reward
         self.scrap_event_penalty = config.scrap_event_penalty
-        self.T_warn = config.T_warn
-        self.a_warn = config.a_warn
-        self.T_safe = config.T_safe
-        self.b_safe = config.b_safe
-        self.c_congest = config.c_congest
+        self.T_warn = float(getattr(config, "T_warn", getattr(config, "D_Residual_time", 20)))
+        self.a_warn = float(getattr(config, "a_warn", getattr(config, "warn_coef_penalty", 1.0)))
+        self.T_safe = float(getattr(config, "T_safe", getattr(config, "P_Residual_time", 15)))
+        self.b_safe = float(getattr(config, "b_safe", 0.5))
+        self.c_congest = float(getattr(config, "c_congest", 50.0))
         self.D_Residual_time = config.D_Residual_time
         self.P_Residual_time = config.P_Residual_time
-        self.release_penalty_coef = config.release_penalty_coef
+        self.release_penalty_coef = float(
+            getattr(config, "release_penalty_coef", getattr(config, "release_event_penalty", 0.1))
+        )
         self.T_transport = config.T_transport
         self.T_load = config.T_load
         self.idle_event_penalty = config.idle_event_penalty
@@ -1135,9 +1137,15 @@ class Petri:
         assert t2 >= t1, "结束时间必须大于或等于起始时间"
 
         # 从配置读取惩罚/奖励系数
-        transport_overtime_coef = self.config.transport_overtime_coef  # type=2 运输库所超时惩罚系数
-        chamber_overtime_coef = self.config.chamber_overtime_coef      # type=1 加工腔室超时惩罚系数
-        processing_reward_coef = self.config.processing_reward_coef    # 加工奖励系数
+        transport_overtime_coef = float(
+            getattr(self.config, "transport_overtime_coef", getattr(self.config, "transport_overtime_coef_penalty", 1.0))
+        )  # type=2 运输库所超时惩罚系数
+        chamber_overtime_coef = float(
+            getattr(self.config, "chamber_overtime_coef", getattr(self.config, "warn_coef_penalty", 1.0))
+        )  # type=1 加工腔室超时惩罚系数
+        processing_reward_coef = float(
+            getattr(self.config, "processing_reward_coef", getattr(self.config, "processing_coef_reward", 1.0))
+        )  # 加工奖励系数
         in_system_time_penalty_coef = self.config.in_system_time_penalty_coef  # 系统内停留惩罚系数
         
         delta_t = t2 - t1
