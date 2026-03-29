@@ -37,6 +37,12 @@ from .widgets.stats_panel import StatsPanel
 from .widgets.center_canvas import CenterCanvas
 from .widgets.control_panel import ControlPanel
 from results.paths import action_sequence_path, gantt_output_path
+from solutions.A.rl_env import Env_PN_Concurrent
+
+CONCURRENT_SEQUENCE_ACTIONS = frozenset(
+    list(Env_PN_Concurrent.TM2_TRANSITION_NAMES) +
+    list(Env_PN_Concurrent.TM3_TRANSITION_NAMES)
+)
 
 class RoundedContainer(QWidget):
     """主内容容器，用于绘制背景"""
@@ -106,6 +112,7 @@ class PetriMainWindow(QMainWindow):
         self._action_sequence_path: Path | None = None
         self._adapter_factory = None
         self._cascade_route_name: str | None = None
+        self._concurrent_runtime = False
 
         self._drag_pos: QPoint | None = None
         p = ui_params.main_window
@@ -290,7 +297,12 @@ class PetriMainWindow(QMainWindow):
         if self._adapter_factory is not None:
             try:
                 new_adapter = self._adapter_factory(mode, self._robot_capacity)
-                self.viewmodel.replace_adapter(new_adapter, reset=True)
+                self.apply_runtime_adapter(
+                    new_adapter,
+                    mode,
+                    concurrent_runtime=False,
+                    reset=True,
+                )
             except Exception as e:
                 # 切换失败时保持原模式与菜单勾选，避免 UI 与后端状态错位
                 self._action_device_cascade.blockSignals(True)
@@ -302,10 +314,12 @@ class PetriMainWindow(QMainWindow):
                 QMessageBox.warning(self, "设备切换失败", f"无法切换到 {mode}: {e}")
                 self._refresh_status_message()
                 return
-        self._device_mode = mode
-        self.center_canvas.set_device_mode(mode)
-        self._action_config_cascade_route.setEnabled(mode == "cascade")
-        self._update_route_banner_text()
+        else:
+            self._device_mode = mode
+            self._concurrent_runtime = False
+            self.center_canvas.set_device_mode(mode)
+            self._action_config_cascade_route.setEnabled(mode == "cascade")
+            self._update_route_banner_text()
         self._model_handler = None
         self._concurrent_model_handler = None
         self._update_model_buttons_state()
@@ -325,25 +339,54 @@ class PetriMainWindow(QMainWindow):
         """注入模型应用器：callback(model_path, device_mode) -> (ok, message)。"""
         self._model_apply_callback = callback
 
+    def apply_runtime_adapter(
+        self,
+        adapter,
+        mode: str,
+        *,
+        concurrent_runtime: bool,
+        reset: bool = True,
+    ) -> None:
+        self.viewmodel.replace_adapter(adapter, reset=reset)
+        self._device_mode = mode
+        self._concurrent_runtime = bool(concurrent_runtime)
+        self.center_canvas.set_device_mode(mode)
+        self._action_device_cascade.blockSignals(True)
+        self._action_device_single.blockSignals(True)
+        self._action_device_cascade.setChecked(mode == "cascade")
+        self._action_device_single.setChecked(mode == "single")
+        self._action_device_cascade.blockSignals(False)
+        self._action_device_single.blockSignals(False)
+        self._action_config_cascade_route.setEnabled(mode == "cascade" and not self._concurrent_runtime)
+        self._update_route_banner_text()
+        self._refresh_status_message()
+
     def _build_cascade_transition_actions(self) -> tuple[list[ActionInfo], list[str] | None]:
-        """级联：按 net.id2t_name 全量变迁 + mask，不子集化。"""
+        """级联：优先按 env mask 构建；并发适配器则回退到 adapter 输出。"""
         adapter = self.viewmodel.adapter
         env = adapter.env
         net = adapter.net
-        t_count = int(net.T)
-        mask = env._mask()
-        actions: list[ActionInfo] = []
-        for i in range(t_count):
-            name = str(net.id2t_name[i])
-            ok = bool(mask[i])
-            actions.append(
-                ActionInfo(
-                    action_id=i,
-                    action_name=name,
-                    enabled=ok,
-                    description="" if ok else "当前条件不满足",
+        if hasattr(env, "_mask"):
+            t_count = int(net.T)
+            mask = env._mask()
+            actions: list[ActionInfo] = []
+            for i in range(t_count):
+                name = str(net.id2t_name[i])
+                ok = bool(mask[i])
+                actions.append(
+                    ActionInfo(
+                        action_id=i,
+                        action_name=name,
+                        enabled=ok,
+                        description="" if ok else "当前条件不满足",
+                    )
                 )
-            )
+        else:
+            actions = [
+                action
+                for action in adapter.get_enabled_actions()
+                if action.action_id >= 0 and not str(action.action_name).upper().startswith("WAIT")
+            ]
         ut = getattr(net, "_u_targets", None) or {}
         raw = ut.get("LLD", [])
         lld_targets = [str(x) for x in raw] if isinstance(raw, (list, tuple)) else None
@@ -369,7 +412,8 @@ class PetriMainWindow(QMainWindow):
         return ""
 
     def _update_route_banner_text(self) -> None:
-        if self._device_mode != "cascade":
+        env = getattr(self.viewmodel.adapter, "env", None)
+        if self._device_mode != "cascade" or hasattr(env, "tm2_wait_action"):
             self.route_banner_frame.hide()
             return
         self.route_banner_frame.show()
@@ -392,6 +436,9 @@ class PetriMainWindow(QMainWindow):
     def _open_cascade_route_dialog(self) -> None:
         if self._device_mode != "cascade":
             QMessageBox.information(self, "路径", "请先切换到「级联设备」模式后再选择路径。")
+            return
+        if self._concurrent_runtime:
+            QMessageBox.information(self, "路径", "并发可视化不支持配置驱动路线切换。")
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("级联路径")
@@ -419,8 +466,14 @@ class PetriMainWindow(QMainWindow):
         if self._adapter_factory is None:
             return
         try:
-            new_adapter = self._adapter_factory(mode, self._robot_capacity)
-            self.viewmodel.replace_adapter(new_adapter, reset=True)
+            overrides = {"runtime_mode": "concurrent"} if self._concurrent_runtime else None
+            new_adapter = self._adapter_factory(mode, self._robot_capacity, overrides)
+            self.apply_runtime_adapter(
+                new_adapter,
+                mode,
+                concurrent_runtime=self._concurrent_runtime,
+                reset=True,
+            )
         except Exception as e:
             QMessageBox.warning(self, "路径切换失败", str(e))
             return
@@ -467,8 +520,14 @@ class PetriMainWindow(QMainWindow):
         self.center_canvas.set_robot_capacity(self._robot_capacity)
         if self._adapter_factory is not None:
             try:
-                new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity)
-                self.viewmodel.replace_adapter(new_adapter, reset=True)
+                overrides = {"runtime_mode": "concurrent"} if self._concurrent_runtime else None
+                new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity, overrides)
+                self.apply_runtime_adapter(
+                    new_adapter,
+                    self._device_mode,
+                    concurrent_runtime=self._concurrent_runtime,
+                    reset=True,
+                )
                 self._model_handler = None
                 self._concurrent_model_handler = None
                 self._update_model_buttons_state()
@@ -502,6 +561,7 @@ class PetriMainWindow(QMainWindow):
 
     def _refresh_status_message(self) -> None:
         mode_text = "级联设备" if self._device_mode == "cascade" else "单设备"
+        runtime_text = "并发双动作" if self._concurrent_runtime else "单动作"
         if self._wafer_count_route1 is None or self._wafer_count_route2 is None:
             wafers_text = "未设置"
         else:
@@ -521,7 +581,7 @@ class PetriMainWindow(QMainWindow):
             clean_labels.append("pm5/300s")
         clean_text = ",".join(clean_labels) if clean_labels else "关闭"
         self.statusBar().showMessage(
-            f"设备: {mode_text} | 机械手模式: {arm_mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 清洁: {clean_text} | 模型: {model_text} | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 运行时: {runtime_text} | 机械手模式: {arm_mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 清洁: {clean_text} | 模型: {model_text} | 动作序列: {seq_text}"
         )
 
     def _on_cleaning_option_toggled(self, key: str, checked: bool) -> None:
@@ -567,6 +627,8 @@ class PetriMainWindow(QMainWindow):
             self.right_panel.update_actions(
                 cascade_actions, device_mode="cascade", lld_targets=lld_targets
             )
+            if hasattr(getattr(self.viewmodel.adapter, "env", None), "tm2_wait_action"):
+                self.right_panel.set_wait_durations([5], enabled_map={5: True})
         else:
             actions_for_panel = state.enabled_actions
             # 单设备模式：展示“单设备全集变迁”，并通过 enabled 状态区分可点/禁用。
@@ -869,8 +931,8 @@ class PetriMainWindow(QMainWindow):
         elif key == Qt.Key.Key_M:
             self._on_model_step_clicked()
         elif key == Qt.Key.Key_A:
-            if self._model_handler is not None:
-                self.viewmodel.set_auto_mode(not self.viewmodel.auto_mode)
+            if self._model_handler is not None or self._concurrent_model_handler is not None:
+                self.right_panel.model_auto_button.click()
         elif key == Qt.Key.Key_B:
             self.right_panel.model_b_auto_button.click()
         elif key == Qt.Key.Key_Space:
@@ -932,12 +994,39 @@ class PetriMainWindow(QMainWindow):
         2) 新版：{"sequence": [...], "replay_env_overrides": {...}, ...}
         """
         if isinstance(payload, list):
-            return payload, None
+            overrides = {"runtime_mode": "concurrent"} if self._sequence_looks_concurrent(payload) else None
+            return payload, overrides
         if isinstance(payload, dict):
             seq = payload.get("sequence", [])
             overrides = payload.get("replay_env_overrides", None)
+            runtime_mode = str(payload.get("device_mode", "")).lower()
+            if runtime_mode == "concurrent" or self._sequence_looks_concurrent(seq):
+                overrides = dict(overrides or {})
+                overrides["runtime_mode"] = "concurrent"
             return seq, overrides
         raise ValueError("动作序列 JSON 格式不合法，需为数组或包含 sequence 字段的对象")
+
+    def _sequence_looks_concurrent(self, sequence) -> bool:
+        if not isinstance(sequence, list) or not sequence:
+            return False
+        checked = False
+        for item in sequence[:5]:
+            if not isinstance(item, dict):
+                continue
+            names: list[str] = []
+            action = item.get("action")
+            if isinstance(action, str):
+                names.append(action)
+            actions = item.get("actions", [])
+            if isinstance(actions, list):
+                names.extend(str(name) for name in actions if isinstance(name, str))
+            non_wait = [name for name in names if not str(name).upper().startswith("WAIT")]
+            if not non_wait:
+                continue
+            checked = True
+            if any(name not in CONCURRENT_SEQUENCE_ACTIONS for name in non_wait):
+                return False
+        return checked
 
     def _apply_verification_env_overrides_if_needed(self) -> bool:
         """
@@ -949,8 +1038,15 @@ class PetriMainWindow(QMainWindow):
         if self._adapter_factory is None:
             return False
         try:
-            new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity, overrides)
-            self.viewmodel.replace_adapter(new_adapter, reset=True)
+            runtime_mode = str(dict(overrides).get("runtime_mode", "")).lower()
+            target_mode = "cascade" if runtime_mode == "concurrent" else self._device_mode
+            new_adapter = self._adapter_factory(target_mode, self._robot_capacity, overrides)
+            self.apply_runtime_adapter(
+                new_adapter,
+                target_mode,
+                concurrent_runtime=(runtime_mode == "concurrent"),
+                reset=True,
+            )
             self._model_handler = None
             self._concurrent_model_handler = None
             self._update_model_buttons_state()

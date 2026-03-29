@@ -47,4 +47,5 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-29: 可视化主文档新增并发双动作入口与回放约束：`visualization/ui-guide.md` 现覆盖 `--concurrent`、并发权重自动识别、并发序列自动切换 runtime。
 - 2026-03-19: 重构为“1 个入口 + 5 个主文档 + 附录 + deprecated 兼容层”。

@@ -1,13 +1,12 @@
 """
-Petri 网算法适配器
-将现有 Env_PN/Petri 环境适配为统一可视化接口
+并发双动作 Petri 可视化适配器。
 """
 
 from __future__ import annotations
 
 from typing import Dict, List, Tuple, Any
 
-from solutions.C.enviroment import Env_PN_Concurrent
+from solutions.A.rl_env import Env_PN_Concurrent
 
 from .algorithm_interface import (
     AlgorithmAdapter,
@@ -22,11 +21,14 @@ from .algorithm_interface import (
 class PetriAdapter(AlgorithmAdapter):
     """Petri 网算法适配器"""
 
-    def __init__(self, env: Env_PN_Concurrent) -> None:
+    def __init__(self, env: Env_PN_Concurrent, step_verbose: bool = True) -> None:
         self.env = env
         self.net = env.net
+        self.step_verbose = step_verbose
         self._last_reward_detail: Dict[str, float] = {}
         self._last_action_history: List[Dict[str, Any]] = []
+        self._tm2_transition_set = set(getattr(env, "tm2_transition_indices", []))
+        self._tm3_transition_set = set(getattr(env, "tm3_transition_indices", []))
 
         # 确保可视化模式下启用统计
         if hasattr(self.net, 'enable_statistics'):
@@ -67,12 +69,34 @@ class PetriAdapter(AlgorithmAdapter):
         - (a1, a2): 并发动作，a1/a2=-1 表示 WAIT
         """
         if isinstance(action, tuple):
-            a1, a2 = action
-            tm2_action = None if a1 == -1 else a1
-            tm3_action = None if a2 == -1 else a2
-            result = self.net.step(a1=tm2_action, detailed_reward=True)
+            a1 = int(action[0])
+            a2 = int(action[1])
         else:
-            result = self.net.step(detailed_reward=True)
+            raw = int(action)
+            if raw < 0 or raw == self.action_space_size:
+                a1, a2 = -1, -1
+            elif raw in self._tm2_transition_set:
+                a1, a2 = raw, -1
+            elif raw in self._tm3_transition_set:
+                a1, a2 = -1, raw
+            else:
+                a1, a2 = raw, -1
+
+        tm2_action = None if a1 == -1 else int(a1)
+        tm3_action = None if a2 == -1 else int(a2)
+
+        if self.step_verbose:
+            t = getattr(self.net, "time", 0)
+            a1_name = "WAIT" if a1 == -1 else self._format_transition_name(self.net.id2t_name[a1])
+            a2_name = "WAIT" if a2 == -1 else self._format_transition_name(self.net.id2t_name[a2])
+            print(f"\n--- Step (t={t}) TM2:{a1_name} | TM3:{a2_name} ---")
+
+        result = self.net.step(
+            a1=tm2_action,
+            a2=tm3_action,
+            with_reward=True,
+            detailed_reward=True,
+        )
 
         # pn.py: (done, reward_result, scrap)
         done = bool(result[0])
@@ -111,8 +135,8 @@ class PetriAdapter(AlgorithmAdapter):
         return state_info, reward, done, info
 
     def get_action_name(self, action: int) -> str:
-        if action == self.net.T:
-            return "WAIT"
+        if action == self.action_space_size:
+            return "WAIT_5s"
         if 0 <= action < len(self.net.id2t_name):
             return self._format_transition_name(self.net.id2t_name[action])
         return f"UNKNOWN_{action}"
@@ -131,8 +155,8 @@ class PetriAdapter(AlgorithmAdapter):
                 description=desc,
             ))
         actions.append(ActionInfo(
-            action_id=self.net.T,
-            action_name="WAIT",
+            action_id=self.action_space_size,
+            action_name="WAIT_5s",
             enabled=True,
             description="",
         ))
@@ -145,8 +169,6 @@ class PetriAdapter(AlgorithmAdapter):
         Returns:
             (tm2_actions, tm3_actions): 两个 ActionInfo 列表
         """
-        from solutions.A.deprecated.pn import TM2_TRANSITIONS, TM3_TRANSITIONS
-        
         tm2_enabled, tm3_enabled = self.net.get_enable_t()
         tm2_enabled_set = set(tm2_enabled)
         tm3_enabled_set = set(tm3_enabled)
@@ -156,7 +178,7 @@ class PetriAdapter(AlgorithmAdapter):
         
         for t in range(self.net.T):
             t_name = self.net.id2t_name[t]
-            if t_name in TM2_TRANSITIONS:
+            if t in self._tm2_transition_set:
                 enabled = t in tm2_enabled_set
                 tm2_actions.append(ActionInfo(
                     action_id=t,
@@ -164,7 +186,7 @@ class PetriAdapter(AlgorithmAdapter):
                     enabled=enabled,
                     description="" if enabled else "当前条件不满足",
                 ))
-            elif t_name in TM3_TRANSITIONS:
+            elif t in self._tm3_transition_set:
                 enabled = t in tm3_enabled_set
                 tm3_actions.append(ActionInfo(
                     action_id=t,
@@ -176,13 +198,13 @@ class PetriAdapter(AlgorithmAdapter):
         # 添加 WAIT 动作
         tm2_actions.append(ActionInfo(
             action_id=-1,  # 特殊 ID 表示 WAIT
-            action_name="WAIT",
+            action_name="WAIT_5s",
             enabled=True,
             description="",
         ))
         tm3_actions.append(ActionInfo(
             action_id=-1,
-            action_name="WAIT",
+            action_name="WAIT_5s",
             enabled=True,
             description="",
         ))

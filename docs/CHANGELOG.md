@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-03-29
+
+### 可视化：并发双动作模式接回当前 UI 入口（2026-03-29）
+
+- **What changed**：`visualization/main.py` 新增 `--concurrent`，在 `--device cascade` 下改为构建 `Env_PN_Concurrent + visualization.petri_adapter.PetriAdapter`，默认并发模型路径为 `results/models/CT_concurrent_best.pt`。`visualization/petri_adapter.py` 修复了旧并发适配器的动作执行口径：双动作 `(a1, a2)` 会同时下发；单击单个调试变迁时只驱动对应机械手，另一机械手固定 `WAIT_5s`。`visualization/main_window.py` 在并发适配器下不再依赖 `env._mask()`，WAIT 按钮收敛为 `5s`，`A` 快捷键可驱动并发模型 handler。
+- **Why**：旧可视化入口仍默认走单动作 `pn_single` 路径，并发模型加载还依赖过期导入，导致双动作模型和双动作回放无法按当前训练产物正确执行。
+- **Impact**：需要并发双动作可视化时，必须显式使用 `python -m visualization.main --device cascade --concurrent`；未传 `--concurrent` 时，原单动作可视化路径保持不变。
+
+### A 方案并发环境：删除错误的 legacy 动作名回退（2026-03-29）
+
+- **What changed**：`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 删除了 `_resolve_concurrent_transition_names` 及相关 legacy 动作名回退，`TM2_TRANSITION_NAMES/TM3_TRANSITION_NAMES` 直接固定为当前并发环境真实使用的动作名集合。`visualization/main_window.py` 的并发序列识别也改为直接复用这两组动作名，不再维护独立硬编码列表。
+- **Why**：此前 legacy 分支把并发动作名真源拆成两套口径，UI 与环境可能各自命中不同集合，导致并发回放识别和动作映射出现漂移。
+- **Impact**：并发环境与可视化现在只认当前 `Env_PN_Concurrent` 的真实动作名；错误的 legacy 名称不会再被静默接受。
+
 ## 2026-03-27
 
 ### 级联路线配置新增 `3-1/3-2/3-3`（2026-03-27）

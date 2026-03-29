@@ -263,12 +263,13 @@ class Env_PN_Concurrent(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False
 
+    # 当前并发环境的真实动作命名口径（与底层 Env_PN_Concurrent / Petri 一致）。
     TM2_TRANSITION_NAMES = [
         "u_LP1_s1", "u_LP2_s1", "u_s1_s2", "u_s1_s5", "u_s4_s5", "u_s5_LP_done",
-        "t_s1", "t_s2", "t_s5", "t_LP_done"
+        "t_s1", "t_s2", "t_s5", "t_LP_done",
     ]
     TM3_TRANSITION_NAMES = [
-        "u_s2_s3", "u_s3_s4", "t_s3", "t_s4"
+        "u_s2_s3", "u_s3_s4", "t_s3", "t_s4",
     ]
 
     def __init__(self, device='cpu', seed=None, detailed_reward: bool = False):
