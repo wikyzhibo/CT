@@ -61,3 +61,4 @@ solutions/C/planB_sequence.json
 *.pt
 *.npz
 *.ipynb
+*.yaml

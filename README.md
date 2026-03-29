@@ -179,9 +179,95 @@ flowchart LR
 
 
 
+## B 搜索树算法
+
+### 调度流程
+
+<img src="results\image\搜索树算法流程图" alt="84d6e96d5ad8ca73a3b4e6f36e067596" style="zoom:50%;" />
+
+当前训练采用“先搜索、再决策”的两阶段方式。按照默认配置，`search_depth=5`、`candidate_k=5`，也就是先搜索到第 5 层，再从候选叶子中选择一个较优状态继续滚动。
+
+1. 从当前 Petri 网状态出发，`collect_leaves_iterative()` 使用显式栈执行一次深度受限 DFS。
+2. `get_enable_t()` 在扩展前检查使能变迁、下游阻塞（防止单臂死锁）
+3. `check_scrap()` 会过滤掉会驻留时间违规的分支，避免把明显不可行的状态继续向下展开。
+4. `prepare_train_candidates()` 收集深度叶子节点后，按 `delta_clock = |leaf_clock - current_clock|` 排序，并截取 top-k 作为当前动作空间。
+5. PPO policy 不直接选择“下一条变迁”，而是从这批第 5 层 candidate 中选择一个叶子状态；`step()` 会把当前状态直接跳转到该叶子，并重新开始下一轮 5 层搜索。
+
+因此，一个 episode 本质上是若干次“局部深搜 + 叶子选择”的串联。
+
+### 当前 observation 与 reward
+
+当前 observation 以Place为单位，主要由以下信息组成：
+
+- Place中是否有晶圆、晶圆完工比例
+- 当前归一化时间（curren_time / Max_time)
+- 每个 candidate 对应的与当前节点的时间差delta_clock
+
+当前 reward 主要由以下部分组成：
+
+- 时间增量惩罚（用于缩小Makespan）
+- 完工晶圆增量奖励
+- 全部完工奖励
+- **无候选或失败分支的惩罚**
+
+这意味着当前策略学习的目标，是在满足约束的前提下，更快地到达可完工、且 makespan 更短的候选分支。
 
 
 
+
+
+### 参数对比测试
+
+![image-20260325171729080](D:/Code/search_tree/Search_Tree/assets/image-20260325171729080.png)
+
+- reward 前期涨得很快，但 makespan 到后期才明显下降，说明 **当前 reward 先教会了“多完工/少 scrap”，没有持续对准最终 makespan**
+- search depth=5, candidate = 5
+
+<img src="D:/Code/search_tree/Search_Tree/image/makespan_neurips.png" alt="makespan_neurips" style="zoom: 20%;" />
+
+<img src="D:/Code/search_tree/Search_Tree/image/makespan_comparison.png" alt="makespan_comparison" style="zoom:20%;" />
+
+- `c=5` 能降到接近 1660，但 `c=7/9` 明显不收敛，说明 **candidate 一变多，加入的大部分不是有效搜索分支，而是噪声和死路**。
+
+
+
+
+
+### 主要问题与可能的解决方案
+
+当前实现采用的是“深度受限搜索树 + 候选节点筛选 + PPO 策略学习”的混合调度方案。系统会先在当前 Petri 网状态上向前展开固定深度的搜索树，收集第 `search_depth` 层的叶子节点；随后按照候选节点相对当前状态的时间变化量进行排序，截取前 `candidate_k` 个节点作为可选动作，再由 policy 在这些候选节点中选择一个作为新的当前状态并继续滚动搜索。按照当前默认配置，这一过程对应“在第 5 层节点中选择较优状态”的训练范式。
+
+从当前实验现象看，该方案已经能够在约束条件下生成可行调度，但在更深搜索和更大候选规模下仍存在明显瓶颈。尤其是当搜索深度提升到 6 时，训练难以稳定收敛；当 candidate 数量增大到 5 以上时，收敛性进一步变差。从现有曲线可以看到，策略在训练前期主要依赖完工相关奖励提升回报，到后期才逐步开始优化 makespan，因此距离最优调度结果仍有差距；从当前观察看，较优调度 makespan 目标大约在 1550 左右。
+
+当前阶段的核心目标，是在不破坏约束可行性的前提下，进一步提升搜索效率、减少无效分支、改进候选筛选与状态反馈机制，从而让训练过程能够更快收敛到更优的 makespan 调度方案。
+
+#### 1. 候选节点中坏节点太多，怎么剪枝
+
+**有些节点当前不违规，但一选它，后面所有扩展都会死**。导致搜索预算被消耗在“注定走不通”的分支上。当前仍然存在较大的前置剪枝空间。
+
+- 前向检查：对候选节点 `s`，先得到下一状态 `s'`，若s'无法拓展，对s节点剪枝
+- 对坏节点建立禁忌表
+- Lower bound 剪枝：`LB = max_m( avail_time[m] + remaining_load[m] / capacity[m] )`，对于L(s) >= UB的节点s剪枝
+- Dominance 剪枝：如果两个部分状态已经完成了同样的工序集合，但其中一个状态在所有关键维度都更差，那它没有保留价值。
+- 利用rollout数据训练一个二分类器（预测节点是否会死）
+
+#### 2. 搜索效率偏低，训练耗时较长
+
+每一次环境 step 都需要重新执行固定深度搜索、收集叶子节点、复制状态并构造候选集合；即使已经引入并行环境并优化了 5 层搜索耗时，整体训练成本依然较高。
+
+#### 3. 当前候选规则过于依赖单一启发式
+
+现有做法是根据两个节点之间的时间变化量排序后取 top-k，这种规则虽然简单，但会用单一时间指标对搜索空间做硬截断，**可能过早丢掉那些短期代价较大、长期更有利**于收敛到更优 makespan 的分支。
+
+- 不要只保留一种风格的 candidate。（ heuristic score / policy / random）
+
+
+#### 4. 奖励与观测设计偏弱
+
+当前 reward 主要围绕时间差、完工增量、全部完工奖励和失败惩罚展开，反馈仍然偏稀疏；obs 目前也只包含较少的全局进度、候选时间差和库所占用信息，policy 较难及时判断哪个节点更好。
+
+- finish 奖励不要长期压过 makespan：现在 finish 奖励前期很好用，但后期会变成“错的老师”。分阶段训练：前期先学 feasibility / finish；后期再把 makespan 权重提高，finish 权重降低
+- obs：别只给 state，要给 candidate 特征。
 
 
 
