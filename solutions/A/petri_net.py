@@ -384,6 +384,10 @@ class ClusterTool:
         self._wafer_type_alloc_by_type: Dict[int, int] = {
             int(k): int(v) for k, v in dict(route_meta.get("wafer_type_alloc_by_type") or {}).items()
         }
+        self._wafer_type_alloc_by_type = {
+            int(k): max(0, int(v)) for k, v in self._wafer_type_alloc_by_type.items()
+        }
+        self._wafer_type_alloc_total_weight: int = int(sum(self._wafer_type_alloc_by_type.values()))
         self._lp_release_pattern_types: Tuple[int, ...] = tuple(
             int(x) for x in list(route_meta.get("lp_release_pattern_types") or [])
         )
@@ -499,10 +503,15 @@ class ClusterTool:
             self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
-        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
+        all_types = (
+            set(self._wafer_type_to_subpath.keys())
+            | set(self._takt_result_by_type.keys())
+            | set(self._wafer_type_alloc_by_type.keys())
+        )
         if not all_types:
             all_types = {1}
         self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
+        self._entered_wafer_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
         self._pending_lp_release_type: Optional[int] = None
         self._lp_release_pattern_idx: int = 0
         self._training = True
@@ -751,10 +760,15 @@ class ClusterTool:
             self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
-        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
+        all_types = (
+            set(self._wafer_type_to_subpath.keys())
+            | set(self._takt_result_by_type.keys())
+            | set(self._wafer_type_alloc_by_type.keys())
+        )
         if not all_types:
             all_types = {1}
         self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
+        self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._pending_lp_release_type = None
         self._lp_release_pattern_idx = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
@@ -1096,10 +1110,16 @@ class ClusterTool:
             if t_name.startswith("u_") and self._is_cascade:
                 src0 = pre_place.name
                 if src0 in self._cascade_round_robin_pairs:
+                    head_tok = pre_place.tokens[0] if len(pre_place.tokens) > 0 else None
+                    tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
+                    stage_targets = self._current_stage_targets_for_source(src0, tok_gate)
                     if self._dual_arm:
                         sync_tgt = self._first_parallel_target_dual_arm(src0)
                     else:
-                        sync_tgt = self._first_receivable_parallel_target(src0)
+                        sync_tgt = self._first_receivable_parallel_target(
+                            src0,
+                            stage_targets=stage_targets,
+                        )
                     if sync_tgt is not None:
                         self._rr_set_next(src0, sync_tgt)
 
@@ -1187,6 +1207,10 @@ class ClusterTool:
                 tok.step = max(tok.step, self._step_map.get(target, 0))
                 self._track_enter(tok, target)
                 if target == "LP_done":
+                    done_type = int(getattr(tok, "route_type", 1) or 1)
+                    self._entered_wafer_count_by_type[done_type] = max(
+                        0, int(self._entered_wafer_count_by_type.get(done_type, 0)) - 1
+                    )
                     self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
                     self.done_count += 1
                     self._per_wafer_reward += float(self.done_event_reward)
@@ -1212,6 +1236,9 @@ class ClusterTool:
             if t_name.startswith("u_LP_"):
                 released_type = int(getattr(tok, "route_type", 1) or 1)
                 self.entered_wafer_count += 1
+                self._entered_wafer_count_by_type[released_type] = (
+                    int(self._entered_wafer_count_by_type.get(released_type, 0)) + 1
+                )
                 self._last_u_LP_fire_time = int(start_time)
                 self._u_LP_release_count += 1
                 self._u_LP_release_count_by_type[released_type] = (
@@ -1300,6 +1327,61 @@ class ClusterTool:
             if src_owner == owner:
                 self._cascade_round_robin_next[src] = str(target)
 
+    def _gate_targets_from_tok_gate(self, tok_gate: object) -> Tuple[str, ...]:
+        if tok_gate == -1:
+            return tuple()
+        raw_codes: List[int] = []
+        if isinstance(tok_gate, int):
+            raw_codes.append(int(tok_gate))
+        elif isinstance(tok_gate, (tuple, frozenset, list, set)):
+            for item in tok_gate:
+                if isinstance(item, int):
+                    raw_codes.append(int(item))
+        targets: List[str] = []
+        seen: Set[str] = set()
+        for code in raw_codes:
+            name = self._t_code_to_place.get(int(code))
+            if not isinstance(name, str):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            targets.append(name)
+        return tuple(targets)
+
+    def _current_stage_targets_for_source(self, source: str, tok_gate: object) -> Tuple[str, ...]:
+        rr_targets = tuple(self._cascade_round_robin_pairs.get(source, ()))
+        if not rr_targets:
+            return tuple()
+        gate_targets = self._gate_targets_from_tok_gate(tok_gate)
+        if not gate_targets:
+            return rr_targets
+        gate_set = set(gate_targets)
+        filtered = tuple(t for t in rr_targets if t in gate_set)
+        return filtered if filtered else rr_targets
+
+    def _expected_target_for_source_stage(
+        self,
+        source: str,
+        stage_targets: Tuple[str, ...],
+    ) -> Optional[str]:
+        if not stage_targets:
+            return None
+        rr_targets = tuple(self._cascade_round_robin_pairs.get(source, ()))
+        if not rr_targets:
+            return None
+        current = self._rr_get_next(source) or rr_targets[0]
+        if current in stage_targets:
+            return current
+        start_idx = rr_targets.index(current) if current in rr_targets else 0
+        allowed = set(stage_targets)
+        n = len(rr_targets)
+        for i in range(1, n + 1):
+            cand = rr_targets[(start_idx + i) % n]
+            if cand in allowed:
+                return cand
+        return None
+
     @staticmethod
     def _route_gate_allows_t(gate: object, t_code: int) -> bool:
         if t_code < 0:
@@ -1325,6 +1407,11 @@ class ClusterTool:
             return True
         rr_source = str(getattr(tok, "last_u_source", "") or "")
         expected_target = self._rr_get_next(rr_source)
+        if rr_source in self._cascade_round_robin_pairs:
+            stage_targets = self._current_stage_targets_for_source(rr_source, tok_gate)
+            stage_expected = self._expected_target_for_source_stage(rr_source, stage_targets)
+            if stage_expected is not None:
+                expected_target = stage_expected
         if rr_source in self._cascade_round_robin_pairs and expected_target is not None:
             allowed = str(target_name) == str(expected_target)
         else:
@@ -1399,12 +1486,36 @@ class ClusterTool:
             return int(available[0])
         return int(np.random.choice(np.array(available, dtype=int)))
 
+    def _allow_start_for_route_type(self, route_type: int) -> bool:
+        """
+        双子路径场景下按 wafer_type_alloc 严格分配 max_wafers_in_system：
+        - 不做取整/四舍五入
+        - 不允许类型间借额
+        判定采用交叉乘法，避免浮点误差。
+        """
+        if not self._multi_subpath:
+            return True
+        total_weight = int(self._wafer_type_alloc_total_weight)
+        if total_weight <= 0:
+            return True
+        type_id = int(route_type)
+        weight = int(self._wafer_type_alloc_by_type.get(type_id, 0))
+        if weight <= 0:
+            return False
+        current = int(self._entered_wafer_count_by_type.get(type_id, 0))
+        lhs = int(current + 1) * total_weight
+        rhs = int(self.max_wafers_in_system) * weight
+        return lhs <= rhs
+
     def _allow_start(self):
         """returns True if u_LP can fire now, based on WIP and per-type LP head gate."""
         self._pending_lp_release_type = None
         if not int(self.entered_wafer_count) < int(self.max_wafers_in_system):
             return False
-        releasable = self._lp_releasable_types()
+        releasable = [
+            int(tid) for tid in self._lp_releasable_types()
+            if self._allow_start_for_route_type(int(tid))
+        ]
         selected = self._select_lp_release_type(releasable)
         if selected is None:
             return False
@@ -1951,16 +2062,22 @@ class ClusterTool:
             return name
         return None
 
-    def _first_receivable_parallel_target(self, source: str) -> Optional[str]:
+    def _first_receivable_parallel_target(
+        self,
+        source: str,
+        stage_targets: Optional[Tuple[str, ...]] = None,
+    ) -> Optional[str]:
         """级联并行下游：从当前指针起循环，找第一个未满且非清洗的腔室。"""
         if source not in self._cascade_round_robin_pairs:
             return None
         rr_targets = tuple(self._cascade_round_robin_pairs[source])
+        if stage_targets:
+            allowed = set(stage_targets)
+            rr_targets = tuple(t for t in rr_targets if t in allowed)
         if not rr_targets:
             return None
-        start = self._rr_get_next(source) or rr_targets[0]
-        if start not in rr_targets:
-            start = rr_targets[0]
+        stage_expected = self._expected_target_for_source_stage(source, rr_targets)
+        start = stage_expected or rr_targets[0]
         k = rr_targets.index(start)
         n = len(rr_targets)
         for i in range(n):
@@ -1980,10 +2097,14 @@ class ClusterTool:
         """
         candidates = tuple(self._u_targets.get(source, ()))
         if source in self._cascade_round_robin_pairs:
+            source_place = self._get_place(source)
+            head_tok = source_place.tokens[0] if len(source_place.tokens) > 0 else None
+            tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
+            stage_targets = self._current_stage_targets_for_source(source, tok_gate)
             if self._dual_arm:
                 tgt = self._first_parallel_target_dual_arm(source)
             else:
-                tgt = self._first_receivable_parallel_target(source)
+                tgt = self._first_receivable_parallel_target(source, stage_targets=stage_targets)
             return (tgt is not None, tgt)
         if not candidates:
             return False, None

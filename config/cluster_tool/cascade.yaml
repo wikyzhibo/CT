@@ -13,7 +13,7 @@ release_event_penalty: 4
 wait_durations:
   - 5
 stop_on_scrap: true
-max_wafers_in_system: 5
+max_wafers_in_system: 6
 cleaning_enabled: false
 route4_takt_interval: 0
 single_route_config_path: cascade_routes_1_star.json

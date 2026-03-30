@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：`max_wafers_in_system` 按类型比例硬约束发片（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 的 `u_LP` 放行从“仅全局 WIP `< max_wafers_in_system`”改为“双重门控”：在保持全局上限校验的同时，对双子路径场景按 `wafer_type_alloc` 施加类型内在制品上限。实现使用交叉乘法判定 `(type_wip+1)*sum_alloc <= max_wafers_in_system*type_alloc`，不做取整/四舍五入；并新增类型内在制品计数，`u_LP` 发片时加 1，流入 `LP_done` 时减 1。
+- **Why**：双路线并行时需要严格按配置比例限制在制品占用，避免某一路线“借用”另一条路线额度导致比例失真。
+- **Impact**：当某类型达到其比例上限后，即使全局 WIP 仍有余量，也不会继续放该类型晶圆；类型间不允许借额。单路线或无有效 `wafer_type_alloc` 的场景维持原有行为。
+
 ### A 方案：`u_LP` 节拍门控改为 LP 队首 token 负 `stay_time` 倒计时（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 的 `u_LP` 放行判定不再使用 `time - _last_u_LP_fire_time`，改为读取 `LP` 队首 token：`stay_time < 0` 表示仍在节拍倒计时、`stay_time >= 0` 才允许发片。每次 `u_LP` 实际发射后，仅给“新的 LP 队首 token”写入 `-required_interval`；`_advance_and_compute_reward` 对 `LP` 上负 `stay_time` 做向 0 推进；`get_next_event_delta` 同步读取该倒计时作为下一事件。
