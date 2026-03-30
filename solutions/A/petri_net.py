@@ -1463,16 +1463,24 @@ class ClusterTool:
         这样下一片的等待起点是“上一片实际发射时刻”，可严格保证发片间隔。
         """
         type_id = int(route_type if route_type is not None else 1)
-        head = self._peek_lp_token_by_type(type_id)
-        if head is None:
-            return
         required = self._takt_required_interval(type_id)
         if required is None:
-            if int(head.stay_time) < 0:
-                head.stay_time = 0
+            heads = self._lp_type_head_tokens()
+            for head in heads.values():
+                if int(head.stay_time) < 0:
+                    head.stay_time = 0
             return
         required_int = max(0, int(required))
-        head.stay_time = -required_int
+        policy = str(self._takt_policy or "").strip().lower()
+        heads = self._lp_type_head_tokens()
+        if policy == "shared":
+            for head in heads.values():
+                head.stay_time = -required_int
+        else:
+            head = heads.get(type_id)
+            if head is None:
+                return
+            head.stay_time = -required_int
 
     def _pop_lp_token_for_release(self, preferred_type: Optional[int]) -> BasedToken:
         lp_place = self._place_by_name.get("LP")
@@ -1684,11 +1692,38 @@ class ClusterTool:
         raw = list(self._takt_stages_override or [])
         if not raw:
             return None
+
+        def _infer_shared_override_m(stage_idx: int) -> int:
+            """
+            shared 多子路径 + 数字 override 场景：
+            以“各子路径的有效工序层（过滤 p<=0）”按顺序对齐，统计该层并行机台总数。
+            例如 4-8：
+              - 第 1 有效工序层：path1=PM7, path2=PM1/PM2/PM3/PM4 -> m=5
+              - 第 2 有效工序层：path1=PM10, path2=PM10 -> m=1（去重）
+            """
+            policy = str(self._takt_policy or "").strip().lower()
+            if not (self._multi_subpath and policy == "shared" and self._subpath_route_stages):
+                return 1
+            merged_places: Set[str] = set()
+            for _, stages in self._subpath_route_stages.items():
+                process_layers: List[List[str]] = []
+                for stage in list(stages or []):
+                    valid_places = [
+                        str(place)
+                        for place in list(stage or [])
+                        if int(self._base_proc_time_map.get(place, 0) or 0) > 0
+                    ]
+                    if valid_places:
+                        process_layers.append(valid_places)
+                if stage_idx < len(process_layers):
+                    merged_places.update(process_layers[stage_idx])
+            return max(1, int(len(merged_places)))
+
         analyzer_stages: List[Dict[str, Any]] = []
         for i, item in enumerate(raw):
             if isinstance(item, (int, float)):
                 p_val = int(round(float(item)))
-                m_val = 1
+                m_val = _infer_shared_override_m(i)
             elif isinstance(item, dict):
                 p_val = int(round(float(item.get("p", 0) or 0)))
                 m_val = max(1, int(item.get("m", 1) or 1))
@@ -1702,7 +1737,8 @@ class ClusterTool:
         if not analyzer_stages:
             return None
         try:
-            return analyze_cycle(analyzer_stages, max_parts=10000)
+            result = analyze_cycle(analyzer_stages, max_parts=10000)
+            return result
         except Exception:
             return None
 
