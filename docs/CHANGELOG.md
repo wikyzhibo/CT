@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：双臂 swap 场景驻留豁免改为匹配被换出晶圆（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 的驻留豁免函数 `_should_cancel_resident_scrap_after_fire` 新增对 swap 日志的支持：当本步 `t_*` 触发 `swap=True` 时，豁免匹配从原先 `u_*` 的 `source_place + token_id` 扩展为 `swap_source_place + swapped_token_id`。`_fire` 的 swap 日志同步写入 `swap_source_place`（PM 目标腔室名）。
+- **Why**：双臂交换中，驻留违规发生在 PM 内“被换出”的晶圆，而原逻辑仅允许 `u_*` 且只读取 `token_id`（进入 PM 的晶圆），会导致同一步已完成 swap 取片仍误判驻留违规。
+- **Impact**：仅影响双臂 swap 的同步豁免判定；非 swap 与普通 `u_*` 豁免口径保持不变。
+
 ### A 方案：`max_wafers_in_system` 按类型比例硬约束发片（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 的 `u_LP` 放行从“仅全局 WIP `< max_wafers_in_system`”改为“双重门控”：在保持全局上限校验的同时，对双子路径场景按 `wafer_type_alloc` 施加类型内在制品上限。实现使用交叉乘法判定 `(type_wip+1)*sum_alloc <= max_wafers_in_system*type_alloc`，不做取整/四舍五入；并新增类型内在制品计数，`u_LP` 发片时加 1，流入 `LP_done` 时减 1。

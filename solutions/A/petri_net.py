@@ -1199,6 +1199,7 @@ class ClusterTool:
                             "token_id": wafer_id,
                             "swap": True,
                             "swapped_token_id": old_wafer_id,
+                            "swap_source_place": target,
                         }
                     )
                     continue
@@ -1281,18 +1282,27 @@ class ClusterTool:
         if scrap_info.get("type") != "resident":
             return False
         t_name = str(log_entry.get("t_name", ""))
-        if not t_name.startswith("u_"):
+        is_u_transition = bool(t_name.startswith("u_"))
+        is_swap_transition = bool(log_entry.get("swap", False))
+        if not is_u_transition and not is_swap_transition:
             return False
-        _sp = log_entry.get("source_place")
-        source_name = str(_sp) if _sp is not None else t_name[2:]
-        if scrap_info.get("place") != source_name:
-            return False
+        if is_u_transition:
+            _sp = log_entry.get("source_place")
+            source_name = str(_sp) if _sp is not None else t_name[2:]
+        else:
+            source_name = str(log_entry.get("swap_source_place", ""))
+        place_match = bool(scrap_info.get("place") == source_name)
         try:
-            fired_token_id = int(log_entry.get("token_id", -1))
+            if is_u_transition:
+                fired_token_id = int(log_entry.get("token_id", -1))
+            else:
+                fired_token_id = int(log_entry.get("swapped_token_id", -1))
             scrap_token_id = int(scrap_info.get("token_id", -2))
         except (TypeError, ValueError):
             return False
-        return fired_token_id >= 0 and fired_token_id == scrap_token_id
+        token_match = bool(fired_token_id >= 0 and fired_token_id == scrap_token_id)
+        decision = bool(place_match and token_match)
+        return decision
 
     def _token_next_target(self, tok: BasedToken) -> Optional[str]:
         """从 token 的 route_queue 推断下一个目标腔室（用于 u_* 选择）。"""
