@@ -416,34 +416,14 @@ class ClusterTool:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
-        self._cascade_round_robin_pairs: Dict[str, Tuple[str, ...]] = {}
-        self._cascade_round_robin_next: Dict[str, str] = {}
-        self._cascade_round_robin_owner: Dict[str, str] = {}
-        self._single_round_robin_pairs: Dict[str, Tuple[str, str]] = {}
-        self._single_round_robin_next: Dict[str, str] = {}
+        self._place_use_count: Dict[str, int] = {
+            str(place.name): 0 for place in self.marks
+        }
         self._u_transition_by_source: Dict[str, int] = {}
         self._u_transition_by_source_transport: Dict[Tuple[str, str], int] = {}
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
         self._tm2_transition_indices: List[int] = []
         self._tm3_transition_indices: List[int] = []
-
-        # ====== 构造机器轮转对 ========
-        if self.single_route_config is not None:
-            for source, targets in self._u_targets.items():
-                if len(targets) >= 2:
-                    # 须保留 LLC/LLD 等非 PM 并行下游（如路线 1-5：PM7/PM8→LLC|LLD），否则
-                    # _cascade_round_robin_next.values() 不含 LLC/LLD，TM2 上并行 t_* 被 _allow_t_by_machine_round_robin 永久屏蔽。
-                    self._cascade_round_robin_pairs[source] = tuple(targets)
-        group_owner: Dict[Tuple[str, ...], str] = {}
-        for source, pair in self._cascade_round_robin_pairs.items():
-            owner = group_owner.get(pair)
-            if owner is None:
-                owner = source
-                group_owner[pair] = owner
-            self._cascade_round_robin_owner[source] = owner
-        self._cascade_round_robin_next = {
-            source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
-        }
 
         self._last_deadlock = False
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
@@ -700,14 +680,7 @@ class ClusterTool:
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
         self._next_machine_id = 1
-        if self.device_mode == "cascade":
-            self._cascade_round_robin_next = {
-                source: pair[0] for source, pair in self._cascade_round_robin_pairs.items()
-            }
-        else:
-            self._single_round_robin_next = {
-                source: pair[0] for source, pair in self._single_round_robin_pairs.items()
-            }
+        self._place_use_count = {str(place.name): 0 for place in self.marks}
         self._last_deadlock = False
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
@@ -1074,8 +1047,6 @@ class ClusterTool:
                 if self._is_cascade:
                     transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
                     tok.machine = 2 if transport == "TM3" else 1
-                if not (self._is_cascade and src in self._cascade_round_robin_pairs):
-                    self._advance_round_robin_after_u_fire(src)
                 if src in self._chamber_active and wafer_id in self._chamber_active[src]:
                     idx = self._chamber_active[src].pop(wafer_id)
                     e, _, wid = self._chamber_timeline[src][idx]
@@ -1107,6 +1078,7 @@ class ClusterTool:
                     tok.route_head_idx += 1
                     pst_place.append(tok)
                     tok._place_idx = pst_place_idx
+                    self._place_use_count[target] = int(self._place_use_count.get(target, 0)) + 1
                     if target in self._chamber_timeline and wafer_id >= 0:
                         tl_idx2 = len(self._chamber_timeline[target])
                         self._chamber_timeline[target].append((end_time, None, wafer_id))
@@ -1114,16 +1086,6 @@ class ClusterTool:
 
                     pre_place.append(old_tok)
                     old_tok._place_idx = pre_place_idx
-
-                    if self._is_cascade:
-                        rr_source = str(getattr(tok, "last_u_source", "") or "")
-                        if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
-                            self._advance_round_robin_after_u_fire(rr_source)
-                        else:
-                            for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
-                                if target in rr_tgts:
-                                    self._advance_round_robin_after_u_fire(rr_source)
-                                    break
 
                     log_entries.append(
                         {
@@ -1153,19 +1115,12 @@ class ClusterTool:
                     idx = len(self._chamber_timeline[target])
                     self._chamber_timeline[target].append((end_time, None, wafer_id))
                     self._chamber_active[target][wafer_id] = idx
-                if self._is_cascade:
-                    rr_source = str(getattr(tok, "last_u_source", "") or "")
-                    if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
-                        self._advance_round_robin_after_u_fire(rr_source)
-                    else:
-                        for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
-                            if target in rr_tgts:
-                                self._advance_round_robin_after_u_fire(rr_source)
-                                break
 
             tok.route_head_idx += 1
             pst_place.append(tok)
             tok._place_idx = pst_place_idx
+            if t_name.startswith("t_"):
+                self._place_use_count[pst_place.name] = int(self._place_use_count.get(pst_place.name, 0)) + 1
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
             if t_name.startswith("u_") and pre_place.name in self._load_port_names:
@@ -1255,19 +1210,6 @@ class ClusterTool:
             idx += 1
         return None
 
-    def _rr_owner(self, source: str) -> str:
-        return str(self._cascade_round_robin_owner.get(str(source), str(source)))
-
-    def _rr_get_next(self, source: str) -> Optional[str]:
-        owner = self._rr_owner(source)
-        return self._cascade_round_robin_next.get(owner)
-
-    def _rr_set_next(self, source: str, target: str) -> None:
-        owner = self._rr_owner(source)
-        for src, src_owner in self._cascade_round_robin_owner.items():
-            if src_owner == owner:
-                self._cascade_round_robin_next[src] = str(target)
-
     def _gate_targets_from_tok_gate(self, tok_gate: object) -> Tuple[str, ...]:
         if tok_gate == -1:
             return tuple()
@@ -1290,38 +1232,43 @@ class ClusterTool:
             targets.append(name)
         return tuple(targets)
 
-    def _current_stage_targets_for_source(self, source: str, tok_gate: object) -> Tuple[str, ...]:
-        rr_targets = tuple(self._cascade_round_robin_pairs.get(source, ()))
-        if not rr_targets:
+    def _stage_targets_for_candidates(
+        self,
+        candidates: Sequence[str],
+        tok_gate: object,
+    ) -> Tuple[str, ...]:
+        candidate_targets = tuple(str(x) for x in candidates)
+        if not candidate_targets:
             return tuple()
         gate_targets = self._gate_targets_from_tok_gate(tok_gate)
         if not gate_targets:
-            return rr_targets
+            return candidate_targets
         gate_set = set(gate_targets)
-        filtered = tuple(t for t in rr_targets if t in gate_set)
-        return filtered if filtered else rr_targets
+        filtered = tuple(t for t in candidate_targets if t in gate_set)
+        return filtered if filtered else candidate_targets
 
-    def _expected_target_for_source_stage(
+    def _select_min_use_count_target(
         self,
-        source: str,
-        stage_targets: Tuple[str, ...],
+        candidates: Sequence[str],
+        tok_gate: object,
+        cache: Optional[Dict[Tuple[int, Tuple[str, ...]], str]] = None,
+        cache_key: Optional[Tuple[int, Tuple[str, ...]]] = None,
     ) -> Optional[str]:
+        stage_targets = self._stage_targets_for_candidates(candidates, tok_gate)
         if not stage_targets:
             return None
-        rr_targets = tuple(self._cascade_round_robin_pairs.get(source, ()))
-        if not rr_targets:
-            return None
-        current = self._rr_get_next(source) or rr_targets[0]
-        if current in stage_targets:
-            return current
-        start_idx = rr_targets.index(current) if current in rr_targets else 0
-        allowed = set(stage_targets)
-        n = len(rr_targets)
-        for i in range(1, n + 1):
-            cand = rr_targets[(start_idx + i) % n]
-            if cand in allowed:
-                return cand
-        return None
+        if cache is not None and cache_key is not None:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return str(cached)
+        counts = [int(self._place_use_count.get(str(name), 0)) for name in stage_targets]
+        min_count = min(counts)
+        min_targets = [str(name) for name, cnt in zip(stage_targets, counts) if cnt == min_count]
+        pick_idx = int(np.random.randint(0, len(min_targets)))
+        picked = str(min_targets[pick_idx])
+        if cache is not None and cache_key is not None:
+            cache[cache_key] = picked
+        return picked
 
     @staticmethod
     def _route_gate_allows_t(gate: object, t_code: int) -> bool:
@@ -1337,27 +1284,30 @@ class ClusterTool:
             return t_code in gate
         return True
 
-    def _allow_t_by_machine_round_robin(
+    def _allow_t_by_use_count(
         self,
         transport_name: str,
         target_name: str,
         tok_gate: object,
         tok: Optional[BasedToken] = None,
+        selected_cache: Optional[Dict[Tuple[int, Tuple[str, ...]], str]] = None,
     ) -> bool:
         if not isinstance(tok_gate, (tuple, frozenset)):
             return True
-        rr_source = str(getattr(tok, "last_u_source", "") or "")
-        expected_target = self._rr_get_next(rr_source)
-        if rr_source in self._cascade_round_robin_pairs:
-            stage_targets = self._current_stage_targets_for_source(rr_source, tok_gate)
-            stage_expected = self._expected_target_for_source_stage(rr_source, stage_targets)
-            if stage_expected is not None:
-                expected_target = stage_expected
-        if rr_source in self._cascade_round_robin_pairs and expected_target is not None:
-            allowed = str(target_name) == str(expected_target)
-        else:
-            allowed = target_name in self._cascade_round_robin_next.values()
-        return allowed
+        _ = transport_name
+        dst_level_targets = tuple(getattr(tok, "_dst_level_targets", ()) or ())
+        if not dst_level_targets:
+            dst_level_targets = self._gate_targets_from_tok_gate(tok_gate)
+        cache_key = (int(id(tok)), tuple(str(x) for x in dst_level_targets))
+        selected = self._select_min_use_count_target(
+            candidates=dst_level_targets,
+            tok_gate=tok_gate,
+            cache=selected_cache,
+            cache_key=cache_key,
+        )
+        if selected is None:
+            return False
+        return str(target_name) == str(selected)
 
     def _lp_type_head_tokens(self) -> Dict[int, BasedToken]:
         heads: Dict[int, BasedToken] = {}
@@ -1691,56 +1641,24 @@ class ClusterTool:
 
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
-        级联并行源：期望下游为 `_expected_target_for_source_stage`（route gate 与轮转指针对齐），
-        不再环扫其它并行腔室；单臂满或清洗则不可出片，双臂仅清洗阻塞（容量由 TM `t_*` 侧 swap 逻辑处理）。
+        按 route gate 过滤后的候选集中，优先选择 use_count 最小的目标；
+        若并列，随机选择其中一个。单臂满或清洗则不可出片，双臂仅清洗阻塞。
         """
         candidates = tuple(self._u_targets.get(source, ()))
-        if source in self._cascade_round_robin_pairs:
-            source_place = self._get_place(source)
-            head_tok = source_place.tokens[0] if len(source_place.tokens) > 0 else None
-            tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
-            stage_targets = self._current_stage_targets_for_source(source, tok_gate)
-            exp = self._expected_target_for_source_stage(source, stage_targets)
-            if exp is None:
-                return False, None
-            tp = self._get_place(exp)
-            if tp.is_cleaning:
-                return False, None
-            if not self._dual_arm and len(tp.tokens) >= tp.capacity:
-                return False, None
-            return True, exp
         if not candidates:
             return False, None
-        pointer_target = candidates[0]
-        target_place = self._get_place(pointer_target)
+        source_place = self._get_place(source)
+        head_tok = source_place.tokens[0] if len(source_place.tokens) > 0 else None
+        tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
+        target_name = self._select_min_use_count_target(candidates, tok_gate)
+        if target_name is None:
+            return False, None
+        target_place = self._get_place(target_name)
         if target_place.is_cleaning:
             return False, None
         if not self._dual_arm and len(target_place.tokens) >= target_place.capacity:
             return False, None
-        return True, pointer_target
-
-    def _advance_round_robin_after_u_fire(self, source: str) -> None:
-        if self.device_mode == "cascade" and source in self._cascade_round_robin_pairs:
-            rr_targets = tuple(self._cascade_round_robin_pairs[source])
-            if len(rr_targets) <= 1:
-                return
-            current = self._rr_get_next(source) or rr_targets[0]
-            if current not in rr_targets:
-                current = rr_targets[0]
-            current_idx = rr_targets.index(current)
-            self._rr_set_next(source, rr_targets[(current_idx + 1) % len(rr_targets)])
-            return
-        if self.device_mode == "single" and source in self._single_round_robin_pairs:
-            rr_targets = tuple(self._single_round_robin_pairs[source])
-            if len(rr_targets) <= 1:
-                return
-            current = self._single_round_robin_next.get(source, rr_targets[0])
-            if current not in rr_targets:
-                current = rr_targets[0]
-            current_idx = rr_targets.index(current)
-            self._single_round_robin_next[source] = rr_targets[
-                (current_idx + 1) % len(rr_targets)
-            ]
+        return True, target_name
 
     def _next_robot_machine(self) -> int:
         if self.robot_capacity <= 1:
@@ -1803,6 +1721,7 @@ class ClusterTool:
         )
         mask = np.zeros(total_actions, dtype=bool)
         struct_enabled_cache: Dict[int, bool] = {}
+        selected_parallel_target_cache: Dict[Tuple[int, Tuple[str, ...]], str] = {}
 
         def _is_struct_enabled(t_idx: int) -> bool:
             cached = struct_enabled_cache.get(t_idx)
@@ -1872,11 +1791,12 @@ class ClusterTool:
                         target = self._transition_target_place(int(t_idx))
                         if target is None:
                             continue
-                        allow_rr = self._allow_t_by_machine_round_robin(
+                        allow_rr = self._allow_t_by_use_count(
                             pname,
                             target,
                             tok_gate,
                             tok,
+                            selected_parallel_target_cache,
                         )
                         if not allow_rr:
                             continue

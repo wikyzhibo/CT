@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：并行选机从 robin 改为 `use_count` 最小优先（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 robin 指针相关状态与函数（`_cascade_round_robin_*`、`_single_round_robin_*`、`_rr_*`、`_allow_t_by_machine_round_robin`、`_advance_round_robin_after_u_fire` 等），新增库所级 `use_count` 映射。并行 gate 下的 `get_action_mask` 改为按候选目标 `use_count` 最小优先，仅放行 1 个目标；最小值并列时随机选 1 个。`_is_next_stage_available` 同步改用相同规则。`_fire` 在 `t_*` 把晶圆放入目标库所时对该目标 `use_count += 1`。
+- **Why**：去掉轮转指针维护链路，直接用“最少使用优先”提升并行机台均衡度，并让并行选机规则在掩码与执行路径保持一致。
+- **Impact**：并行目标不再按 source 严格轮转，改为动态计数均衡；同计数目标存在随机性，会影响逐步动作可复现性（训练统计层面通常更均衡）。
+
 ### A 方案：节拍计算迁移到构网层并移除 override 分支（2026-03-30）
 
 - **What changed**：新增 `solutions/A/construct/build_takt.py` 作为节拍计算入口，`solutions/A/model_builder.py` 在 `build_net` 内完成节拍计算并返回 `takt_payload`；`solutions/A/petri_net.py` 删除 `_build_takt_stage`、`_validate_takt_stage_inputs`、`_compute_takt_result*` 系列本地计算函数（含 `_compute_takt_result_from_override`），改为仅消费构网返回的节拍结果。

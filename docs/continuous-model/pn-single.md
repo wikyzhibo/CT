@@ -58,20 +58,20 @@
 14. 配置驱动路径启用时，`construct_single.build_net` 通过 `preprocess_config.py` 先构建“每腔室一块”的预处理真源（包含 stage 覆盖后的 `process_time/cleaning_*`）；`build_marks.py` 仅消费该真源构造 place，返回的 `process_time_map` 只来自该预处理真源并与 `marks` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
 15. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
 16. 级联模式 `TM2` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 **9** 维（`PM7–PM10, LLC, LLD, LP_done, LP1, LP2`）；`TM3` 为 **8** 维（`PM1–PM6, LLC, LLD`），不再按 route 动态构造。
-17. 对 `_cascade_round_robin_pairs` 中的源，`u_*` 使能仅检查**经 route gate 与轮转指针对齐后的单一期望下游**：期望腔室名为 `_expected_target_for_source_stage(source, _current_stage_targets_for_source(source, tok_gate))`（`tok_gate` 为源位队首 token 当前 route 门）。**禁止**在并行候选上环扫“第一个可接收腔室”以改投其它 PM。单臂：若该期望腔室**满**或**清洗中**，则该源的 `u_*` 不可使能；双臂：若该期望腔室**清洗中**，则不可使能（PM 容量在 TM `t_*` 侧由 swap 规则处理，源位侧不环扫）。非并行源（单一 `u_targets` 候选）仍只校验该单一候选。
-18. `_fire` 对 `_cascade_round_robin_pairs` 中的源：**不在** `pop_head` 之前改写 `_cascade_round_robin_next`；使能一致性仅依赖 `get_action_mask` 与 `_is_next_stage_available` / `_allow_t_by_machine_round_robin` 中的同一套期望目标计算。该类源发射 `u_*` **不**调用 `_advance_round_robin_after_u_fire`；**round-robin 指针仅在 `t_*` 将晶圆放入其并行候选中的某一腔室后**由 `_advance_round_robin_after_u_fire` 推进。
-19. 对共享同一并行目标集的多个上游源（如 `PM7` 与 `PM8` 同时指向 `PM9/PM10`），`t_*` 发射后的 round-robin 推进必须基于该 token 最近一次 `u_*` 的真实 source（`token.last_u_source`）；禁止按“第一个匹配目标集的 source”推进，否则会导致某些 source 指针长期不动并引发目标腔室偏置。
+17. 并行候选选机改为 `use_count` 最小优先：`u_*` 使能在 `source` 的候选下游中，先用 route gate 过滤，再从 `use_count` 最小的目标中选择一个（同值随机）；单臂若该目标满或清洗中则不可出片，双臂若该目标清洗中则不可出片。非并行源（单一 `u_targets`）仍只校验该单一候选。
+18. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值随机”决策，禁止同一步并行目标多放行。
+19. `_fire` 不再维护任何 round-robin 指针状态；并行目标选择完全由 `get_action_mask` / `_is_next_stage_available` 的 `use_count` 规则决定。
 20. 级联观测中 `TM2` 的目标 one-hot 采用固定 **9** 维逐目标编码；`TM3` 为 **8** 维（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
 21. 驻留 scrap 口径：普通腔室阈值为 `process_time + P_Residual_time`；`LLC/LLD` 阈值为 `process_time + 3 * P_Residual_time`。超过阈值会按 `resident` 类型计入 scrap 判定。
 22. 同一步内先推进时间再发射变迁：若 `_advance_and_compute_reward` 已对本步标 `resident` scrap，且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
-23. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合（`tuple/frozenset`）时，仅放行后置目标位于 `_cascade_round_robin_next.values()` 的 `t_*`；不在该集合中的目标直接屏蔽。
-24. 当 `tok_gate` 为并行集合时，若 token 上可解析到 `last_u_source` 且该 source 受 round-robin 管理，则 `get_action_mask` 必须仅放行**唯一期望后置腔室**的 `t_*`：期望名为 `_expected_target_for_source_stage(last_u_source, _current_stage_targets_for_source(last_u_source, tok_gate))`（与 `_cascade_round_robin_next` 及 route gate 对齐；owner 组内共享同一指针字典）。若该期望为 `None` 则按实现退回；只有无法解析 `last_u_source` 时才允许退回 `_cascade_round_robin_next.values()` 级别筛选。该规则用于保证“按 source 严格轮转”，避免 `PM7/PM8` 共享 `PM9/PM10` 目标集时同一步同时放行两个目标。
-25. `ClusterTool` 初始化时，`_cascade_round_robin_pairs` 对 `route_meta.u_targets` 中 **`len(targets) >= 2` 的源** 使用**完整** `tuple(targets)` 作为并行候选序列；**禁止**再丢弃 `LLC`/`LLD` 等非 `PM*`、`LP_done` 的下游名，否则 `values()` 可能永不包含这些库所，规则 22 会误屏蔽对应 `t_*`（典型：路线 `1-5` 上 PM7→LLC|LLD）。
+23. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
+24. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
+25. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。
 26. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍，节拍序列来自 `analyze_cycle` 或路线级 `takt_policy` / `takt_stages_override` 等现行路径）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
 27. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。`robot_capacity` 始终为 1，不因双臂改变。`swap_duration` 固定为 10s。
-28. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。仍检查清洗和 round-robin。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
-29. 双臂模式 `_is_next_stage_available`：对 `_cascade_round_robin_pairs` 中源使用与规则 17 相同的**单一期望下游**；仅当期望腔室**非清洗**时允许出片（不在源位做并行环扫）。`_fire` 的 u_* 路径**不**做 round-robin 指针同步。单候选非并行源仍跳过容量检查（与规则 28 的 TM 侧双臂逻辑一致）。
-30. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数），推进 round-robin。`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
+28. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。并行目标筛选同样使用 `use_count` 最小优先。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
+29. 双臂模式 `_is_next_stage_available` 在并行源上沿用规则 17 的 `use_count` 选机，仅要求目标腔室非清洗；源位不做并行环扫，`u_*` 也不维护额外选机状态。
+30. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数）；`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
 31. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
 
 ## Examples

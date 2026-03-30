@@ -48,7 +48,7 @@
 
 ## Change Notes
 - 2026-03-30: 移除配置/运行时 `route_code`、`route4_takt_interval` 与 `build_fixed_takt_result`；路线统一 `single_route_name` + `single_route_config`；见 `continuous-model/pn-single.md`、`visualization/ui-guide.md`、`CHANGELOG.md`。
-- 2026-03-30: `continuous-model/pn-single.md`：级联并行腔室轮转改为严格指针（删除 `_first_receivable_parallel_target` 等；`_fire` 不再同步指针）；详见该文档 Change Notes 与 `CHANGELOG.md`。
+- 2026-03-30: `continuous-model/pn-single.md`：级联并行选机由 robin 改为 `use_count` 最小优先（并列随机），并移除 robin 指针相关实现；详见该文档 Change Notes 与 `CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：`ClusterTool` 装载口 `u_LP*` 掩码改为按 `LP1`/`LP2` 独立使能；移除 `_allow_start` / `_pending_lp_release_type` 链；详见该文档 Change Notes。
 - 2026-03-30: `continuous-model/pn-single.md`：级联固定拓扑由单 `LP` 改为 `LP1`/`LP2`；`build_net`/`ClusterTool` 与 TM2 观测维度（9 维）同步说明见该文档 Change Notes。
 - 2026-03-29: 可视化主文档新增并发双动作入口与回放约束：`visualization/ui-guide.md` 现覆盖 `--concurrent`、并发权重自动识别、并发序列自动切换 runtime。
