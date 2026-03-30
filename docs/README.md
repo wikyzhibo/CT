@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-30: `continuous-model/pn-single.md`：`ClusterTool` 装载口 `u_LP*` 掩码改为按 `LP1`/`LP2` 独立使能；移除 `_allow_start` / `_pending_lp_release_type` 链；详见该文档 Change Notes。
 - 2026-03-30: `continuous-model/pn-single.md`：级联固定拓扑由单 `LP` 改为 `LP1`/`LP2`；`build_net`/`ClusterTool` 与 TM2 观测维度（9 维）同步说明见该文档 Change Notes。
 - 2026-03-29: 可视化主文档新增并发双动作入口与回放约束：`visualization/ui-guide.md` 现覆盖 `--concurrent`、并发权重自动识别、并发序列自动切换 runtime。
 - 2026-03-19: 重构为“1 个入口 + 5 个主文档 + 附录 + deprecated 兼容层”。

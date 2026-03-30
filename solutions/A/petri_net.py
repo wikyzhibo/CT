@@ -31,22 +31,6 @@ CHAMBER = 1
 DELIVERY_ROBOT = 2
 SOURCE = 3
 
-# 动作不使能原因的人性化描述（用于 Markdown 报告）
-REASON_DESC: Dict[str, str] = {
-    "insufficient_tokens": "库所 token 不足",
-    "capacity_exceeded": "容量超限",
-    "locked_by_arm2_head": "双臂模式：来源被队首晶圆目标锁定",
-    "no_receiving_target": "下游无可接收腔室",
-    "wrong_destination": "与队首晶圆目标不一致",
-    "process_not_ready": "腔室加工未完成",
-    "target_cleaning": "目标腔室清洗中",
-    "dwell_time_not_met": "运输位停留时间未满足",
-    "has_ready_wafer_restrict_wait": "有待取晶圆，仅允许短等待",
-    "takt_release_limit": "节拍限制：距上次发片间隔未达当前周期节拍",
-    "max_wafers_in_system_limit": "在制品已达上限，禁止继续发片",
-    "action_mask": "动作掩码为 False（与 get_action_mask 一致）",
-}
-
 
 def _step_core_numpy(
     pre: np.ndarray,
@@ -392,9 +376,6 @@ class ClusterTool:
             int(k): max(0, int(v)) for k, v in self._wafer_type_alloc_by_type.items()
         }
         self._wafer_type_alloc_total_weight: int = int(sum(self._wafer_type_alloc_by_type.values()))
-        self._lp_release_pattern_types: Tuple[int, ...] = tuple(
-            int(x) for x in list(route_meta.get("lp_release_pattern_types") or [])
-        )
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
         self._takt_stages_override: List[Any] = list(route_meta.get("takt_stages_override") or [])
         self._default_subpath: str = str(route_meta.get("default_subpath", "") or "")
@@ -523,8 +504,6 @@ class ClusterTool:
             all_types = {1}
         self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
-        self._pending_lp_release_type: Optional[int] = None
-        self._lp_release_pattern_idx: int = 0
         self._training = True
         self._profiling_enabled = True
         self._step_profile = {
@@ -782,8 +761,6 @@ class ClusterTool:
             all_types = {1}
         self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
-        self._pending_lp_release_type = None
-        self._lp_release_pattern_idx = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in self._mask_skip_places:
@@ -1137,10 +1114,7 @@ class ClusterTool:
                     if sync_tgt is not None:
                         self._rr_set_next(src0, sync_tgt)
 
-            if t_name.startswith("u_") and pre_place.name in self._load_port_names:
-                tok = self._pop_lp_token_for_release(self._pending_lp_release_type)
-            else:
-                tok = pre_place.pop_head()
+            tok = pre_place.pop_head()
             wafer_id = tok.token_id
             self._track_leave(tok, pre_place.name)
             tok.enter_time = self.time
@@ -1259,10 +1233,7 @@ class ClusterTool:
                 self._u_LP_release_count_by_type[released_type] = (
                     int(self._u_LP_release_count_by_type.get(released_type, 0)) + 1
                 )
-                if self._lp_release_pattern_types:
-                    self._lp_release_pattern_idx += 1
                 self._arm_lp_head_with_takt_delay(released_type)
-                self._pending_lp_release_type = None
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -1442,39 +1413,6 @@ class ClusterTool:
             allowed = target_name in self._cascade_round_robin_next.values()
         return allowed
 
-    def _route4_next_target_from_token(self, tok: BasedToken) -> Optional[str]:
-        """从 route_queue 下一 gate 推断目标库所名（route4 专用）。"""
-        queue = tok.route_queue
-        if not queue:
-            return None
-        next_idx = tok.route_head_idx + 1
-        if next_idx < 0:
-            next_idx = 0
-        if next_idx >= len(queue):
-            next_idx = len(queue) - 1
-        next_gate = queue[next_idx]
-        if not isinstance(next_gate, int):
-            return None
-        return self._t_code_to_place.get(int(next_gate))
-
-    def _select_route4_lld_target(
-        self,
-        tok: BasedToken,
-        ignore_cleaning: bool = False,
-    ) -> Optional[str]:
-        target = self._route4_next_target_from_token(tok)
-        if target is None:
-            return None
-        candidates = self._u_targets.get("LLD", [])
-        if target not in candidates:
-            return None
-        target_place = self._get_place(target)
-        if (not ignore_cleaning) and target_place.is_cleaning:
-            return None
-        if len(target_place.tokens) >= target_place.capacity:
-            return None
-        return target
-
     def _lp_type_head_tokens(self) -> Dict[int, BasedToken]:
         heads: Dict[int, BasedToken] = {}
         for lp_name in self._load_port_names:
@@ -1486,30 +1424,6 @@ class ClusterTool:
                 if t_id not in heads:
                     heads[t_id] = tok
         return heads
-
-    def _peek_lp_token_by_type(self, route_type: int) -> Optional[BasedToken]:
-        return self._lp_type_head_tokens().get(int(route_type))
-
-    def _lp_releasable_types(self) -> List[int]:
-        heads = self._lp_type_head_tokens()
-        if not heads:
-            return []
-        return sorted([int(tid) for tid, tok in heads.items() if int(tok.stay_time) >= 0])
-
-    def _select_lp_release_type(self, releasable_types: Sequence[int]) -> Optional[int]:
-        if not releasable_types:
-            return None
-        available = [int(t) for t in releasable_types]
-        if self._lp_release_pattern_types:
-            expected = int(
-                self._lp_release_pattern_types[
-                    self._lp_release_pattern_idx % len(self._lp_release_pattern_types)
-                ]
-            )
-            return expected if expected in available else None
-        if len(available) == 1:
-            return int(available[0])
-        return int(np.random.choice(np.array(available, dtype=int)))
 
     def _allow_start_for_route_type(self, route_type: int) -> bool:
         """
@@ -1531,21 +1445,6 @@ class ClusterTool:
         lhs = int(current + 1) * total_weight
         rhs = int(self.max_wafers_in_system) * weight
         return lhs <= rhs
-
-    def _allow_start(self):
-        """returns True if u_LP can fire now, based on WIP and per-type LP head gate."""
-        self._pending_lp_release_type = None
-        if not int(self.entered_wafer_count) < int(self.max_wafers_in_system):
-            return False
-        releasable = [
-            int(tid) for tid in self._lp_releasable_types()
-            if self._allow_start_for_route_type(int(tid))
-        ]
-        selected = self._select_lp_release_type(releasable)
-        if selected is None:
-            return False
-        self._pending_lp_release_type = int(selected)
-        return True
 
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
@@ -1617,29 +1516,6 @@ class ClusterTool:
             if head is None:
                 return
             head.stay_time = -required_int
-
-    def _pop_lp_token_for_release(self, preferred_type: Optional[int]) -> BasedToken:
-        if preferred_type is not None:
-            lp_name = self._wafer_type_to_load_port.get(int(preferred_type), "LP1")
-            lp_place = self._place_by_name.get(lp_name)
-            if lp_place is None or len(lp_place.tokens) == 0:
-                raise RuntimeError(f"{lp_name} has no token to release")
-            target_type = int(preferred_type)
-            for idx, tok in enumerate(lp_place.tokens):
-                if int(getattr(tok, "route_type", 1) or 1) != target_type:
-                    continue
-                if idx == 0:
-                    return lp_place.pop_head()
-                token_list = list(lp_place.tokens)
-                picked = token_list.pop(idx)
-                lp_place.tokens = deque(token_list)
-                return picked
-            return lp_place.pop_head()
-        for lp_name in self._load_port_names:
-            lp_place = self._place_by_name.get(lp_name)
-            if lp_place is not None and len(lp_place.tokens) > 0:
-                return lp_place.pop_head()
-        raise RuntimeError("no load port has a token to release")
 
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
@@ -1992,23 +1868,11 @@ class ClusterTool:
         lp_heads = self._lp_type_head_tokens()
         if lp_heads:
             deltas: List[int] = []
-            if self._lp_release_pattern_types:
-                expect_type = int(
-                    self._lp_release_pattern_types[
-                        self._lp_release_pattern_idx % len(self._lp_release_pattern_types)
-                    ]
-                )
-                tok = lp_heads.get(expect_type)
-                if tok is not None and int(tok.stay_time) < 0:
+            for tok in lp_heads.values():
+                if int(tok.stay_time) < 0:
                     deltas.append(-int(tok.stay_time))
-                elif tok is not None:
+                else:
                     deltas.append(0)
-            else:
-                for tok in lp_heads.values():
-                    if int(tok.stay_time) < 0:
-                        deltas.append(-int(tok.stay_time))
-                    else:
-                        deltas.append(0)
             if deltas:
                 delta_takt = min(deltas)
                 if best is None or delta_takt < best:
@@ -2241,15 +2105,28 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
-        # 优先检查 LP 出片：按类型队首判定可发，并选择对应 LP->TM2/TM3 的 u 变迁。
-        if self._allow_start():
-            selected_type = int(self._pending_lp_release_type or 0)
-            selected_tok = self._peek_lp_token_by_type(selected_type) if selected_type > 0 else None
-            lp_target = self._token_next_target(selected_tok) if selected_tok is not None else None
-            if lp_target is not None:
-                lp_src = self._wafer_type_to_load_port.get(int(selected_type), "LP1")
-                lp_transport = self._transport_for_t_target(lp_src, str(lp_target))
-                u_lp_idx = self._u_transition_by_source_transport.get((lp_src, lp_transport))
+        # LP 出片：各装载口独立门控（全局 WIP + 类型配额 + 队首节拍就绪）；可同时允许多条 u_LP*。
+        if int(self.entered_wafer_count) < int(self.max_wafers_in_system):
+            for lp_name in self._load_port_names:
+                lp_place = self._place_by_name.get(lp_name)
+                if lp_place is None or len(lp_place.tokens) == 0:
+                    continue
+                head = lp_place.tokens[0]
+                if int(head.stay_time) < 0:
+                    continue
+                route_type = int(getattr(head, "route_type", 1) or 1)
+                expected_lp = self._wafer_type_to_load_port.get(route_type, "LP1")
+                if expected_lp != lp_name:
+                    raise RuntimeError(
+                        f"wafer_type {route_type} maps to load port {expected_lp} but queue head is on {lp_name}"
+                    )
+                if not self._allow_start_for_route_type(route_type):
+                    continue
+                lp_target = self._token_next_target(head)
+                if lp_target is None:
+                    continue
+                lp_transport = self._transport_for_t_target(lp_name, str(lp_target))
+                u_lp_idx = self._u_transition_by_source_transport.get((lp_name, lp_transport))
                 if u_lp_idx is not None and _is_struct_enabled(int(u_lp_idx)):
                     t_idx = int(u_lp_idx)
                     if 0 <= t_idx < total_actions:

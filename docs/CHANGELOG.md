@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：`ClusterTool` 装载口发片掩码改为按 LP 独立使能（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_allow_start`、`_pending_lp_release_type`、`_pop_lp_token_for_release` 及 `_peek_lp_token_by_type` / `_lp_releasable_types` / `_select_lp_release_type`；`get_action_mask` 对 `LP1`/`LP2` 各自队首独立应用全局 WIP、`wafer_type_alloc`（`_allow_start_for_route_type`）、队首 `stay_time` 与结构使能；`_fire` 从装载口取 token 仅为 `pre_place.pop_head()`。移除运行时对 `route_meta.lp_release_pattern_types` 的读取；`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。队首 `route_type` 与 `wafer_type_to_load_port` 不一致时抛出 `RuntimeError`。
+- **Why**：约定每装载口仅一种晶圆类型、无需「全局下一次发哪一种」与 deque 内按类型重排；双 LP 可同时出现在掩码中，由策略择一动作。
+- **Impact**：`lp_release_pattern` 仍可由构网写入 JSON，**不再**影响 `ClusterTool` 使能；依赖「掩码同刻至多一条 LP」或 pattern 排他发片的旧实验需改用新语义。
+
 ### A 方案：双臂 swap 场景驻留豁免改为匹配被换出晶圆（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 的驻留豁免函数 `_should_cancel_resident_scrap_after_fire` 新增对 swap 日志的支持：当本步 `t_*` 触发 `swap=True` 时，豁免匹配从原先 `u_*` 的 `source_place + token_id` 扩展为 `swap_source_place + swapped_token_id`。`_fire` 的 swap 日志同步写入 `swap_source_place`（PM 目标腔室名）。

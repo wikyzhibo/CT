@@ -72,6 +72,7 @@
 28. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。仍检查清洗和 round-robin。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
 29. 双臂模式 `_is_next_stage_available` 和 `_fire` u_* round-robin 同步：**跳过** `_first_receivable_parallel_target`（含容量检查），改用 `_first_parallel_target_dual_arm`（仅检查非清洗）。单候选源也跳过容量检查。
 30. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数），推进 round-robin。`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
+31. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
 
 ## Examples
 - 正例:
@@ -92,8 +93,9 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-30: `ClusterTool` 装载口 `u_LP*`：`get_action_mask` 改为按 `LP1`/`LP2` **各自**队首独立使能（全局 WIP + `wafer_type_alloc` + 队首 `stay_time` + 结构使能）；移除 `_allow_start` 与 `_pending_lp_release_type`、`_pop_lp_token_for_release`；`_fire` 从装载口取 token 仅为 `pop_head()`。运行时**不再**消费 `route_meta.lp_release_pattern_types`（构网仍可输出）；`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。
 - 2026-03-30: 级联固定拓扑版本 bump：`LP` 拆为 `LP1`/`LP2` 双装载口；`build_net` 将 JSON 中 `source.name: LP` 归一为 `LP1`；双子路径（`subpaths` 恰为 2 条）默认第一条绑定 `LP1`、第二条绑定 `LP2`，亦可在子路径上显式写 `source_name`。`route_meta` 新增 `wafer_type_to_load_port`、`load_port_names`。`n_wafer_route1`/`n_wafer_route2` 若同时给出则须与按类型分配后的 LP1/LP2 初始晶圆数一致。旧 checkpoint（TM2 观测 8 维）与当前 TM2 9 维**不兼容**。
-- 2026-03-30: A 方案级联路线配置新增 `4-8/4-9` 双子路径模式：路线条目可携带 `subpaths`、`wafer_type_alloc`、`takt_policy`，其中 `4-8` 额外支持 `takt_stages_override=[3000,180]` 与 `lp_release_pattern=["path1","path2","path2","path2","path2"]`。A 方案 `ClusterTool` 的 `u_LP` 门控改为 LP token 负 `stay_time` 倒计时，并在双类型场景按类型队首独立判定可发；若无 pattern 且两类型同刻可发，则随机选择一种发片。
+- 2026-03-30: A 方案级联路线配置新增 `4-8/4-9` 双子路径模式：路线条目可携带 `subpaths`、`wafer_type_alloc`、`takt_policy`，其中 `4-8` 额外支持 `takt_stages_override=[3000,180]` 与 `lp_release_pattern`（构网侧仍编译为 `lp_release_pattern_types`）。A 方案 `ClusterTool` 的 `u_LP` 门控为 LP token 负 `stay_time` 倒计时；**同日后续变更**已改为各装载口掩码独立使能，**不再**在运行时按 pattern/随机在掩码中排他选类型（见本文件 Change Notes 首条与行为规则 31）。
 - 2026-03-27: 修复共享目标集的“全局严格轮转”口径：当多个 source（如 `PM7/PM8`）拥有相同并行目标集合（如 `PM9/PM10`）时，共享同一个 round-robin 指针（owner 同步），避免出现 `PM9,PM9,PM10,PM10` 的成对输出。
 - 2026-03-27: 修复严格轮转口径：`get_action_mask` 对并行 gate 的 `t_*` 放行改为优先按 token 的 `last_u_source` 对应 round-robin 指针单点判定，不再仅按 `_cascade_round_robin_next.values()` 集合判定，避免同一步同时放行 `PM9/PM10` 导致非严格 robin。
 - 2026-03-27: 修复 `PM7/PM8 -> PM9/PM10` 共享目标集场景的 round-robin 推进来源判定：`u_*` 会把 source 写入 `token.last_u_source`，`t_*` 发射后优先按该 source 推进对应指针，避免按“首个匹配 source”推进导致 `PM10` 长期被 gate 屏蔽。
