@@ -17,5 +17,5 @@ max_wafers_in_system: 20
 cleaning_enabled: false
 route4_takt_interval: 0
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "2-1"
+single_route_name: "4-8"
 dual_arm: true

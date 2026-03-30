@@ -4,13 +4,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from solutions.A.construct.build_marks import build_marks_for_single_net
 from solutions.A.construct.build_topology import get_topology
 from solutions.A.construct.preprocess_config import preprocess_chamber_runtime_blocks
-from solutions.A.construct.build_route_queue import build_token_route_queue
+from solutions.A.construct.build_route_queue import (
+    build_token_route_queue,
+    build_token_route_queue_multi,
+)
 from solutions.A.construct.route_compiler_single import (
     RobotSpec as CompiledRobotSpec,
     RouteIR,
@@ -34,6 +37,74 @@ def _build_route_source_target_transport(route_ir: RouteIR) -> Dict[Tuple[str, s
             for dst in dst_stage.candidates:
                 mapping[(str(src), str(dst))] = transport_name
     return mapping
+
+
+def _merge_route_source_target_transport(
+    route_irs: Sequence[RouteIR],
+) -> Dict[Tuple[str, str], str]:
+    merged: Dict[Tuple[str, str], str] = {}
+    for route_ir in route_irs:
+        current = _build_route_source_target_transport(route_ir)
+        for key, val in current.items():
+            if key in merged and merged[key] != val:
+                raise ValueError(f"conflicting transport mapping for hop {key}: {merged[key]} vs {val}")
+            merged[key] = val
+    return merged
+
+
+def _build_token_type_sequence(
+    n_wafer: int,
+    wafer_type_alloc_by_type: Mapping[int, int],
+    lp_release_pattern_types: Sequence[int],
+) -> List[int]:
+    if n_wafer <= 0:
+        return []
+    if lp_release_pattern_types:
+        pattern = [int(t) for t in lp_release_pattern_types if int(t) > 0]
+        if not pattern:
+            raise ValueError("lp_release_pattern_types must contain positive type ids")
+        return [pattern[i % len(pattern)] for i in range(int(n_wafer))]
+
+    weights = {int(k): max(0, int(v)) for k, v in wafer_type_alloc_by_type.items() if int(k) > 0}
+    if not weights:
+        return [1 for _ in range(int(n_wafer))]
+    total = sum(weights.values())
+    if total <= 0:
+        first_type = sorted(weights.keys())[0]
+        return [int(first_type) for _ in range(int(n_wafer))]
+    base_counts: Dict[int, int] = {}
+    fractions: List[Tuple[float, int]] = []
+    assigned = 0
+    for type_id, weight in sorted(weights.items()):
+        raw = float(n_wafer) * float(weight) / float(total)
+        cnt = int(raw)
+        base_counts[type_id] = cnt
+        assigned += cnt
+        fractions.append((raw - cnt, type_id))
+    rest = int(n_wafer) - assigned
+    fractions.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    for i in range(rest):
+        _, tid = fractions[i % len(fractions)]
+        base_counts[tid] += 1
+
+    sequence: List[int] = []
+    rr_types = [tid for tid in sorted(base_counts.keys()) if base_counts[tid] > 0]
+    while len(sequence) < int(n_wafer):
+        progressed = False
+        for tid in rr_types:
+            if base_counts[tid] <= 0:
+                continue
+            sequence.append(int(tid))
+            base_counts[tid] -= 1
+            progressed = True
+            if len(sequence) >= int(n_wafer):
+                break
+        if not progressed:
+            break
+    if len(sequence) < int(n_wafer):
+        fill_type = rr_types[0] if rr_types else 1
+        sequence.extend([int(fill_type)] * (int(n_wafer) - len(sequence)))
+    return sequence[: int(n_wafer)]
 
 
 
@@ -204,14 +275,30 @@ def build_net(
         )
 
     route_entry = dict((route_config.get("routes") or {}).get(selected_route_name) or {})
-    route_ir = compile_route_stages(
-        route_name=selected_route_name,
-        route_cfg=route_entry,
-        source_name=source_name,
-        sink_name=sink_name,
-        chamber_kind_map=chamber_kind_map,
-        robots=robots_cfg,
-    )
+    subpaths_cfg_raw = route_entry.get("subpaths")
+    route_irs_by_name: Dict[str, RouteIR] = {}
+    if isinstance(subpaths_cfg_raw, Mapping) and subpaths_cfg_raw:
+        for subpath_name, subpath_cfg in subpaths_cfg_raw.items():
+            name = str(subpath_name)
+            route_irs_by_name[name] = compile_route_stages(
+                route_name=f"{selected_route_name}:{name}",
+                route_cfg=dict(subpath_cfg or {}),
+                source_name=source_name,
+                sink_name=sink_name,
+                chamber_kind_map=chamber_kind_map,
+                robots=robots_cfg,
+            )
+    else:
+        route_irs_by_name["default"] = compile_route_stages(
+            route_name=selected_route_name,
+            route_cfg=route_entry,
+            source_name=source_name,
+            sink_name=sink_name,
+            chamber_kind_map=chamber_kind_map,
+            robots=robots_cfg,
+        )
+    default_subpath_name = next(iter(route_irs_by_name.keys()))
+    route_ir = route_irs_by_name[default_subpath_name]
 
     ctx = obs_config or {}
     clean_dur_default = int(ctx.get("cleaning_duration", 150))
@@ -228,6 +315,30 @@ def build_net(
     )
     chamber_blocks = preprocess_result.chamber_blocks
     buffer_names = preprocess_result.buffer_names
+    if len(route_irs_by_name) >= 2:
+        for subpath_name, subpath_ir in route_irs_by_name.items():
+            for stage in subpath_ir.stages:
+                is_process_stage = str(stage.stage_type) == "process"
+                for chamber_name in stage.candidates:
+                    if chamber_name in {source_name, sink_name}:
+                        continue
+                    block = chamber_blocks.get(str(chamber_name))
+                    if block is None:
+                        continue
+                    if stage.stage_process_time is not None:
+                        p_val = float(stage.stage_process_time)
+                        if (not is_process_stage) or p_val > 0:
+                            new_ptime = int(round(p_val))
+                            if block.process_time > 0 and new_ptime > 0 and block.process_time != new_ptime:
+                                raise ValueError(
+                                    f"route {selected_route_name} subpath {subpath_name} has conflicting process_time "
+                                    f"for {chamber_name}: {block.process_time} vs {new_ptime}"
+                                )
+                            block.process_time = int(new_ptime)
+                    if stage.stage_cleaning_duration is not None:
+                        block.cleaning_duration = int(stage.stage_cleaning_duration)
+                    if stage.stage_cleaning_trigger_wafers is not None:
+                        block.cleaning_trigger_wafers = int(stage.stage_cleaning_trigger_wafers)
 
     static_topology = get_topology()
     id2p_name = list(static_topology["id2p_name"])
@@ -238,7 +349,8 @@ def build_net(
     transition_id: Dict[Tuple[str, str], str] = dict(static_topology["transition_id"])
 
     # ===== 根据路径信息动态选择变迁 =====
-    route_source_target_transport = _build_route_source_target_transport(route_ir)
+    route_ir_list = list(route_irs_by_name.values())
+    route_source_target_transport = _merge_route_source_target_transport(route_ir_list)
     active_u_names: Set[str] = set()
     active_t_names: Set[str] = set()
     for (src, dst), transport in route_source_target_transport.items():
@@ -269,11 +381,49 @@ def build_net(
     t_count = len(id2t_name)
 
     # ======= 构造晶圆路由队列 ===========
-    _, t_route_code_map, token_route_queue, token_plan = build_token_route_queue(
-        route_ir=route_ir,
-        id2t_name=id2t_name,
-        t_target_place=t_target_place,
-    )
+    token_route_queue_templates: Dict[str, Tuple[object, ...]] = {}
+    token_route_plan_templates: Dict[str, Any] = {}
+    token_route_queue_by_type: Dict[int, Tuple[object, ...]] = {}
+    token_route_type_sequence: List[int] = [1 for _ in range(int(n_wafer))]
+    subpath_to_type: Dict[str, int] = {default_subpath_name: 1}
+    wafer_type_to_subpath: Dict[int, str] = {1: default_subpath_name}
+    wafer_type_alloc_by_type: Dict[int, int] = {1: int(n_wafer)}
+    lp_release_pattern_types: Tuple[int, ...] = tuple()
+    if len(route_irs_by_name) >= 2:
+        multi_payload = build_token_route_queue_multi(
+            route_irs=route_irs_by_name,
+            id2t_name=id2t_name,
+            t_target_place=t_target_place,
+            wafer_type_alloc=dict(route_entry.get("wafer_type_alloc") or {}),
+            lp_release_pattern=list(route_entry.get("lp_release_pattern") or []),
+        )
+        t_route_code_map = dict(multi_payload["t_route_code_map"])
+        token_route_queue = tuple(multi_payload["token_route_queue_template"])
+        token_plan = multi_payload["token_route_plan_template"]
+        token_route_queue_templates = dict(multi_payload["token_route_queue_templates"])
+        token_route_plan_templates = dict(multi_payload["token_route_plan_templates"])
+        subpath_to_type = dict(multi_payload["subpath_to_type"])
+        wafer_type_to_subpath = dict(multi_payload["wafer_type_to_subpath"])
+        wafer_type_alloc_by_type = dict(multi_payload["wafer_type_alloc_by_type"])
+        lp_release_pattern_types = tuple(multi_payload["lp_release_pattern_types"])
+        token_route_queue_by_type = {
+            int(type_id): tuple(token_route_queue_templates[subpath_name])
+            for type_id, subpath_name in wafer_type_to_subpath.items()
+        }
+        token_route_type_sequence = _build_token_type_sequence(
+            n_wafer=int(n_wafer),
+            wafer_type_alloc_by_type=wafer_type_alloc_by_type,
+            lp_release_pattern_types=lp_release_pattern_types,
+        )
+    else:
+        _, t_route_code_map, token_route_queue, token_plan = build_token_route_queue(
+            route_ir=route_ir,
+            id2t_name=id2t_name,
+            t_target_place=t_target_place,
+        )
+        token_route_queue_templates = {default_subpath_name: tuple(token_route_queue)}
+        token_route_plan_templates = {default_subpath_name: token_plan}
+        token_route_queue_by_type = {1: tuple(token_route_queue)}
 
     p_idx = {name: i for i, name in enumerate(id2p_name)}
 
@@ -284,6 +434,8 @@ def build_net(
         chamber_blocks=chamber_blocks,
         n_wafer=n_wafer,
         token_route_queue=token_route_queue,
+        token_route_queue_by_type=token_route_queue_by_type,
+        token_route_type_sequence=token_route_type_sequence,
         obs_config=obs_config,
         ttime=ttime,
     )
@@ -296,8 +448,30 @@ def build_net(
     ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
 
     route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
+    if len(route_irs_by_name) >= 2:
+        for subpath_name, subpath_ir in route_irs_by_name.items():
+            sub_meta = build_route_meta_from_route_ir(subpath_ir, buffer_names=buffer_names or BUFFER_NAMES)
+            for src, tgts in (sub_meta.get("u_targets") or {}).items():
+                arr = route_meta["u_targets"].setdefault(str(src), [])
+                for dst in list(tgts):
+                    if dst not in arr:
+                        arr.append(dst)
+        route_meta["multi_subpath"] = True
+    else:
+        route_meta["multi_subpath"] = False
     has_repeat_syntax_reentry = any(stage.repeat_origin is not None for stage in route_ir.stages)
     route_meta["has_repeat_syntax_reentry"] = bool(has_repeat_syntax_reentry)
+    route_meta["subpath_to_type"] = subpath_to_type
+    route_meta["wafer_type_to_subpath"] = wafer_type_to_subpath
+    route_meta["wafer_type_alloc_by_type"] = wafer_type_alloc_by_type
+    route_meta["lp_release_pattern_types"] = list(lp_release_pattern_types)
+    route_meta["takt_policy"] = str(route_entry.get("takt_policy", "") or "")
+    route_meta["takt_stages_override"] = list(route_entry.get("takt_stages_override") or [])
+    route_meta["default_subpath"] = str(default_subpath_name)
+    route_meta["subpath_route_stages"] = {
+        str(name): [list(stage.candidates) for stage in ir.stages[1:-1]]
+        for name, ir in route_irs_by_name.items()
+    }
     full_timeline_chambers = tuple(
         name for name in id2p_name
         if (name.startswith("PM") or name in {"LLC", "LLD"})
@@ -339,6 +513,10 @@ def build_net(
         "route_source_target_transport": route_source_target_transport,
         "token_route_queue_template": token_route_queue,
         "token_route_plan_template": token_plan,
+        "token_route_queue_templates": token_route_queue_templates,
+        "token_route_plan_templates": token_route_plan_templates,
+        "token_route_queue_templates_by_type": token_route_queue_by_type,
+        "token_route_type_sequence": token_route_type_sequence,
         "route_ir": route_ir,
         "process_time_map": process_time_map_out,
         "fixed_topology": True,

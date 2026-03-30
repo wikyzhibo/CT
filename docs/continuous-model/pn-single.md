@@ -92,6 +92,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-30: A 方案级联路线配置新增 `4-8/4-9` 双子路径模式：路线条目可携带 `subpaths`、`wafer_type_alloc`、`takt_policy`，其中 `4-8` 额外支持 `takt_stages_override=[3000,180]` 与 `lp_release_pattern=["path1","path2","path2","path2","path2"]`。A 方案 `ClusterTool` 的 `u_LP` 门控改为 LP token 负 `stay_time` 倒计时，并在双类型场景按类型队首独立判定可发；若无 pattern 且两类型同刻可发，则随机选择一种发片。
 - 2026-03-27: 修复共享目标集的“全局严格轮转”口径：当多个 source（如 `PM7/PM8`）拥有相同并行目标集合（如 `PM9/PM10`）时，共享同一个 round-robin 指针（owner 同步），避免出现 `PM9,PM9,PM10,PM10` 的成对输出。
 - 2026-03-27: 修复严格轮转口径：`get_action_mask` 对并行 gate 的 `t_*` 放行改为优先按 token 的 `last_u_source` 对应 round-robin 指针单点判定，不再仅按 `_cascade_round_robin_next.values()` 集合判定，避免同一步同时放行 `PM9/PM10` 导致非严格 robin。
 - 2026-03-27: 修复 `PM7/PM8 -> PM9/PM10` 共享目标集场景的 round-robin 推进来源判定：`u_*` 会把 source 写入 `token.last_u_source`，`t_*` 发射后优先按该 source 推进对应指针，避免按“首个匹配 source”推进导致 `PM10` 长期被 gate 屏蔽。

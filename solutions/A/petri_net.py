@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
@@ -276,29 +277,35 @@ class ClusterTool:
                 name: str((spec or {}).get("kind", "process"))
                 for name, spec in _cfg_chambers.items()
             }
-            _normalized = normalize_route_spec(
-                route_name=_rn,
-                route_cfg=dict(_routes.get(_rn) or {}),
-                source_name=_source_name,
-                sink_name=_sink_name,
-                chamber_kind_map=_kind_map,
-            )
-            (
-                self._route_stage_proc_time_map,
-                self._route_stage_cleaning_duration_map,
-                self._route_stage_cleaning_trigger_map,
-            ) = self._extract_route_stage_overrides(
-                _normalized,
-                _rn,
-                _source_name,
-                _sink_name,
-            )
-            for stage in _normalized[1:-1]:
-                self._route_stages.append(list(stage.candidates))
-                if str(stage.stage_type) != "buffer":
-                    for name in stage.candidates:
-                        if name not in _route_chambers:
-                            _route_chambers.append(name)
+            _route_entry = dict(_routes.get(_rn) or {})
+            _subpaths = _route_entry.get("subpaths")
+            if isinstance(_subpaths, dict) and _subpaths:
+                # 多子路径路由由 build_net 返回的 route_meta 统一提供阶段信息。
+                self._route_stages = []
+            else:
+                _normalized = normalize_route_spec(
+                    route_name=_rn,
+                    route_cfg=_route_entry,
+                    source_name=_source_name,
+                    sink_name=_sink_name,
+                    chamber_kind_map=_kind_map,
+                )
+                (
+                    self._route_stage_proc_time_map,
+                    self._route_stage_cleaning_duration_map,
+                    self._route_stage_cleaning_trigger_map,
+                ) = self._extract_route_stage_overrides(
+                    _normalized,
+                    _rn,
+                    _source_name,
+                    _sink_name,
+                )
+                for stage in _normalized[1:-1]:
+                    self._route_stages.append(list(stage.candidates))
+                    if str(stage.stage_type) != "buffer":
+                        for name in stage.candidates:
+                            if name not in _route_chambers:
+                                _route_chambers.append(name)
             self.single_route_name = self._selected_single_route_name
             self.config.single_route_name = self._selected_single_route_name
 
@@ -367,6 +374,26 @@ class ClusterTool:
         self._release_chain_by_u = dict(route_meta.get("release_chain_by_u", {}))
         self._system_entry_places = set(route_meta.get("system_entry_places", set()))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
+        self._multi_subpath = bool(route_meta.get("multi_subpath", False))
+        self._subpath_to_type: Dict[str, int] = {
+            str(k): int(v) for k, v in dict(route_meta.get("subpath_to_type") or {}).items()
+        }
+        self._wafer_type_to_subpath: Dict[int, str] = {
+            int(k): str(v) for k, v in dict(route_meta.get("wafer_type_to_subpath") or {}).items()
+        }
+        self._wafer_type_alloc_by_type: Dict[int, int] = {
+            int(k): int(v) for k, v in dict(route_meta.get("wafer_type_alloc_by_type") or {}).items()
+        }
+        self._lp_release_pattern_types: Tuple[int, ...] = tuple(
+            int(x) for x in list(route_meta.get("lp_release_pattern_types") or [])
+        )
+        self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
+        self._takt_stages_override: List[Any] = list(route_meta.get("takt_stages_override") or [])
+        self._default_subpath: str = str(route_meta.get("default_subpath", "") or "")
+        self._subpath_route_stages: Dict[str, List[List[str]]] = {
+            str(name): [list(stage) for stage in list(stages or [])]
+            for name, stages in dict(route_meta.get("subpath_route_stages") or {}).items()
+        }
         self._ready_chambers = tuple(route_meta.get("chambers", ()))
         self._single_process_chambers = self.chambers
 
@@ -376,6 +403,13 @@ class ClusterTool:
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
+        self._token_route_queue_templates_by_type: Dict[int, Tuple[object, ...]] = {
+            int(k): tuple(v)
+            for k, v in dict(info.get("token_route_queue_templates_by_type") or {}).items()
+        }
+        self._token_route_type_sequence: List[int] = [
+            int(x) for x in list(info.get("token_route_type_sequence") or [])
+        ]
         self._t_target_place_map: Dict[str, str] = dict(info.get("t_target_place_map") or {})
         self._route_source_target_transport: Dict[Tuple[str, str], str] = dict(
             info.get("route_source_target_transport") or {}
@@ -459,9 +493,18 @@ class ClusterTool:
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
-        self._takt_result: Optional[Dict[str, Any]] = self._compute_takt_result()
+        self._takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = self._compute_takt_results_by_type()
+        self._takt_result: Optional[Dict[str, Any]] = self._takt_result_by_type.get(1)
+        if self._takt_result is None and self._takt_result_by_type:
+            self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
+        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
+        if not all_types:
+            all_types = {1}
+        self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
+        self._pending_lp_release_type: Optional[int] = None
+        self._lp_release_pattern_idx: int = 0
         self._training = True
         self._profiling_enabled = True
         self._step_profile = {
@@ -702,9 +745,18 @@ class ClusterTool:
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
-        self._takt_result = self._compute_takt_result()
+        self._takt_result_by_type = self._compute_takt_results_by_type()
+        self._takt_result = self._takt_result_by_type.get(1)
+        if self._takt_result is None and self._takt_result_by_type:
+            self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
+        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
+        if not all_types:
+            all_types = {1}
+        self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
+        self._pending_lp_release_type = None
+        self._lp_release_pattern_idx = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in {"LP", "LP_done"}:
@@ -1051,7 +1103,10 @@ class ClusterTool:
                     if sync_tgt is not None:
                         self._rr_set_next(src0, sync_tgt)
 
-            tok = pre_place.pop_head()
+            if t_name.startswith("u_") and pre_place.name == "LP":
+                tok = self._pop_lp_token_for_release(self._pending_lp_release_type)
+            else:
+                tok = pre_place.pop_head()
             wafer_id = tok.token_id
             self._track_leave(tok, pre_place.name)
             tok.enter_time = self.time
@@ -1155,10 +1210,17 @@ class ClusterTool:
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
             if t_name.startswith("u_LP_"):
+                released_type = int(getattr(tok, "route_type", 1) or 1)
                 self.entered_wafer_count += 1
                 self._last_u_LP_fire_time = int(start_time)
                 self._u_LP_release_count += 1
-                self._arm_lp_head_with_takt_delay()
+                self._u_LP_release_count_by_type[released_type] = (
+                    int(self._u_LP_release_count_by_type.get(released_type, 0)) + 1
+                )
+                if self._lp_release_pattern_types:
+                    self._lp_release_pattern_idx += 1
+                self._arm_lp_head_with_takt_delay(released_type)
+                self._pending_lp_release_type = None
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -1302,17 +1364,54 @@ class ClusterTool:
             return None
         return target
 
+    def _lp_type_head_tokens(self) -> Dict[int, BasedToken]:
+        lp_place = self._place_by_name.get("LP")
+        if lp_place is None:
+            return {}
+        heads: Dict[int, BasedToken] = {}
+        for tok in lp_place.tokens:
+            t_id = int(getattr(tok, "route_type", 1) or 1)
+            if t_id not in heads:
+                heads[t_id] = tok
+        return heads
+
+    def _peek_lp_token_by_type(self, route_type: int) -> Optional[BasedToken]:
+        return self._lp_type_head_tokens().get(int(route_type))
+
+    def _lp_releasable_types(self) -> List[int]:
+        heads = self._lp_type_head_tokens()
+        if not heads:
+            return []
+        return sorted([int(tid) for tid, tok in heads.items() if int(tok.stay_time) >= 0])
+
+    def _select_lp_release_type(self, releasable_types: Sequence[int]) -> Optional[int]:
+        if not releasable_types:
+            return None
+        available = [int(t) for t in releasable_types]
+        if self._lp_release_pattern_types:
+            expected = int(
+                self._lp_release_pattern_types[
+                    self._lp_release_pattern_idx % len(self._lp_release_pattern_types)
+                ]
+            )
+            return expected if expected in available else None
+        if len(available) == 1:
+            return int(available[0])
+        return int(np.random.choice(np.array(available, dtype=int)))
+
     def _allow_start(self):
-        """returns True if u_LP can fire now, based on WIP and LP head gate."""
+        """returns True if u_LP can fire now, based on WIP and per-type LP head gate."""
+        self._pending_lp_release_type = None
         if not int(self.entered_wafer_count) < int(self.max_wafers_in_system):
             return False
-        lp_place = self._place_by_name.get("LP")
-        if lp_place is None or len(lp_place.tokens) == 0:
+        releasable = self._lp_releasable_types()
+        selected = self._select_lp_release_type(releasable)
+        if selected is None:
             return False
-        # LP 队首 token 负 stay_time 表示尚在节拍倒计时，>=0 才允许发片。
-        return int(lp_place.tokens[0].stay_time) >= 0
+        self._pending_lp_release_type = int(selected)
+        return True
 
-    def _takt_required_interval(self) -> Optional[int]:
+    def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
         返回下一次允许 u_LP 发片的最小间隔（秒）。
 
@@ -1321,10 +1420,19 @@ class ClusterTool:
         - 第 2 片（release_count=1）使用 cycle[0]（100 拍的第 1 个拍子）
         - 第 3 片起（release_count>=2）按序推进（idx=1,2,3...），必要时对 100 取模
         """
-        takt = self._takt_result
+        type_id = int(route_type if route_type is not None else 1)
+        policy = str(self._takt_policy or "").strip().lower()
+        if policy == "split_by_subpath":
+            takt = self._takt_result_by_type.get(type_id)
+            release_count = int(self._u_LP_release_count_by_type.get(type_id, 0))
+        else:
+            # shared / 默认：所有类型共用同一条 takt_cycle，索引按全局发片计数推进。
+            takt = self._takt_result_by_type.get(type_id)
+            if takt is None and self._takt_result_by_type:
+                takt = next(iter(self._takt_result_by_type.values()))
+            release_count = int(self._u_LP_release_count)
         if not takt:
             return None
-        release_count = int(self._u_LP_release_count)
         if release_count <= 0:
             return None
 
@@ -1349,22 +1457,40 @@ class ClusterTool:
             required = 0
         return required
 
-    def _arm_lp_head_with_takt_delay(self) -> None:
+    def _arm_lp_head_with_takt_delay(self, route_type: Optional[int]) -> None:
         """
         每次 u_LP 发射后，仅给新的 LP 队首 token 写入节拍倒计时（负 stay_time）。
         这样下一片的等待起点是“上一片实际发射时刻”，可严格保证发片间隔。
         """
-        lp_place = self._place_by_name.get("LP")
-        if lp_place is None or len(lp_place.tokens) == 0:
+        type_id = int(route_type if route_type is not None else 1)
+        head = self._peek_lp_token_by_type(type_id)
+        if head is None:
             return
-        required = self._takt_required_interval()
-        head = lp_place.tokens[0]
+        required = self._takt_required_interval(type_id)
         if required is None:
             if int(head.stay_time) < 0:
                 head.stay_time = 0
             return
         required_int = max(0, int(required))
         head.stay_time = -required_int
+
+    def _pop_lp_token_for_release(self, preferred_type: Optional[int]) -> BasedToken:
+        lp_place = self._place_by_name.get("LP")
+        if lp_place is None or len(lp_place.tokens) == 0:
+            raise RuntimeError("LP has no token to release")
+        if preferred_type is None:
+            return lp_place.pop_head()
+        target_type = int(preferred_type)
+        for idx, tok in enumerate(lp_place.tokens):
+            if int(getattr(tok, "route_type", 1) or 1) != target_type:
+                continue
+            if idx == 0:
+                return lp_place.pop_head()
+            token_list = list(lp_place.tokens)
+            picked = token_list.pop(idx)
+            lp_place.tokens = deque(token_list)
+            return picked
+        return lp_place.pop_head()
 
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
@@ -1517,6 +1643,8 @@ class ClusterTool:
         analyzer 内部会统一把每道工序处理时间按「工序时长 + 运输时间」计入节拍。
         失败或无可分析工序时返回 None。
         """
+        if not self._route_stages:
+            return None
         self._validate_takt_stage_inputs()
         if self._has_repeat_syntax_reentry:
             horizon = int(TAKT_HORIZON)
@@ -1531,8 +1659,14 @@ class ClusterTool:
                 return build_fixed_takt_result(self.route4_takt_interval)
             return None
 
+        return self._compute_takt_result_from_stage_lists(self._route_stages)
+
+    def _compute_takt_result_from_stage_lists(
+        self,
+        route_stages: Sequence[Sequence[str]],
+    ) -> Optional[Dict[str, Any]]:
         analyzer_stages: List[Dict[str, Any]] = []
-        for i, stage in enumerate(self._route_stages):
+        for i, stage in enumerate(route_stages):
             if not stage:
                 continue
             stage_cfg = self._build_takt_stage(stage_idx=i, stage_places=list(stage))
@@ -1545,6 +1679,52 @@ class ClusterTool:
             return analyze_cycle(analyzer_stages, max_parts=10000)
         except Exception:
             return None
+
+    def _compute_takt_result_from_override(self) -> Optional[Dict[str, Any]]:
+        raw = list(self._takt_stages_override or [])
+        if not raw:
+            return None
+        analyzer_stages: List[Dict[str, Any]] = []
+        for i, item in enumerate(raw):
+            if isinstance(item, (int, float)):
+                p_val = int(round(float(item)))
+                m_val = 1
+            elif isinstance(item, dict):
+                p_val = int(round(float(item.get("p", 0) or 0)))
+                m_val = max(1, int(item.get("m", 1) or 1))
+            else:
+                continue
+            if p_val <= 0:
+                continue
+            analyzer_stages.append(
+                {"name": f"s{i + 1}", "p": int(p_val), "m": int(m_val), "q": None, "d": 0}
+            )
+        if not analyzer_stages:
+            return None
+        try:
+            return analyze_cycle(analyzer_stages, max_parts=10000)
+        except Exception:
+            return None
+
+    def _compute_takt_results_by_type(self) -> Dict[int, Optional[Dict[str, Any]]]:
+        if not self._multi_subpath:
+            return {1: self._compute_takt_result()}
+
+        all_types = sorted(set(self._wafer_type_to_subpath.keys()) or {1})
+        policy = str(self._takt_policy or "").strip().lower()
+        if policy == "split_by_subpath":
+            out: Dict[int, Optional[Dict[str, Any]]] = {}
+            for t_id in all_types:
+                subpath = self._wafer_type_to_subpath.get(int(t_id), "")
+                stages = self._subpath_route_stages.get(str(subpath), [])
+                out[int(t_id)] = self._compute_takt_result_from_stage_lists(stages)
+            return out
+
+        # shared / 默认：一套节拍给所有类型
+        shared = self._compute_takt_result_from_override()
+        if shared is None:
+            shared = self._compute_takt_result()
+        return {int(t_id): shared for t_id in all_types}
 
     @staticmethod
     def _clone_marks(marks: List[Place]) -> List[Place]:
@@ -1632,11 +1812,28 @@ class ClusterTool:
                         delta = 0
                     if best is None or delta < best:
                         best = delta
-        lp_place = self._place_by_name.get("LP")
-        if lp_place is not None and len(lp_place.tokens) > 0:
-            head_stay = int(lp_place.tokens[0].stay_time)
-            if head_stay < 0:
-                delta_takt = -head_stay
+        lp_heads = self._lp_type_head_tokens()
+        if lp_heads:
+            deltas: List[int] = []
+            if self._lp_release_pattern_types:
+                expect_type = int(
+                    self._lp_release_pattern_types[
+                        self._lp_release_pattern_idx % len(self._lp_release_pattern_types)
+                    ]
+                )
+                tok = lp_heads.get(expect_type)
+                if tok is not None and int(tok.stay_time) < 0:
+                    deltas.append(-int(tok.stay_time))
+                elif tok is not None:
+                    deltas.append(0)
+            else:
+                for tok in lp_heads.values():
+                    if int(tok.stay_time) < 0:
+                        deltas.append(-int(tok.stay_time))
+                    else:
+                        deltas.append(0)
+            if deltas:
+                delta_takt = min(deltas)
                 if best is None or delta_takt < best:
                     best = delta_takt
         return best
@@ -1858,10 +2055,12 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
-        # 优先检查 LP 出片：按当前指针目标动态选择 LP->TM2/TM3 的 u 变迁。
+        # 优先检查 LP 出片：按类型队首判定可发，并选择对应 LP->TM2/TM3 的 u 变迁。
         if self._allow_start():
-            lp_available, lp_target = self._is_next_stage_available("LP")
-            if lp_available and lp_target is not None:
+            selected_type = int(self._pending_lp_release_type or 0)
+            selected_tok = self._peek_lp_token_by_type(selected_type) if selected_type > 0 else None
+            lp_target = self._token_next_target(selected_tok) if selected_tok is not None else None
+            if lp_target is not None:
                 lp_transport = self._transport_for_t_target("LP", str(lp_target))
                 u_lp_idx = self._u_transition_by_source_transport.get(("LP", lp_transport))
                 if u_lp_idx is not None and _is_struct_enabled(int(u_lp_idx)):

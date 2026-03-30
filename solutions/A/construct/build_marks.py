@@ -84,16 +84,28 @@ class BuildMarksResult:
     process_time_map_out: Dict[str, int]
 
 
-def _add_token_to_source(n_wafer: int, place: Place, token_route_queue: Tuple[object, ...]) -> None:
+def _add_token_to_source(
+    n_wafer: int,
+    place: Place,
+    token_route_queue: Tuple[object, ...],
+    token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
+    token_route_type_sequence: Optional[Sequence[int]] = None,
+) -> None:
+    if token_route_type_sequence is not None and len(token_route_type_sequence) != int(n_wafer):
+        raise ValueError("token_route_type_sequence length must equal n_wafer")
     for tok_id in range(n_wafer):
+        route_type = int(token_route_type_sequence[tok_id]) if token_route_type_sequence is not None else 1
+        route_queue = token_route_queue
+        if token_route_queue_by_type is not None:
+            route_queue = tuple(token_route_queue_by_type.get(route_type) or token_route_queue)
         place.append(
             BasedToken(
                 enter_time=0,
                 token_id=tok_id,
-                route_type=1,
+                route_type=route_type,
                 step=0,
                 where=0,
-                route_queue=token_route_queue,
+                route_queue=route_queue,
                 route_head_idx=0,
             )
         )
@@ -107,6 +119,8 @@ def build_marks_for_single_net(
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
     n_wafer: int,
     token_route_queue: Tuple[object, ...],
+    token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
+    token_route_type_sequence: Optional[Sequence[int]] = None,
     obs_config: Optional[Mapping[str, Any]],
     ttime: int,
 ) -> BuildMarksResult:
@@ -191,7 +205,13 @@ def build_marks_for_single_net(
     ptime = np.array([int(p.processing_time) for p in marks], dtype=int)
 
     source_place = marks[p_idx[source_name]]
-    _add_token_to_source(n_wafer=n_wafer, place=source_place, token_route_queue=token_route_queue)
+    _add_token_to_source(
+        n_wafer=n_wafer,
+        place=source_place,
+        token_route_queue=token_route_queue,
+        token_route_queue_by_type=token_route_queue_by_type,
+        token_route_type_sequence=token_route_type_sequence,
+    )
 
     timeline_names = [
         name for name in id2p_name

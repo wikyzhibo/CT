@@ -8,6 +8,12 @@
 - **Why**：旧方案若提前给后续多片 token 预写累计负值（如第二片 `-180`、第三片 `-360`），在前片延后发射时会破坏“相邻发片最小间隔”约束。
 - **Impact**：首片保持可立即发射（初始 `stay_time=0`）；后续每片的等待起点变为“上一片实际发射时刻”，可严格保证节拍间隔。resident/Q-time 判定口径保持不变（仍作用于腔室与运输位）。
 
+### A 方案：4-8/4-9 支持双子路径、双类型晶圆与分策略节拍（2026-03-30）
+
+- **What changed**：`config/cluster_tool/cascade_routes_1_star.json` 新增 `routes.4-8` 与 `routes.4-9`，并引入增量字段：`subpaths`、`wafer_type_alloc`、`takt_policy`、`takt_stages_override`（4-8）与 `lp_release_pattern`（4-8，`path1,path2,path2,path2,path2`）。`solutions/A/construct/build_route_queue.py` 新增 `build_token_route_queue_multi`，对多子路径统一构造 `target_code_map/t_route_code_map`，并输出按子路径与按 wafer_type 的 queue/template。`solutions/A/model_builder.py` 在多子路径下按并集激活变迁，返回 `token_route_queue_templates_by_type`、`token_route_type_sequence` 及 route-level 元数据（`subpath_to_type`、`wafer_type_to_subpath`、`takt_policy` 等）。`solutions/A/construct/build_marks.py` 支持按类型初始化 LP token（`route_type + route_queue`）。
+- **Why**：4-8/4-9 同时存在两条子路径且需两种晶圆并行；原单模板 queue 与单路由节拍口径无法表达“按类型静态绑定子路径”与“按策略共享/拆分节拍”。
+- **Impact**：A 方案在 `single_route_name=4-8/4-9` 下可直接运行双子路径；4-8 使用共享节拍（含抽象 `3000/180` override）且 LP 发片按 pattern 循环；4-9 按子路径拆分节拍组，LP 同时可发时随机选类型（仍单步只发一片）。
+
 ## 2026-03-29
 
 ### A 方案并发环境：从 deprecated `Petri` 切到当前 `ClusterTool`（2026-03-29）
