@@ -271,7 +271,9 @@ class ClusterTool:
         _route_chambers: List[str] = []
         if self._selected_single_route_name is not None:
             _rn = str(self._selected_single_route_name)
-            _source_name = str((_cfg.get("source") or {}).get("name", "LP"))
+            _source_name = str((_cfg.get("source") or {}).get("name", "LP1"))
+            if _source_name == "LP":
+                _source_name = "LP1"
             _sink_name = str((_cfg.get("sink") or {}).get("name", "LP_done"))
             _kind_map = {
                 name: str((spec or {}).get("kind", "process"))
@@ -354,6 +356,8 @@ class ClusterTool:
             obs_config=obs_config,
             route_config=self.single_route_config,
             route_name=self._selected_single_route_name or self.single_route_name,
+            n_wafer_route1=getattr(self.config, "n_wafer_route1", None),
+            n_wafer_route2=getattr(self.config, "n_wafer_route2", None),
         )
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
@@ -398,6 +402,13 @@ class ClusterTool:
             str(name): [list(stage) for stage in list(stages or [])]
             for name, stages in dict(route_meta.get("subpath_route_stages") or {}).items()
         }
+        self._wafer_type_to_load_port: Dict[int, str] = {
+            int(k): str(v) for k, v in dict(route_meta.get("wafer_type_to_load_port") or {}).items()
+        }
+        self._load_port_names: Tuple[str, ...] = tuple(
+            str(x) for x in (route_meta.get("load_port_names") or ("LP1", "LP2"))
+        )
+        self._mask_skip_places: frozenset[str] = frozenset(self._load_port_names) | {"LP_done"}
         self._ready_chambers = tuple(route_meta.get("chambers", ()))
         self._single_process_chambers = self.chambers
 
@@ -542,6 +553,8 @@ class ClusterTool:
         self._obs_buffer: np.ndarray = np.zeros(0, dtype=np.float32)
         self._obs_return_copy: bool = True
         self._rebuild_place_cache()
+        # m0 恒为 0；真实 token 在 marks.deque，须与 reset 一致从 marks 同步，否则 LP u_* 的 struct 判定恒失败。
+        self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._init_obs_cache()
         self._build_transition_index()
         if not self._training:
@@ -773,7 +786,7 @@ class ClusterTool:
         self._lp_release_pattern_idx = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
-            if p.name not in {"LP", "LP_done"}:
+            if p.name not in self._mask_skip_places:
                 p.capacity = 1
                 self.k[idx] = 1
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
@@ -784,7 +797,7 @@ class ClusterTool:
         return None, enabled_t
 
     def _get_obs_place_order(self) -> List[str]:
-        """返回观测顺序：LP + 运输位 + 腔室。"""
+        """返回观测顺序：LP1/LP2 + 运输位 + 腔室。"""
         tm_names = ["TM2", "TM3"] if self.device_mode == "cascade" else ["TM1"]
         tm_names = [n for n in tm_names if n in self.id2p_name]
         candidates = list(self.chambers)
@@ -801,7 +814,8 @@ class ClusterTool:
             seen.add(name)
         if not chambers:
             chambers = ["PM1", "PM3", "PM4"]
-        return ["LP"] + tm_names + chambers
+        lp_names = [n for n in self._load_port_names if n in self.id2p_name]
+        return lp_names + tm_names + chambers
 
     def _rebuild_place_cache(self) -> None:
         self._place_by_name = {p.name: p for p in self.marks}
@@ -989,8 +1003,8 @@ class ClusterTool:
             if p_type != _SOURCE and safe_dt > 0:
                 for tok in tokens:
                     tok.stay_time += safe_dt
-            elif p_type == _SOURCE and safe_dt > 0 and p.name == "LP":
-                # LP 上仅推进负 stay_time（节拍倒计时），不累计正驻留时间。
+            elif p_type == _SOURCE and safe_dt > 0 and p.name in self._load_port_names:
+                # 装载口上仅推进负 stay_time（节拍倒计时），不累计正驻留时间。
                 for tok in tokens:
                     if tok.stay_time < 0:
                         tok.stay_time = min(0, int(tok.stay_time) + safe_dt)
@@ -1123,7 +1137,7 @@ class ClusterTool:
                     if sync_tgt is not None:
                         self._rr_set_next(src0, sync_tgt)
 
-            if t_name.startswith("u_") and pre_place.name == "LP":
+            if t_name.startswith("u_") and pre_place.name in self._load_port_names:
                 tok = self._pop_lp_token_for_release(self._pending_lp_release_type)
             else:
                 tok = pre_place.pop_head()
@@ -1234,7 +1248,7 @@ class ClusterTool:
             tok._place_idx = pst_place_idx
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
-            if t_name.startswith("u_LP_"):
+            if t_name.startswith("u_") and pre_place.name in self._load_port_names:
                 released_type = int(getattr(tok, "route_type", 1) or 1)
                 self.entered_wafer_count += 1
                 self._entered_wafer_count_by_type[released_type] = (
@@ -1462,14 +1476,15 @@ class ClusterTool:
         return target
 
     def _lp_type_head_tokens(self) -> Dict[int, BasedToken]:
-        lp_place = self._place_by_name.get("LP")
-        if lp_place is None:
-            return {}
         heads: Dict[int, BasedToken] = {}
-        for tok in lp_place.tokens:
-            t_id = int(getattr(tok, "route_type", 1) or 1)
-            if t_id not in heads:
-                heads[t_id] = tok
+        for lp_name in self._load_port_names:
+            lp_place = self._place_by_name.get(lp_name)
+            if lp_place is None:
+                continue
+            for tok in lp_place.tokens:
+                t_id = int(getattr(tok, "route_type", 1) or 1)
+                if t_id not in heads:
+                    heads[t_id] = tok
         return heads
 
     def _peek_lp_token_by_type(self, route_type: int) -> Optional[BasedToken]:
@@ -1604,22 +1619,27 @@ class ClusterTool:
             head.stay_time = -required_int
 
     def _pop_lp_token_for_release(self, preferred_type: Optional[int]) -> BasedToken:
-        lp_place = self._place_by_name.get("LP")
-        if lp_place is None or len(lp_place.tokens) == 0:
-            raise RuntimeError("LP has no token to release")
-        if preferred_type is None:
+        if preferred_type is not None:
+            lp_name = self._wafer_type_to_load_port.get(int(preferred_type), "LP1")
+            lp_place = self._place_by_name.get(lp_name)
+            if lp_place is None or len(lp_place.tokens) == 0:
+                raise RuntimeError(f"{lp_name} has no token to release")
+            target_type = int(preferred_type)
+            for idx, tok in enumerate(lp_place.tokens):
+                if int(getattr(tok, "route_type", 1) or 1) != target_type:
+                    continue
+                if idx == 0:
+                    return lp_place.pop_head()
+                token_list = list(lp_place.tokens)
+                picked = token_list.pop(idx)
+                lp_place.tokens = deque(token_list)
+                return picked
             return lp_place.pop_head()
-        target_type = int(preferred_type)
-        for idx, tok in enumerate(lp_place.tokens):
-            if int(getattr(tok, "route_type", 1) or 1) != target_type:
-                continue
-            if idx == 0:
+        for lp_name in self._load_port_names:
+            lp_place = self._place_by_name.get(lp_name)
+            if lp_place is not None and len(lp_place.tokens) > 0:
                 return lp_place.pop_head()
-            token_list = list(lp_place.tokens)
-            picked = token_list.pop(idx)
-            lp_place.tokens = deque(token_list)
-            return picked
-        return lp_place.pop_head()
+        raise RuntimeError("no load port has a token to release")
 
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
@@ -2193,7 +2213,6 @@ class ClusterTool:
                     self._qtime_violated_tokens.add(token_id)
                     self.qtime_violation_count += 1
 
-    _MASK_SKIP_PLACES = frozenset({"LP", "LP_done"})
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
 
     def get_action_mask(
@@ -2228,8 +2247,9 @@ class ClusterTool:
             selected_tok = self._peek_lp_token_by_type(selected_type) if selected_type > 0 else None
             lp_target = self._token_next_target(selected_tok) if selected_tok is not None else None
             if lp_target is not None:
-                lp_transport = self._transport_for_t_target("LP", str(lp_target))
-                u_lp_idx = self._u_transition_by_source_transport.get(("LP", lp_transport))
+                lp_src = self._wafer_type_to_load_port.get(int(selected_type), "LP1")
+                lp_transport = self._transport_for_t_target(lp_src, str(lp_target))
+                u_lp_idx = self._u_transition_by_source_transport.get((lp_src, lp_transport))
                 if u_lp_idx is not None and _is_struct_enabled(int(u_lp_idx)):
                     t_idx = int(u_lp_idx)
                     if 0 <= t_idx < total_actions:
@@ -2237,7 +2257,7 @@ class ClusterTool:
 
         has_ready_chamber = False
         ready_chambers = self._ready_chambers_set
-        skip = self._MASK_SKIP_PLACES
+        skip = self._mask_skip_places
         timed = self._MASK_TIMED_TYPES
         t_trans_by_transport = self._t_transitions_by_transport
         u_trans_by_source = self._u_transition_by_source

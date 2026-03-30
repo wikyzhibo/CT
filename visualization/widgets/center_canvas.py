@@ -158,8 +158,8 @@ class CenterCanvas(QGraphicsView):
             display_to_state = {name: name for name in positions}
             if self._robot_capacity == 2:
                 robot_chambers = {
-                    "TM2 ARM1": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LP", "LP_done"],
-                    "TM2 ARM2": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LP", "LP_done"],
+                    "TM2 ARM1": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
+                    "TM2 ARM2": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
                     "TM3 ARM1": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
                     "TM3 ARM2": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
                 }
@@ -171,7 +171,7 @@ class CenterCanvas(QGraphicsView):
                 }
             else:
                 robot_chambers = {
-                    "TM2 ARM": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LP", "LP_done"],
+                    "TM2 ARM": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
                     "TM3 ARM": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
                 }
                 self._robot_display_to_state = {"TM2 ARM": "TM2", "TM3 ARM": "TM3"}
@@ -207,7 +207,7 @@ class CenterCanvas(QGraphicsView):
     def _center_of_chambers(self, positions: dict, names: list, cw: float, ch: float) -> tuple[float, float]:
         """计算若干腔室网格中心的几何中心 (px)。"""
         xs, ys = [], []
-        alias = {"LP": "LLA", "LP_done": "LLB"}
+        alias = {"LP": "LLA", "LP1": "LLA", "LP2": "LLA", "LP_done": "LLB"}
         for name in names:
             key = name
             if key not in positions:

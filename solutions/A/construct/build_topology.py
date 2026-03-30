@@ -3,16 +3,41 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from results.paths import topology_cache_path
 
 
-_FIXED_CASCADE_TOPOLOGY_VERSION = 3
+_FIXED_CASCADE_TOPOLOGY_VERSION = 4
 _FIXED_CASCADE_PLACE_ORDER: Tuple[str, ...] = (
-    "LP","PM1","PM2","PM3","PM4",
-    "PM5","PM6","PM7","PM8","PM9","PM10",
-    "LLC","LLD","LP_done","TM2","TM3",
+    "LP1",
+    "LP2",
+    "PM1",
+    "PM2",
+    "PM3",
+    "PM4",
+    "PM5",
+    "PM6",
+    "PM7",
+    "PM8",
+    "PM9",
+    "PM10",
+    "LLC",
+    "LLD",
+    "LP_done",
+    "TM2",
+    "TM3",
 )
 _FIXED_CASCADE_SOURCES: Tuple[str, ...] = (
-    "LP","PM1","PM2","PM3","PM4",
-    "PM5","PM6","PM7","PM8","PM9",
-    "PM10","LLC","LLD",
+    "LP1",
+    "LP2",
+    "PM1",
+    "PM2",
+    "PM3",
+    "PM4",
+    "PM5",
+    "PM6",
+    "PM7",
+    "PM8",
+    "PM9",
+    "PM10",
+    "LLC",
+    "LLD",
 )
 _FIXED_CASCADE_TARGETS: Tuple[str, ...] = (
     "PM1","PM2","PM3","PM4","PM5",
@@ -21,7 +46,15 @@ _FIXED_CASCADE_TARGETS: Tuple[str, ...] = (
 )
 _FIXED_CASCADE_TRANSPORTS: Tuple[str, ...] = ("TM2", "TM3")
 _TM2_SCOPE: frozenset[str] = frozenset({
-    "LP", "PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LP_done",
+    "LP1",
+    "LP2",
+    "PM7",
+    "PM8",
+    "PM9",
+    "PM10",
+    "LLC",
+    "LLD",
+    "LP_done",
 })
 _TM3_SCOPE: frozenset[str] = frozenset({
     "PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LLC", "LLD",
@@ -67,7 +100,7 @@ def _build_topology() -> Dict[str, object]:
             id2t_name.append(t_name)
             u_edges.append((src, t_name, transport))
         for dst in _FIXED_CASCADE_TARGETS:
-            if dst not in scope or dst == "LP":
+            if dst not in scope or dst in ("LP1", "LP2"):
                 continue
             t_name = f"t_{transport}_{dst}"
             id2t_name.append(t_name)

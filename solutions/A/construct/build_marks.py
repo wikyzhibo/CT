@@ -24,7 +24,8 @@ CASCADE_TM2_TARGET_ORDER: Tuple[str, ...] = (
     "LLC",
     "LLD",
     "LP_done",
-    "LP",
+    "LP1",
+    "LP2",
 )
 CASCADE_TM3_TARGET_ORDER: Tuple[str, ...] = (
     "PM1",
@@ -42,6 +43,9 @@ CASCADE_TM2_TARGET_ONEHOT: Dict[str, int] = {
 CASCADE_TM3_TARGET_ONEHOT: Dict[str, int] = {
     name: idx for idx, name in enumerate(CASCADE_TM3_TARGET_ORDER)
 }
+
+CASCADE_TM2_ONEHOT_DIM: int = len(CASCADE_TM2_TARGET_ORDER)
+CASCADE_TM3_ONEHOT_DIM: int = len(CASCADE_TM3_TARGET_ORDER)
 
 @dataclass(slots=True)
 class BasedToken:
@@ -84,13 +88,18 @@ class BuildMarksResult:
     process_time_map_out: Dict[str, int]
 
 
-def _add_token_to_source(
+def _add_tokens_to_load_ports(
+    *,
     n_wafer: int,
-    place: Place,
+    marks: List[Place],
+    p_idx: Mapping[str, int],
+    lp_per_token: Sequence[str],
     token_route_queue: Tuple[object, ...],
     token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
 ) -> None:
+    if len(lp_per_token) != int(n_wafer):
+        raise ValueError("lp_per_token length must equal n_wafer")
     if token_route_type_sequence is not None and len(token_route_type_sequence) != int(n_wafer):
         raise ValueError("token_route_type_sequence length must equal n_wafer")
     for tok_id in range(n_wafer):
@@ -98,6 +107,8 @@ def _add_token_to_source(
         route_queue = token_route_queue
         if token_route_queue_by_type is not None:
             route_queue = tuple(token_route_queue_by_type.get(route_type) or token_route_queue)
+        lp_name = str(lp_per_token[tok_id])
+        place = marks[p_idx[lp_name]]
         place.append(
             BasedToken(
                 enter_time=0,
@@ -121,6 +132,7 @@ def build_marks_for_single_net(
     token_route_queue: Tuple[object, ...],
     token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
+    lp_per_token: Optional[Sequence[str]] = None,
     obs_config: Optional[Mapping[str, Any]],
     ttime: int,
 ) -> BuildMarksResult:
@@ -130,9 +142,17 @@ def build_marks_for_single_net(
     d_res = int(ctx.get("D_Residual_time", 10))
     scrap_clip = float(ctx.get("scrap_clip_threshold", 20.0))
 
+    load_ports = ("LP1", "LP2")
+    if lp_per_token is None:
+        lp_per_token = tuple(source_name for _ in range(int(n_wafer)))
+    counts: Dict[str, int] = {}
+    for lp_name in lp_per_token:
+        s = str(lp_name)
+        counts[s] = counts.get(s, 0) + 1
+
     marks: List[Place] = []
     for name in id2p_name:
-        if name == source_name or name == sink_name:
+        if name in load_ports or name == sink_name:
             ptype = SOURCE
         elif name in {"TM2", "TM3"}:
             ptype = ROBOT
@@ -140,8 +160,8 @@ def build_marks_for_single_net(
             kind = chamber_blocks.get(name).kind if name in chamber_blocks else "process"
             ptype = 5 if kind in {"buffer", "loadlock"} else CHAMBER
 
-        place_capacity = 100 if name in {source_name, sink_name} else 1
-        if name == source_name or name == sink_name:
+        place_capacity = 100 if name in load_ports or name == sink_name else 1
+        if name in load_ports or name == sink_name:
             proc_time = 0
         elif name in {"TM2", "TM3"}:
             proc_time = int(ttime)
@@ -149,8 +169,15 @@ def build_marks_for_single_net(
             proc_time = int(chamber_blocks.get(name).process_time if name in chamber_blocks else 0)
 
         if obs_config is not None:
-            if name == source_name:
-                place = SR(name=name, capacity=100, processing_time=0, type=SOURCE, n_wafer=n_wafer)
+            if name in load_ports:
+                n_here = int(counts.get(name, 0))
+                place = SR(
+                    name=name,
+                    capacity=100,
+                    processing_time=0,
+                    type=SOURCE,
+                    n_wafer=max(1, n_here),
+                )
             elif name == sink_name:
                 place = SR(name=name, capacity=100, processing_time=0, type=SOURCE)
             elif name == "TM2":
@@ -162,7 +189,7 @@ def build_marks_for_single_net(
                     type=ROBOT,
                     D_Residual_time=d_res,
                     target_onehot_map=tm_map,
-                    onehot_dim=8,
+                    onehot_dim=CASCADE_TM2_ONEHOT_DIM,
                 )
             elif name == "TM3":
                 tm_map = dict(CASCADE_TM3_TARGET_ONEHOT)
@@ -173,7 +200,7 @@ def build_marks_for_single_net(
                     type=ROBOT,
                     D_Residual_time=d_res,
                     target_onehot_map=tm_map,
-                    onehot_dim=8,
+                    onehot_dim=CASCADE_TM3_ONEHOT_DIM,
                 )
             elif ptype == 5:
                 place = LL(name=name, capacity=place_capacity, processing_time=proc_time, type=ptype)
@@ -199,15 +226,18 @@ def build_marks_for_single_net(
 
     m0 = np.zeros(len(id2p_name), dtype=int)
     md = m0.copy()
-    md[p_idx[source_name]] = 0
+    for lp in load_ports:
+        if lp in p_idx:
+            md[p_idx[lp]] = 0
     md[p_idx[sink_name]] = int(n_wafer)
     capacity = np.array([int(p.capacity) for p in marks], dtype=int)
     ptime = np.array([int(p.processing_time) for p in marks], dtype=int)
 
-    source_place = marks[p_idx[source_name]]
-    _add_token_to_source(
+    _add_tokens_to_load_ports(
         n_wafer=n_wafer,
-        place=source_place,
+        marks=marks,
+        p_idx=p_idx,
+        lp_per_token=lp_per_token,
         token_route_queue=token_route_queue,
         token_route_queue_by_type=token_route_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,

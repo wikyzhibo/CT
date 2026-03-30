@@ -163,6 +163,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
             targets = {c for c, t in trigger_map.items() if int(t) > 0}
         else:
             targets = set(getattr(self.net, "cleaning_targets", {"PM3", "PM4"}))
+        cascade_lp_slots: List[Tuple[int, Place, List[WaferState]]] = []
         for idx, place in enumerate(self.net.marks):
             wafers = [
                 WaferState(
@@ -194,6 +195,10 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 )
                 continue
 
+            if self.device_mode == "cascade" and place.name in ("LP1", "LP2"):
+                cascade_lp_slots.append((idx, place, wafers))
+                continue
+
             display_name = place.name
             if self.device_mode == "cascade":
                 if place.name == "LP":
@@ -220,6 +225,43 @@ class PetriSingleAdapter(AlgorithmAdapter):
                     capacity=int(place.capacity),
                     wafers=wafers,
                     proc_time=float(place.processing_time),
+                    status=status,
+                    chamber_type=chamber_type,
+                    cleaning_remaining=cleaning_remaining,
+                    inbound_blocked=is_cleaning,
+                    cleaning_wafer_countdown=countdown,
+                )
+            )
+        if self.device_mode == "cascade" and cascade_lp_slots:
+            merged_w: List[WaferState] = []
+            for _, _, ws in cascade_lp_slots:
+                merged_w.extend(ws)
+            cap_sum = sum(int(p.capacity) for _, p, _ in cascade_lp_slots)
+            idx0, place0, _ = cascade_lp_slots[0]
+            release_schedule["LLA"] = []
+            for n in ("LP1", "LP2"):
+                release_schedule["LLA"].extend(release_schedule.pop(n, []))
+            display_name = "LLA"
+            chamber_type = "disabled" if display_name in self.disabled_chambers else "processing"
+            status = self._calc_status(place0.name, merged_w, chamber_type)
+            is_cleaning = bool(getattr(place0, "is_cleaning", False))
+            cleaning_remaining = float(getattr(place0, "cleaning_remaining", 0.0))
+            if is_cleaning:
+                status = "cleaning"
+            processed = int(getattr(place0, "processed_wafer_count", 0))
+            if trigger_map is not None:
+                chamber_trigger = int(trigger_map.get(place0.name, 0))
+                countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
+            else:
+                trigger = int(getattr(self.net, "cleaning_trigger_wafers", 2))
+                countdown = max(0, trigger - processed) if place0.name in targets else -1
+            chambers.append(
+                ChamberState(
+                    name=display_name,
+                    place_idx=idx0,
+                    capacity=cap_sum,
+                    wafers=merged_w,
+                    proc_time=float(place0.processing_time),
                     status=status,
                     chamber_type=chamber_type,
                     cleaning_remaining=cleaning_remaining,

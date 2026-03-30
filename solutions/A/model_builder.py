@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -19,6 +20,7 @@ from solutions.A.construct.route_compiler_single import (
     RouteIR,
     build_route_meta_from_route_ir,
     compile_route_stages,
+    first_load_port_name,
 )
 
 BUFFER_NAMES: Set[str] = {"LLC", "LLD"}
@@ -37,6 +39,18 @@ def _build_route_source_target_transport(route_ir: RouteIR) -> Dict[Tuple[str, s
             for dst in dst_stage.candidates:
                 mapping[(str(src), str(dst))] = transport_name
     return mapping
+
+
+def _lp_per_token_for_route(
+    token_route_type_sequence: Sequence[int],
+    wafer_type_to_subpath: Mapping[int, str],
+    route_irs_by_name: Mapping[str, RouteIR],
+) -> Tuple[str, ...]:
+    out: List[str] = []
+    for t in token_route_type_sequence:
+        sp = wafer_type_to_subpath[int(t)]
+        out.append(first_load_port_name(route_irs_by_name[sp]))
+    return tuple(out)
 
 
 def _merge_route_source_target_transport(
@@ -224,6 +238,8 @@ def build_net(
     obs_config: Optional[Dict[str, Any]] = None,
     route_config: Optional[Mapping[str, Any]] = None,
     route_name: Optional[str] = None,
+    n_wafer_route1: Optional[int] = None,
+    n_wafer_route2: Optional[int] = None,
 ) -> Dict[str, object]:
     """
     构建 cascade-only 固定拓扑 Petri 网结构（route_config 驱动）。
@@ -247,14 +263,16 @@ def build_net(
     if route_config is None:
         raise ValueError("build_net requires route_config")
     process_time_map = dict(process_time_map or {})
-    source_cfg = dict(route_config.get("source") or {"name": "LP"})
+    source_cfg = dict(route_config.get("source") or {"name": "LP1"})
     sink_cfg = dict(route_config.get("sink") or {"name": "LP_done"})
-    source_name = str(source_cfg.get("name", "LP"))
+    source_name = str(source_cfg.get("name", "LP1"))
+    if source_name == "LP":
+        source_name = "LP1"
     sink_name = str(sink_cfg.get("name", "LP_done"))
-    if source_name != "LP" or sink_name != "LP_done":
-        raise ValueError(
-            "cascade fixed topology requires source=LP and sink=LP_done"
-        )
+    if sink_name != "LP_done":
+        raise ValueError("cascade fixed topology requires sink=LP_done")
+    if source_name not in ("LP1", "LP2"):
+        raise ValueError("cascade fixed topology requires source.name LP/LP1/LP2")
     selected_route_name = route_name
 
     chambers_cfg = dict(route_config.get("chambers") or {})
@@ -265,7 +283,9 @@ def build_net(
     robots_cfg_raw = dict(route_config.get("robots") or {})
     robots_cfg: Dict[str, CompiledRobotSpec] = {}
     for rb_name, rb in robots_cfg_raw.items():
-        managed = tuple(str(x) for x in (rb or {}).get("managed_chambers", ()))
+        managed = tuple(
+            "LP1" if str(x) == "LP" else str(x) for x in (rb or {}).get("managed_chambers", ())
+        )
         transport_place = str((rb or {}).get("transport_place", str(rb_name))).replace("d_", "")
         robots_cfg[str(rb_name)] = CompiledRobotSpec(
             name=str(rb_name),
@@ -278,12 +298,22 @@ def build_net(
     subpaths_cfg_raw = route_entry.get("subpaths")
     route_irs_by_name: Dict[str, RouteIR] = {}
     if isinstance(subpaths_cfg_raw, Mapping) and subpaths_cfg_raw:
-        for subpath_name, subpath_cfg in subpaths_cfg_raw.items():
+        subpath_items = list(subpaths_cfg_raw.items())
+        for idx, (subpath_name, subpath_cfg) in enumerate(subpath_items):
             name = str(subpath_name)
+            sub_raw = dict(subpath_cfg or {})
+            sub_source = str(sub_raw.pop("source_name", "") or "").strip()
+            if not sub_source:
+                if len(subpath_items) == 2:
+                    sub_source = "LP1" if idx == 0 else "LP2"
+                else:
+                    sub_source = source_name
+            if sub_source == "LP":
+                sub_source = "LP1"
             route_irs_by_name[name] = compile_route_stages(
                 route_name=f"{selected_route_name}:{name}",
-                route_cfg=dict(subpath_cfg or {}),
-                source_name=source_name,
+                route_cfg=sub_raw,
+                source_name=sub_source,
                 sink_name=sink_name,
                 chamber_kind_map=chamber_kind_map,
                 robots=robots_cfg,
@@ -320,7 +350,7 @@ def build_net(
             for stage in subpath_ir.stages:
                 is_process_stage = str(stage.stage_type) == "process"
                 for chamber_name in stage.candidates:
-                    if chamber_name in {source_name, sink_name}:
+                    if chamber_name in {"LP1", "LP2", sink_name}:
                         continue
                     block = chamber_blocks.get(str(chamber_name))
                     if block is None:
@@ -425,6 +455,24 @@ def build_net(
         token_route_plan_templates = {default_subpath_name: token_plan}
         token_route_queue_by_type = {1: tuple(token_route_queue)}
 
+    lp_per_token = _lp_per_token_for_route(
+        token_route_type_sequence=token_route_type_sequence,
+        wafer_type_to_subpath=wafer_type_to_subpath,
+        route_irs_by_name=route_irs_by_name,
+    )
+    c_lp = Counter(lp_per_token)
+    if n_wafer_route1 is not None and n_wafer_route2 is not None:
+        if int(n_wafer_route1) + int(n_wafer_route2) != int(n_wafer):
+            raise ValueError(
+                f"n_wafer_route1+n_wafer_route2 must equal n_wafer: "
+                f"{n_wafer_route1}+{n_wafer_route2}!={n_wafer}"
+            )
+        if c_lp.get("LP1", 0) != int(n_wafer_route1) or c_lp.get("LP2", 0) != int(n_wafer_route2):
+            raise ValueError(
+                f"LP token distribution {dict(c_lp)} does not match "
+                f"n_wafer_route1/2=({n_wafer_route1},{n_wafer_route2})"
+            )
+
     p_idx = {name: i for i, name in enumerate(id2p_name)}
 
     marks_result = build_marks_for_single_net(
@@ -436,6 +484,7 @@ def build_net(
         token_route_queue=token_route_queue,
         token_route_queue_by_type=token_route_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,
+        lp_per_token=lp_per_token,
         obs_config=obs_config,
         ttime=ttime,
     )
@@ -456,6 +505,9 @@ def build_net(
                 for dst in list(tgts):
                     if dst not in arr:
                         arr.append(dst)
+            rcb = sub_meta.get("release_chain_by_u") or {}
+            for k, v in rcb.items():
+                route_meta["release_chain_by_u"][k] = list(v)
         route_meta["multi_subpath"] = True
     else:
         route_meta["multi_subpath"] = False
@@ -478,6 +530,11 @@ def build_net(
     )
     route_meta["chambers"] = full_timeline_chambers
     route_meta["timeline_chambers"] = full_timeline_chambers
+    route_meta["wafer_type_to_load_port"] = {
+        int(tid): first_load_port_name(route_irs_by_name[sp])
+        for tid, sp in wafer_type_to_subpath.items()
+    }
+    route_meta["load_port_names"] = ("LP1", "LP2")
 
     pre_place_indices: List[np.ndarray] = [np.flatnonzero(pre[:, t] > 0) for t in range(t_count)]
     pst_place_indices: List[np.ndarray] = [np.flatnonzero(pst[:, t] > 0) for t in range(t_count)]
@@ -500,11 +557,11 @@ def build_net(
         "capacity": capacity,
         "id2p_name": id2p_name,
         "id2t_name": id2t_name,
-        "idle_idx": {"start": p_idx[source_name], "end": p_idx[sink_name]},
+        "idle_idx": {"start": p_idx["LP1"], "end": p_idx[sink_name]},
         "marks": marks,
         "n_wafer": n_wafer,
-        "n_wafer_route1": n_wafer,
-        "n_wafer_route2": 0,
+        "n_wafer_route1": int(c_lp.get("LP1", 0)),
+        "n_wafer_route2": int(c_lp.get("LP2", 0)),
         "single_route_code": route_code,
         "single_device_mode": mode,
         "route_meta": route_meta,

@@ -1,5 +1,8 @@
 MAX_TIME: 8000
-n_wafer: 6
+n_wafer: 13
+# 双子路径下若同时设置 n_wafer_route1 / n_wafer_route2，须与按 wafer 类型拆分后的 LP1/LP2 数量一致（如路线 4-12 与 n_wafer=13 时常为 4 与 9）。
+# n_wafer_route1: 4
+# n_wafer_route2: 9
 single_robot_capacity: 1
 device_mode: cascade
 time_coef_penalty: 8
@@ -13,7 +16,7 @@ release_event_penalty: 4
 wait_durations:
   - 5
 stop_on_scrap: true
-max_wafers_in_system: 6
+max_wafers_in_system: 3
 cleaning_enabled: false
 route4_takt_interval: 0
 single_route_config_path: cascade_routes_1_star.json

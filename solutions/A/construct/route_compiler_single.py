@@ -173,6 +173,26 @@ def _expand_sequence_nodes(
     return expanded
 
 
+def _alias_load_port_tokens(
+    cands: Tuple[str, ...],
+    source_name: str,
+) -> Tuple[str, ...]:
+    """JSON 中占位符 LP 在级联双装载口模式下映射为 LP1/LP2。"""
+    if source_name not in ("LP1", "LP2"):
+        return cands
+    return tuple(source_name if x == "LP" else x for x in cands)
+
+
+def first_load_port_name(route_ir: RouteIR) -> str:
+    """首段 source stage 中的装载口名（LP/LP1/LP2）。"""
+    for c in route_ir.stages[0].candidates:
+        if c in ("LP1", "LP2"):
+            return str(c)
+        if c == "LP":
+            return "LP1"
+    raise ValueError(f"route {route_ir.route_name} first stage has no LP/LP1/LP2 candidate")
+
+
 def _normalize_sequence(
     route_cfg: Mapping[str, Any]
 ) -> List[Tuple[Tuple[str, ...], Optional[str], int, Mapping[str, Any]]]:
@@ -202,6 +222,7 @@ def normalize_route_spec(
 
     stages: List[StageIR] = []
     for idx, (cands, rep_origin, rep_iter, payload) in enumerate(raw_seq):
+        cands = _alias_load_port_tokens(cands, source_name)
         if idx == 0:
             stage_type = "source"
         elif idx == len(raw_seq) - 1:
@@ -446,9 +467,12 @@ def build_route_meta_from_route_ir(
 
     system_entry_places = set(inner_stages[0]) if inner_stages else set()
 
+    lp_key = first_load_port_name(route_ir)
+    u_lp = f"u_{lp_key}"
+
     release_chain_by_u: Dict[str, List[str]] = {}
     if inner_stages:
-        release_chain_by_u["u_LP"] = [f"s{k}" for k in range(1, len(inner_stages) + 1)]
+        release_chain_by_u[u_lp] = [f"s{k}" for k in range(1, len(inner_stages) + 1)]
     for i, stage in enumerate(inner_stages):
         if len(stage) == 1 and stage[0] in buffer_set:
             u_name = f"u_{stage[0]}"
@@ -458,7 +482,7 @@ def build_route_meta_from_route_ir(
 
     # 兼容既有 release-chain 口径
     if len(inner_stages) >= 2 and len(inner_stages[1]) == 1 and inner_stages[1][0] in buffer_set:
-        release_chain_by_u["u_LP"] = ["s1", "s2"]
+        release_chain_by_u[u_lp] = ["s1", "s2"]
     if len(inner_stages) >= 4 and len(inner_stages[1]) == 1 and inner_stages[1][0] in buffer_set:
         release_chain_by_u["u_LLC"] = ["s3", "s4"]
     if len(inner_stages) >= 5:
