@@ -150,13 +150,13 @@
 
 <img src="C:\Users\khand\OneDrive\code\dqn\CT\plan\assets\training_metrics_plot21.png" alt="training_metrics_plot21" style="zoom:25%;" />
 
-![2-1](C:\Users\khand\OneDrive\code\dqn\CT\plan\assets\2-1.png)
+![2-1](plan\assets\2-1.png)
 
 ------
 
 **PM7/8(70s)->LLC(0s)->PM1/2(300s)->LLD(70s)**
 
-<img src="C:\Users\khand\OneDrive\code\dqn\CT\plan\assets\training_metrics_plot22.png" alt="training_metrics_plot22" style="zoom:25%;" />
+<img src="results\image\training_metrics_plot22.png" alt="training_metrics_plot22" style="zoom:25%;" />
 
 ![2-2](C:\Users\khand\OneDrive\code\dqn\CT\plan\assets\2-2.png)
 

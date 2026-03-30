@@ -9,6 +9,7 @@
   - 回放数据优先使用 `schema_version=2` 的序列结构。
   - 设备模式必须与模型/序列来源一致（single 或 cascade）。
   - `--concurrent` 只会在 `device=cascade` 下启用，并切换到 `Env_PN_Concurrent + PetriAdapter`。
+  - 当前 `Env_PN_Concurrent` 直接消费 `solutions.A.petri_net.ClusterTool` 的真实级联运行时，不再绑定 `deprecated.pn.Petri`。
 
 ## Scope
 - In:
@@ -21,9 +22,9 @@
 
 ## Architecture or Data Flow
 1. `visualization/main.py` 解析 CLI，创建 adapter/viewmodel/window。
-2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发双动作后端。
+2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发双动作后端，且底层仍复用当前 `ClusterTool` 的路线配置。
 3. 选择含 `head_tm2/head_tm3` 的权重时，UI 会自动重建为并发 runtime。
-4. 选择旧并发变迁名动作序列时，UI 会在回放前自动重建为并发 runtime。
+4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
 7. 状态与动作展示由 `main_window.py + center_canvas.py + stats_panel.py` 负责；级联模式下画布上方路径框与 `--debug` 变迁区由 `main_window.py + control_panel.py + transition_labels.py` 负责。
@@ -40,16 +41,16 @@
   - `--single-route-code {0,1}`（single）；cascade 下 legacy 代号见训练文档；配置驱动路线以 `single_route_name` 为准
   - `--model/-m`, `--no-model`, `--debug`, `--quiet`
 - 配置菜单（级联）:
-  - **路径（级联）**：可选 `1-1`…`1-6`、`2-1`…`2-4`（与 `data/petri_configs/cascade_routes_1_star.json` 中 `routes` 键一致）。确认后重建环境与适配器；若已选模型文件会尝试按新拓扑重载，不兼容则卸载 Model A。
+  - **路径（级联）**：可选 `1-1`…`1-6`、`2-1`…`2-4`（与 `data/petri_configs/cascade_routes_1_star.json` 中 `routes` 键一致）。确认后重建环境与适配器；单动作与并发 runtime 都会消费所选 `single_route_name`。若已选模型文件会尝试按新拓扑重载，不兼容则卸载 Model A。
   - 依赖启动时加载的 `data/petri_configs/cascade.yaml`（含 `single_route_config_path`）；仅 `device=cascade` 时菜单项可用。
 - 画布顶栏:
-  - 级联模式下在中间画布**上方**显示带边框区域：仅展示配置中 `routes[name].path`（**不**显示路线键名如 `1-6`，无额外标题行）；约 15px **粗体**，腔室名 / `(加工秒)` / `[清洁秒/片]` / `->` 分色。单设备模式下该区域隐藏。
+  - 级联模式下在中间画布**上方**显示带边框区域：仅展示配置中 `routes[name].path`（**不**显示路线键名如 `1-6`，无额外标题行）；约 15px **粗体**，腔室名 / `(加工秒)` / `[清洁秒/片]` / `->` 分色。当前规则对单动作与并发级联 runtime 一致；单设备模式下该区域隐藏。
 - 回放 JSON 契约（建议）:
   - 顶层字段: `schema_version`, `device_mode`, `sequence`, `reward_report`, `replay_env_overrides`
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
   - `--concurrent` 下 `sequence[*].actions` 必须提供 `[tm2, tm3]` 两个动作名；WAIT 只支持 `WAIT` / `WAIT_5s`
-  - 若 `sequence` 前几步中的非 WAIT 动作名全部属于 `Env_PN_Concurrent.TM2_TRANSITION_NAMES + Env_PN_Concurrent.TM3_TRANSITION_NAMES`，UI 会自动切到并发 runtime
-  - `replay_env_overrides` 建议包含: `route_code`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
+  - `replay_env_overrides` 建议显式包含 `runtime_mode`；若缺失，UI 只会在同一步检测到两个非 WAIT 动作时自动切到并发 runtime
+  - `replay_env_overrides` 建议包含: `runtime_mode`, `route_code`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
   - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp.json`；其它名字为 `results/action_sequences/<out_name>.json`
 
 ## Behavior Rules
@@ -63,9 +64,9 @@
 8. 手动导出（甘特图/统计/动作）必须强制写入 `results/` 规范目录：`results/gantt`、`results/training_logs`、`results/action_sequences`。
 9. `--concurrent` 下 Model A 默认权重路径是 `results/models/CT_concurrent_best.pt`；未显式传 `--model` 时会优先尝试该文件。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，另一机械手固定执行 `WAIT_5s`。
-11. `--concurrent` 下不显示级联路线横幅，因为并发环境不消费 `single_route_name/single_route_config`。
+11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
 12. 只要权重 `state_dict` 含 `head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
-13. 只要回放序列被识别为并发动作命名，Model B 回放必须自动切到并发 runtime；禁止继续把 `(a1, a2)` 压缩成单动作执行。
+13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“双非 WAIT 同步动作”兜底识别并发。禁止继续把 `(a1, a2)` 压缩成单动作执行。
 
 ## Examples
 - 正例:
@@ -81,16 +82,18 @@
 - 未指定 `--model` 时，程序会尝试默认权重；不存在则进入手动模式。
 - `--concurrent` 依赖运行环境已安装 `PySide6`；缺失时入口会在导入 GUI 模块阶段失败。
 - 序列文件路径正确但字段不完整时，Model B 回放可能失败。
+- 由单动作导出脚本生成的 `actions=[<single_action>, "WAIT"]` 序列不会再被自动识别为并发 runtime。
 
 ## Related Docs
 - `../overview/project-context.md`
 - `../continuous-model/pn-single.md`
 - `../training/training-guide.md`
 - `../td-petri/td-petri-guide.md`
-- `../deprecated/viz.md`
+- `../viz.md`
 
 ## Change Notes
-- 2026-03-29: 可视化并发模式接入当前 A 方案：`main.py` 新增 `--concurrent`，在 `device=cascade` 下切换到 `Env_PN_Concurrent + PetriAdapter`；默认并发模型路径改为 `results/models/CT_concurrent_best.pt`。同时，若加载的权重 `state_dict` 含 `head_tm2/head_tm3`，或回放序列前几步动作名被识别为 `Env_PN_Concurrent.TM2_TRANSITION_NAMES + Env_PN_Concurrent.TM3_TRANSITION_NAMES`，UI 会自动重建为并发 runtime。`main_window.py` 在并发适配器下改为消费 adapter 侧 enabled actions、WAIT 固定 `5s`、并复用 `Env_PN_Concurrent` 的动作名表判断并发序列；`petri_adapter.py` 单击单个调试变迁时会把另一机械手固定为 `WAIT_5s`。
+- 2026-03-29: 并发可视化运行时切换到当前 `ClusterTool`：`Env_PN_Concurrent` 不再绑定 `deprecated.pn.Petri`，而是直接加载 `config/cluster_tool/cascade.yaml` 构建级联并发环境；`main.py` 在并发分支会同步透传 `route_code/single_route_name/single_route_config/process_time_map`。`petri_adapter.py` 改为遍历当前 net 的真实库所和变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。
+- 2026-03-29: Model B 并发识别收口为“显式 runtime 优先 + 双非 WAIT 兜底”：`main_window.py` 优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当缺失显式标识且同一步出现两个非 WAIT 动作时才切并发 runtime，避免把单动作导出序列 `actions=[action, "WAIT"]` 误判为并发。同时恢复并发级联 runtime 的路线横幅与路径切换。
 - 2026-03-22: LLC/LLD 可视化同步：`petri_single_adapter._time_to_scrap` 新增 `place_type=5`（`LLC/LLD`）分支，阈值使用 `process_time + 3*P_Residual_time - stay_time`；`wafer_item/chamber_widget` 在 `proc_time>0` 时将 `place_type=5` 按加工腔渲染（外圈进度、完成橙色、scrap 红色）。
 - 2026-03-22: `--debug` 变迁区：`TRANSITIONS` 按 `id2t_name` 顺序固定两列（顺次两两一排），不再按 `u_LP`/`t_PM*` 等语义规则配对；级联与单设备一致。
 - 2026-03-22: `PetriSingleAdapter` 级联运输位与构网一致：库所名 `TM2`/`TM3`（及历史 `d_TM2`/`d_TM3`）进入 `transport_buffers` 并驱动 TM2/TM3 晶圆绘制；避免仅识别 `d_TM*` 时运输区为空。

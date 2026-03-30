@@ -434,6 +434,8 @@ class ClusterTool:
         self._u_transition_by_source: Dict[str, int] = {}
         self._u_transition_by_source_transport: Dict[Tuple[str, str], int] = {}
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
+        self._tm2_transition_indices: List[int] = []
+        self._tm3_transition_indices: List[int] = []
 
         # ====== 构造机器轮转对 ========
         if self.single_route_config is not None:
@@ -501,9 +503,16 @@ class ClusterTool:
         """评估模式"""
         self._training = False
 
-    def step(self, a1=None, detailed_reward: bool = False, wait_duration: Optional[int] = None):
+    def step(
+        self,
+        a1=None,
+        a2=None,
+        detailed_reward: bool = False,
+        wait_duration: Optional[int] = None,
+        with_reward: bool = True,
+    ):
         """
-        单设备一步推进入口。
+        单设备 / 并发一步推进入口。
         返回：(done, reward_result, scrap, action_mask, obs)
         """
         _pf = self._profiling_enabled
@@ -527,14 +536,22 @@ class ClusterTool:
                     advance_and_reward_s=0.0, next_event_delta_s=0.0)
             return True, timeout_reward, True, action_mask, obs
 
-        action = a1
-        do_wait = (wait_duration is not None) or action is None
+        transitions: List[int] = []
+        if a1 is not None:
+            transitions.append(int(a1))
+        if a2 is not None:
+            transitions.append(int(a2))
+        do_wait = (wait_duration is not None) or (len(transitions) == 0)
         scan_info: Dict[str, Any] = {}
-        log_entry: Optional[Dict[str, Any]] = None
+        log_entry: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None
         t1 = self.time
 
         if do_wait:
-            requested_wait = int(wait_duration)
+            requested_wait = (
+                int(wait_duration)
+                if wait_duration is not None
+                else int(self.wait_durations[0] if self.wait_durations else 5)
+            )
             episode_finished = len(_lp_done.tokens) >= self.n_wafer
             if episode_finished and requested_wait > 5:
                 actual_dt = 5
@@ -567,17 +584,25 @@ class ClusterTool:
                     reward_result -= float(self.idle_event_penalty)
         else:
             self._consecutive_wait_time = 0
-            is_swap = self._will_swap(int(action))
-            action_duration = self.swap_duration if is_swap else self.ttime
+            swap_indices = {t_idx for t_idx in transitions if self._will_swap(int(t_idx))}
+            action_duration = self.swap_duration if swap_indices else self.ttime
             t2 = t1 + action_duration
             if _pf: t_ar = perf_counter()
             reward_result, scan_info = self._advance_and_compute_reward(
                 action_duration, t1, t2, detailed=detailed_reward)
             if _pf: advance_and_reward_s += perf_counter() - t_ar
             if _pf: t_fire = perf_counter()
-            log_entry = self._fire(int(action), start_time=t1, end_time=t2, is_swap=is_swap)
+            log_entry = self._fire(
+                transitions,
+                start_time=t1,
+                end_time=t2,
+                swap_indices=swap_indices,
+            )
             if _pf: fire_s += perf_counter() - t_fire
-            self.fire_log.append(log_entry)
+            if isinstance(log_entry, list):
+                self.fire_log.extend(log_entry)
+            elif log_entry is not None:
+                self.fire_log.append(log_entry)
 
             if self._per_wafer_reward > 0:
                 if detailed_reward:
@@ -637,6 +662,15 @@ class ClusterTool:
                 get_enable_t_s=get_enable_t_s, fire_s=fire_s, build_obs_s=build_obs_s,
                 advance_and_reward_s=advance_and_reward_s, next_event_delta_s=next_event_delta_s)
         return bool(finish), reward_result, SCRAPE, action_mask, obs
+
+    def get_enable_t(self) -> Tuple[List[int], List[int]]:
+        mask = self.get_action_mask(
+            wait_action_start=int(self.T),
+            n_actions=int(self.T + len(self.wait_durations)),
+        )
+        tm2_enabled = [t_idx for t_idx in self._tm2_transition_indices if bool(mask[t_idx])]
+        tm3_enabled = [t_idx for t_idx in self._tm3_transition_indices if bool(mask[t_idx])]
+        return tm2_enabled, tm3_enabled
 
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
@@ -954,85 +988,152 @@ class ClusterTool:
             return parts, scan_info
         return total_reward, scan_info
 
-    def _fire(self, t_idx: int, start_time: int, end_time: int, is_swap: bool = False) -> Dict[str, Any]:
-        t_name = self.id2t_name[t_idx]
-        pre_places = self._pre_place_indices[t_idx]
-        pst_places = self._pst_place_indices[t_idx]
-        if pre_places.size == 0 or pst_places.size == 0:
-            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
-        pre_place = self.marks[int(pre_places[0])]
-        pst_place = self.marks[int(pst_places[0])]
-        if len(pre_place.tokens) == 0:
-            return {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+    def _fire(
+        self,
+        t_idx: int | Sequence[int],
+        start_time: int,
+        end_time: int,
+        is_swap: bool = False,
+        swap_indices: Optional[Set[int]] = None,
+    ) -> Dict[str, Any] | List[Dict[str, Any]]:
+        is_multi = not isinstance(t_idx, (int, np.integer))
+        transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
+        if not transitions:
+            return []
 
-        pre_place_idx = int(pre_places[0])
-        pst_place_idx = int(pst_places[0])
+        swap_set = {int(idx) for idx in (swap_indices or set())}
+        if is_swap and len(transitions) == 1 and not swap_set:
+            swap_set.add(int(transitions[0]))
 
-        if t_name.startswith("u_") and self._is_cascade:
-            src0 = pre_place.name
-            if src0 in self._cascade_round_robin_pairs:
-                if self._dual_arm:
-                    sync_tgt = self._first_parallel_target_dual_arm(src0)
-                else:
-                    sync_tgt = self._first_receivable_parallel_target(src0)
-                if sync_tgt is not None:
-                    self._rr_set_next(src0, sync_tgt)
+        def _transport_order(idx: int) -> int:
+            transport = self._transition_transport_place(int(idx))
+            if transport == "TM2":
+                return 0
+            if transport == "TM3":
+                return 1
+            return 2
 
-        tok = pre_place.pop_head()
-        wafer_id = tok.token_id
-        self._track_leave(tok, pre_place.name)
-        tok.enter_time = self.time
-        tok.stay_time = 0
+        transitions.sort(key=_transport_order)
+        log_entries: List[Dict[str, Any]] = []
 
-        if t_name.startswith("u_"):
-            src = pre_place.name
-            tok._dst_level_targets = tuple(self._u_targets.get(src, []))
-            tok.last_u_source = str(src)
-            tok.machine = int(self._next_robot_machine())
-            if self._is_cascade:
-                transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
-                tok.machine = 2 if transport == "TM3" else 1
-            if not (self._is_cascade and src in self._cascade_round_robin_pairs):
-                self._advance_round_robin_after_u_fire(src)
-            if src in self._chamber_active and wafer_id in self._chamber_active[src]:
-                idx = self._chamber_active[src].pop(wafer_id)
-                e, _, wid = self._chamber_timeline[src][idx]
-                self._chamber_timeline[src][idx] = (e, start_time, wid)
-            self._on_processing_unload(src)
-        elif t_name.startswith("t_"):
-            target = pst_place.name
+        for current_t_idx in transitions:
+            t_name = self.id2t_name[current_t_idx]
+            pre_places = self._pre_place_indices[current_t_idx]
+            pst_places = self._pst_place_indices[current_t_idx]
+            if pre_places.size == 0 or pst_places.size == 0:
+                log_entries.append(
+                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+                )
+                continue
+            pre_place = self.marks[int(pre_places[0])]
+            pst_place = self.marks[int(pst_places[0])]
+            if len(pre_place.tokens) == 0:
+                log_entries.append(
+                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+                )
+                continue
 
-            if is_swap and self._is_swap_eligible(pst_place):
-                old_tok = pst_place.pop_head()
-                old_wafer_id = old_tok.token_id
+            pre_place_idx = int(pre_places[0])
+            pst_place_idx = int(pst_places[0])
 
-                self._track_leave(old_tok, target)
-                if target in self._chamber_active and old_wafer_id in self._chamber_active[target]:
-                    tl_idx = self._chamber_active[target].pop(old_wafer_id)
-                    e, _, wid = self._chamber_timeline[target][tl_idx]
-                    self._chamber_timeline[target][tl_idx] = (e, start_time, wid)
-                self._on_processing_unload(target)
+            if t_name.startswith("u_") and self._is_cascade:
+                src0 = pre_place.name
+                if src0 in self._cascade_round_robin_pairs:
+                    if self._dual_arm:
+                        sync_tgt = self._first_parallel_target_dual_arm(src0)
+                    else:
+                        sync_tgt = self._first_receivable_parallel_target(src0)
+                    if sync_tgt is not None:
+                        self._rr_set_next(src0, sync_tgt)
 
-                old_tok.enter_time = self.time
-                old_tok.stay_time = 0
-                old_tok._dst_level_targets = tuple(self._u_targets.get(target, []))
-                old_tok.machine = tok.machine
-                old_tok.route_head_idx += 1
+            tok = pre_place.pop_head()
+            wafer_id = tok.token_id
+            self._track_leave(tok, pre_place.name)
+            tok.enter_time = self.time
+            tok.stay_time = 0
+
+            if t_name.startswith("u_"):
+                src = pre_place.name
+                tok._dst_level_targets = tuple(self._u_targets.get(src, []))
+                tok.last_u_source = str(src)
+                tok.machine = int(self._next_robot_machine())
+                if self._is_cascade:
+                    transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
+                    tok.machine = 2 if transport == "TM3" else 1
+                if not (self._is_cascade and src in self._cascade_round_robin_pairs):
+                    self._advance_round_robin_after_u_fire(src)
+                if src in self._chamber_active and wafer_id in self._chamber_active[src]:
+                    idx = self._chamber_active[src].pop(wafer_id)
+                    e, _, wid = self._chamber_timeline[src][idx]
+                    self._chamber_timeline[src][idx] = (e, start_time, wid)
+                self._on_processing_unload(src)
+            elif t_name.startswith("t_"):
+                target = pst_place.name
+
+                if current_t_idx in swap_set and self._is_swap_eligible(pst_place):
+                    old_tok = pst_place.pop_head()
+                    old_wafer_id = old_tok.token_id
+
+                    self._track_leave(old_tok, target)
+                    if target in self._chamber_active and old_wafer_id in self._chamber_active[target]:
+                        tl_idx = self._chamber_active[target].pop(old_wafer_id)
+                        e, _, wid = self._chamber_timeline[target][tl_idx]
+                        self._chamber_timeline[target][tl_idx] = (e, start_time, wid)
+                    self._on_processing_unload(target)
+
+                    old_tok.enter_time = self.time
+                    old_tok.stay_time = 0
+                    old_tok._dst_level_targets = tuple(self._u_targets.get(target, []))
+                    old_tok.machine = tok.machine
+                    old_tok.route_head_idx += 1
+
+                    tok._dst_level_targets = None
+                    tok.step = max(tok.step, self._step_map.get(target, 0))
+                    self._track_enter(tok, target)
+                    tok.route_head_idx += 1
+                    pst_place.append(tok)
+                    tok._place_idx = pst_place_idx
+                    if target in self._chamber_timeline and wafer_id >= 0:
+                        tl_idx2 = len(self._chamber_timeline[target])
+                        self._chamber_timeline[target].append((end_time, None, wafer_id))
+                        self._chamber_active[target][wafer_id] = tl_idx2
+
+                    pre_place.append(old_tok)
+                    old_tok._place_idx = pre_place_idx
+
+                    if self._is_cascade:
+                        rr_source = str(getattr(tok, "last_u_source", "") or "")
+                        if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
+                            self._advance_round_robin_after_u_fire(rr_source)
+                        else:
+                            for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
+                                if target in rr_tgts:
+                                    self._advance_round_robin_after_u_fire(rr_source)
+                                    break
+
+                    log_entries.append(
+                        {
+                            "t_name": t_name,
+                            "t1": int(start_time),
+                            "t2": int(end_time),
+                            "token_id": wafer_id,
+                            "swap": True,
+                            "swapped_token_id": old_wafer_id,
+                        }
+                    )
+                    continue
 
                 tok._dst_level_targets = None
                 tok.step = max(tok.step, self._step_map.get(target, 0))
                 self._track_enter(tok, target)
-                tok.route_head_idx += 1
-                pst_place.append(tok)
-                tok._place_idx = pst_place_idx
-                if target in self._chamber_timeline and wafer_id >= 0:
-                    tl_idx2 = len(self._chamber_timeline[target])
+                if target == "LP_done":
+                    self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
+                    self.done_count += 1
+                    self._per_wafer_reward += float(self.done_event_reward)
+                elif target in self._chamber_timeline and wafer_id >= 0:
+                    idx = len(self._chamber_timeline[target])
                     self._chamber_timeline[target].append((end_time, None, wafer_id))
-                    self._chamber_active[target][wafer_id] = tl_idx2
-
-                pre_place.append(old_tok)
-                old_tok._place_idx = pre_place_idx
-
+                    self._chamber_active[target][wafer_id] = idx
                 if self._is_cascade:
                     rr_source = str(getattr(tok, "last_u_source", "") or "")
                     if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
@@ -1043,60 +1144,38 @@ class ClusterTool:
                                 self._advance_round_robin_after_u_fire(rr_source)
                                 break
 
-                return {
-                    "t_name": t_name,
-                    "t1": int(start_time),
-                    "t2": int(end_time),
-                    "token_id": wafer_id,
-                    "swap": True,
-                    "swapped_token_id": old_wafer_id,
-                }
-
-            tok._dst_level_targets = None
-            tok.step = max(tok.step, self._step_map.get(target, 0))
-            self._track_enter(tok, target)
-            if target == "LP_done":
-                self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
-                self.done_count += 1
-                self._per_wafer_reward += float(self.done_event_reward)
-            elif target in self._chamber_timeline and wafer_id >= 0:
-                idx = len(self._chamber_timeline[target])
-                self._chamber_timeline[target].append((end_time, None, wafer_id))
-                self._chamber_active[target][wafer_id] = idx
-            if self._is_cascade:
-                rr_source = str(getattr(tok, "last_u_source", "") or "")
-                if rr_source in self._cascade_round_robin_pairs and target in self._cascade_round_robin_pairs[rr_source]:
-                    self._advance_round_robin_after_u_fire(rr_source)
-                else:
-                    for rr_source, rr_tgts in self._cascade_round_robin_pairs.items():
-                        if target in rr_tgts:
-                            self._advance_round_robin_after_u_fire(rr_source)
-                            break
-
-        tok.route_head_idx += 1
-        pst_place.append(tok)
-        tok._place_idx = pst_place_idx
-        self.m[pre_place_idx] -= 1
-        self.m[pst_place_idx] += 1
-        if t_name.startswith("u_LP_"):
-            self.entered_wafer_count += 1
-            self._last_u_LP_fire_time = int(start_time)
-            self._u_LP_release_count += 1
-        log_ret: Dict[str, Any] = {
-            "t_name": t_name,
-            "t1": int(start_time),
-            "t2": int(end_time),
-            "token_id": wafer_id,
-        }
-        if t_name.startswith("u_"):
-            log_ret["source_place"] = pre_place.name
-        return log_ret
+            tok.route_head_idx += 1
+            pst_place.append(tok)
+            tok._place_idx = pst_place_idx
+            self.m[pre_place_idx] -= 1
+            self.m[pst_place_idx] += 1
+            if t_name.startswith("u_LP_"):
+                self.entered_wafer_count += 1
+                self._last_u_LP_fire_time = int(start_time)
+                self._u_LP_release_count += 1
+            log_ret: Dict[str, Any] = {
+                "t_name": t_name,
+                "t1": int(start_time),
+                "t2": int(end_time),
+                "token_id": wafer_id,
+            }
+            if t_name.startswith("u_"):
+                log_ret["source_place"] = pre_place.name
+            log_entries.append(log_ret)
+        if not is_multi:
+            return log_entries[0]
+        return log_entries
 
     def _should_cancel_resident_scrap_after_fire(
         self,
         scan: Dict[str, Any],
         log_entry: Optional[Dict[str, Any]],
     ) -> bool:
+        if isinstance(log_entry, list):
+            for item in log_entry:
+                if self._should_cancel_resident_scrap_after_fire(scan=scan, log_entry=item):
+                    return True
+            return False
         if not isinstance(scan, dict) or not isinstance(log_entry, dict):
             return False
         if not bool(scan.get("is_scrap", False)):
@@ -1267,7 +1346,10 @@ class ClusterTool:
         self._u_transition_by_source = {}
         self._u_transition_by_source_transport = {}
         self._t_transitions_by_transport = {}
+        self._tm2_transition_indices = []
+        self._tm3_transition_indices = []
         for t_idx, t_name in enumerate(self.id2t_name):
+            transport_name: Optional[str] = None
             if t_name.startswith("u_"):
                 pre_idx = self._pre_place_indices[t_idx]
                 pst_idx = self._pst_place_indices[t_idx]
@@ -1276,12 +1358,18 @@ class ClusterTool:
                     dst = self.id2p_name[int(pst_idx[0])]
                     if dst in {"TM2", "TM3"}:
                         self._u_transition_by_source_transport[(src, dst)] = int(t_idx)
+                        transport_name = str(dst)
                     self._u_transition_by_source[src] = int(t_idx)
             elif t_name.startswith("t_"):
                 transport = self._transition_transport_place(int(t_idx))
                 if transport is None:
                     continue
                 self._t_transitions_by_transport.setdefault(transport, []).append(int(t_idx))
+                transport_name = str(transport)
+            if transport_name == "TM2":
+                self._tm2_transition_indices.append(int(t_idx))
+            elif transport_name == "TM3":
+                self._tm3_transition_indices.append(int(t_idx))
 
     def calc_wafer_statistics(self) -> Dict[str, Any]:
         system_times: List[float] = []

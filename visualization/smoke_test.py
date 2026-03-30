@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from solutions.C.enviroment import Env_PN_Concurrent
+from solutions.A.rl_env import Env_PN_Concurrent
 
 from .petri_adapter import PetriAdapter
 

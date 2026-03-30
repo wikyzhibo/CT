@@ -17,7 +17,6 @@ from torchrl.envs import EnvBase
 
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.petri_net import ClusterTool
-from solutions.A.deprecated.pn import Petri
 from pathlib import Path
 
 _TRUE_T = torch.tensor(True)
@@ -263,33 +262,47 @@ class Env_PN_Concurrent(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False
 
-    # 当前并发环境的真实动作命名口径（与底层 Env_PN_Concurrent / Petri 一致）。
-    TM2_TRANSITION_NAMES = [
-        "u_LP1_s1", "u_LP2_s1", "u_s1_s2", "u_s1_s5", "u_s4_s5", "u_s5_LP_done",
-        "t_s1", "t_s2", "t_s5", "t_LP_done",
-    ]
-    TM3_TRANSITION_NAMES = [
-        "u_s2_s3", "u_s3_s4", "t_s3", "t_s4",
-    ]
-
-    def __init__(self, device='cpu', seed=None, detailed_reward: bool = False):
+    def __init__(
+        self,
+        device: str = "cpu",
+        seed=None,
+        detailed_reward: bool = False,
+        device_mode: str = "cascade",
+        route_code: Optional[int] = None,
+        single_route_config: Optional[Dict[str, Any]] = None,
+        single_route_name: Optional[str] = None,
+        process_time_map: Optional[Dict[str, int]] = None,
+    ):
         super().__init__(device=device)
-        config = PetriEnvConfig()
-        # 并发模式强约束：只保留 WAIT=5。
+        dir = Path(__file__).parents[2] / "config" / "cluster_tool"
+        mode_name = str(device_mode).lower()
+        if mode_name != "cascade":
+            raise ValueError("Env_PN_Concurrent now supports cascade mode only")
+        config = PetriEnvConfig.load(dir / "cascade.yaml")
+        config.device_mode = mode_name
         config.wait_durations = [5]
-        self.net = Petri(config=config)
+        if route_code is not None:
+            config.route_code = int(route_code)
+        if single_route_config is not None:
+            config.single_route_config = dict(single_route_config)
+        if single_route_name is not None:
+            config.single_route_name = str(single_route_name)
+        if process_time_map is not None:
+            config.process_time_map = {
+                str(chamber): int(value) for chamber, value in dict(process_time_map).items()
+            }
 
-        self._t_name_to_idx = {name: i for i, name in enumerate(self.net.id2t_name)}
-
-        self.tm2_transition_indices = [self._t_name_to_idx[name] for name in self.TM2_TRANSITION_NAMES
-                                       if name in self._t_name_to_idx]
+        self.net = ClusterTool(config=config)
+        self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
+        self.tm2_transition_indices = list(getattr(self.net, "_tm2_transition_indices", []))
         self.n_actions_tm2 = len(self.tm2_transition_indices) + 1
         self.tm2_wait_action = len(self.tm2_transition_indices)
 
-        self.tm3_transition_indices = [self._t_name_to_idx[name] for name in self.TM3_TRANSITION_NAMES
-                                       if name in self._t_name_to_idx]
+        self.tm3_transition_indices = list(getattr(self.net, "_tm3_transition_indices", []))
         self.n_actions_tm3 = len(self.tm3_transition_indices) + 1
         self.tm3_wait_action = len(self.tm3_transition_indices)
+        self.tm2_transition_names = [self.net.id2t_name[idx] for idx in self.tm2_transition_indices]
+        self.tm3_transition_names = [self.net.id2t_name[idx] for idx in self.tm3_transition_indices]
 
         self.detailed_reward = detailed_reward
         self.n_wafer = config.n_wafer
@@ -299,9 +312,9 @@ class Env_PN_Concurrent(EnvBase):
         self.set_seed(seed)
 
     def _make_spec(self):
-        obs_dim = 12 * 6
+        obs_dim = self.net.get_obs_dim()
         self.observation_spec = Composite(
-            observation=Unbounded(shape=(obs_dim,), dtype=torch.int64, device=self.device),
+            observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask_tm2=Binary(n=self.n_actions_tm2, dtype=torch.bool),
             action_mask_tm3=Binary(n=self.n_actions_tm3, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
@@ -320,62 +333,23 @@ class Env_PN_Concurrent(EnvBase):
         )
 
     def _build_obs(self):
-        max_wafers = 12
-        processing_wafers = {}
-        lp1_wafers = []
-        lp2_wafers = []
+        return np.asarray(self.net.get_obs(), dtype=np.float32)
 
-        for p_idx, place in enumerate(self.net.marks):
-            if place.type == 4:
-                continue
-            for tok in place.tokens:
-                if tok.token_id < 0:
-                    continue
-                stay_time = int(tok.stay_time)
-                color = getattr(tok, 'color', 0)
-                if place.type == 1:
-                    time_to_scrap = 20 - (stay_time - place.processing_time)
-                elif place.type == 2:
-                    time_to_scrap = 10 - stay_time
-                else:
-                    time_to_scrap = -1
-                wafer_tuple = (tok.token_id, p_idx, place.type, stay_time, time_to_scrap, color)
-                if place.type in (1, 2, 5):
-                    processing_wafers[tok.token_id] = wafer_tuple
-                elif place.type == 3:
-                    if place.name == "LP1":
-                        lp1_wafers.append(wafer_tuple)
-                    elif place.name == "LP2":
-                        lp2_wafers.append(wafer_tuple)
-
-        selected_wafers = list(processing_wafers.values())
-        if len(selected_wafers) < max_wafers and len(lp1_wafers) > 0:
-            selected_wafers.append(lp1_wafers[0])
-        if len(selected_wafers) < max_wafers and len(lp2_wafers) > 0:
-            selected_wafers.append(lp2_wafers[0])
-        selected_wafers.sort(key=lambda x: x[0])
-
-        obs = []
-        for i in range(max_wafers):
-            if i < len(selected_wafers):
-                obs.extend(selected_wafers[i])
-            else:
-                obs.extend([0, 0, 0, 0, 0, 0])
-        return np.array(obs, dtype=np.int64)
-
-    def _build_action_masks(self):
-        tm2_enabled, tm3_enabled = self.net.get_enable_t()
-        tm2_enabled_set = set(tm2_enabled)
-        tm3_enabled_set = set(tm3_enabled)
+    def _build_action_masks(self, full_mask: np.ndarray | None = None):
+        if full_mask is None:
+            full_mask = self.net.get_action_mask(
+                wait_action_start=int(self.net.T),
+                n_actions=int(self.net.T + len(self.wait_durations)),
+            )
 
         mask_tm2 = np.zeros(self.n_actions_tm2, dtype=bool)
         for i, t_idx in enumerate(self.tm2_transition_indices):
-            mask_tm2[i] = (t_idx in tm2_enabled_set)
+            mask_tm2[i] = bool(full_mask[t_idx])
         mask_tm2[self.tm2_wait_action] = True
 
         mask_tm3 = np.zeros(self.n_actions_tm3, dtype=bool)
         for i, t_idx in enumerate(self.tm3_transition_indices):
-            mask_tm3[i] = (t_idx in tm3_enabled_set)
+            mask_tm3[i] = bool(full_mask[t_idx])
         mask_tm3[self.tm3_wait_action] = True
 
         return mask_tm2, mask_tm3
@@ -385,7 +359,7 @@ class Env_PN_Concurrent(EnvBase):
         obs = self._build_obs()
         mask_tm2, mask_tm3 = self._build_action_masks()
         return TensorDict({
-            "observation": torch.as_tensor(obs, dtype=torch.int64),
+            "observation": torch.as_tensor(obs, dtype=torch.float32),
             "action_mask_tm2": torch.as_tensor(mask_tm2, dtype=torch.bool),
             "action_mask_tm3": torch.as_tensor(mask_tm3, dtype=torch.bool),
             "time": torch.tensor([self.net.time], dtype=torch.int64),
@@ -398,20 +372,19 @@ class Env_PN_Concurrent(EnvBase):
         a1 = None if action_tm2 == self.tm2_wait_action else self.tm2_transition_indices[action_tm2]
         a2 = None if action_tm3 == self.tm3_wait_action else self.tm3_transition_indices[action_tm3]
 
-        done, reward_result, scrap = self.net.step(
+        done, reward_result, scrap, action_mask, obs = self.net.step(
             a1=a1, a2=a2,
             with_reward=True, detailed_reward=self.detailed_reward
         )
 
         reward = reward_result.get('total', 0) if isinstance(reward_result, dict) else reward_result
-        obs = self._build_obs()
-        mask_tm2, mask_tm3 = self._build_action_masks()
+        mask_tm2, mask_tm3 = self._build_action_masks(full_mask=np.asarray(action_mask, dtype=bool))
         time = self.net.time
         terminated = bool(done)
         finish = done and not scrap
 
         return TensorDict({
-            "observation": torch.as_tensor(obs, dtype=torch.int64),
+            "observation": torch.as_tensor(obs, dtype=torch.float32),
             "action_mask_tm2": torch.as_tensor(mask_tm2, dtype=torch.bool),
             "action_mask_tm3": torch.as_tensor(mask_tm3, dtype=torch.bool),
             "time": torch.tensor([time], dtype=torch.int64),
@@ -590,15 +563,20 @@ class FastEnvWrapper_Concurrent:
         a1 = None if action_tm2 == env.tm2_wait_action else env.tm2_transition_indices[int(action_tm2)]
         a2 = None if action_tm3 == env.tm3_wait_action else env.tm3_transition_indices[int(action_tm3)]
 
-        done, reward_result, scrap = env.net.step(a1=a1, a2=a2, with_reward=True, detailed_reward=False)
+        done, reward_result, scrap, action_mask, obs = env.net.step(
+            a1=a1,
+            a2=a2,
+            with_reward=True,
+            detailed_reward=False,
+        )
         reward = float(reward_result) if not isinstance(reward_result, dict) else float(reward_result.get("total", 0.0))
         scrap = bool(scrap)
         done = bool(done)
         terminated = done or scrap
         finish = done and not scrap
 
-        obs = np.asarray(env._build_obs(), dtype=np.float32)
-        mask_tm2_arr, mask_tm3_arr = env._build_action_masks()
+        obs = np.asarray(obs, dtype=np.float32)
+        mask_tm2_arr, mask_tm3_arr = env._build_action_masks(full_mask=np.asarray(action_mask, dtype=bool))
         info: Dict[str, Any] = {
             "action_mask_tm2": mask_tm2_arr.astype(np.bool_),
             "action_mask_tm3": mask_tm3_arr.astype(np.bool_),

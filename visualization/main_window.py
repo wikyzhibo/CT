@@ -37,12 +37,6 @@ from .widgets.stats_panel import StatsPanel
 from .widgets.center_canvas import CenterCanvas
 from .widgets.control_panel import ControlPanel
 from results.paths import action_sequence_path, gantt_output_path
-from solutions.A.rl_env import Env_PN_Concurrent
-
-CONCURRENT_SEQUENCE_ACTIONS = frozenset(
-    list(Env_PN_Concurrent.TM2_TRANSITION_NAMES) +
-    list(Env_PN_Concurrent.TM3_TRANSITION_NAMES)
-)
 
 class RoundedContainer(QWidget):
     """主内容容器，用于绘制背景"""
@@ -357,7 +351,7 @@ class PetriMainWindow(QMainWindow):
         self._action_device_single.setChecked(mode == "single")
         self._action_device_cascade.blockSignals(False)
         self._action_device_single.blockSignals(False)
-        self._action_config_cascade_route.setEnabled(mode == "cascade" and not self._concurrent_runtime)
+        self._action_config_cascade_route.setEnabled(mode == "cascade")
         self._update_route_banner_text()
         self._refresh_status_message()
 
@@ -412,8 +406,7 @@ class PetriMainWindow(QMainWindow):
         return ""
 
     def _update_route_banner_text(self) -> None:
-        env = getattr(self.viewmodel.adapter, "env", None)
-        if self._device_mode != "cascade" or hasattr(env, "tm2_wait_action"):
+        if self._device_mode != "cascade":
             self.route_banner_frame.hide()
             return
         self.route_banner_frame.show()
@@ -436,9 +429,6 @@ class PetriMainWindow(QMainWindow):
     def _open_cascade_route_dialog(self) -> None:
         if self._device_mode != "cascade":
             QMessageBox.information(self, "路径", "请先切换到「级联设备」模式后再选择路径。")
-            return
-        if self._concurrent_runtime:
-            QMessageBox.information(self, "路径", "并发可视化不支持配置驱动路线切换。")
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("级联路径")
@@ -994,39 +984,42 @@ class PetriMainWindow(QMainWindow):
         2) 新版：{"sequence": [...], "replay_env_overrides": {...}, ...}
         """
         if isinstance(payload, list):
-            overrides = {"runtime_mode": "concurrent"} if self._sequence_looks_concurrent(payload) else None
+            overrides = {
+                "runtime_mode": "concurrent" if self._sequence_looks_concurrent(payload) else "single"
+            }
             return payload, overrides
         if isinstance(payload, dict):
             seq = payload.get("sequence", [])
-            overrides = payload.get("replay_env_overrides", None)
-            runtime_mode = str(payload.get("device_mode", "")).lower()
+            overrides = dict(payload.get("replay_env_overrides", None) or {})
+            runtime_mode = str(
+                payload.get("device_mode", "") or overrides.get("runtime_mode", "")
+            ).lower()
             if runtime_mode == "concurrent" or self._sequence_looks_concurrent(seq):
-                overrides = dict(overrides or {})
                 overrides["runtime_mode"] = "concurrent"
+            elif overrides:
+                overrides["runtime_mode"] = "single"
+            if not overrides:
+                overrides = None
             return seq, overrides
         raise ValueError("动作序列 JSON 格式不合法，需为数组或包含 sequence 字段的对象")
 
     def _sequence_looks_concurrent(self, sequence) -> bool:
         if not isinstance(sequence, list) or not sequence:
             return False
-        checked = False
         for item in sequence[:5]:
             if not isinstance(item, dict):
                 continue
-            names: list[str] = []
-            action = item.get("action")
-            if isinstance(action, str):
-                names.append(action)
-            actions = item.get("actions", [])
-            if isinstance(actions, list):
-                names.extend(str(name) for name in actions if isinstance(name, str))
-            non_wait = [name for name in names if not str(name).upper().startswith("WAIT")]
-            if not non_wait:
+            actions = item.get("actions", None)
+            if not isinstance(actions, list) or len(actions) < 2:
                 continue
-            checked = True
-            if any(name not in CONCURRENT_SEQUENCE_ACTIONS for name in non_wait):
-                return False
-        return checked
+            non_wait = [
+                str(name)
+                for name in actions[:2]
+                if isinstance(name, str) and not str(name).upper().startswith("WAIT")
+            ]
+            if len(non_wait) >= 2:
+                return True
+        return False
 
     def _apply_verification_env_overrides_if_needed(self) -> bool:
         """

@@ -1,4 +1,4 @@
-MAX_TIME: 5000
+MAX_TIME: 3500
 n_wafer: 13
 single_robot_capacity: 1
 device_mode: cascade
@@ -17,5 +17,5 @@ max_wafers_in_system: 20
 cleaning_enabled: false
 route4_takt_interval: 0
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "2-2"
+single_route_name: "1-2"
 dual_arm: true

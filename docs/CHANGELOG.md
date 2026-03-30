@@ -2,17 +2,17 @@
 
 ## 2026-03-29
 
-### 可视化：并发双动作模式接回当前 UI 入口（2026-03-29）
+### A 方案并发环境：从 deprecated `Petri` 切到当前 `ClusterTool`（2026-03-29）
 
-- **What changed**：`visualization/main.py` 新增 `--concurrent`，在 `--device cascade` 下改为构建 `Env_PN_Concurrent + visualization.petri_adapter.PetriAdapter`，默认并发模型路径为 `results/models/CT_concurrent_best.pt`。`visualization/petri_adapter.py` 修复了旧并发适配器的动作执行口径：双动作 `(a1, a2)` 会同时下发；单击单个调试变迁时只驱动对应机械手，另一机械手固定 `WAIT_5s`。`visualization/main_window.py` 在并发适配器下不再依赖 `env._mask()`，WAIT 按钮收敛为 `5s`，`A` 快捷键可驱动并发模型 handler。
-- **Why**：旧可视化入口仍默认走单动作 `pn_single` 路径，并发模型加载还依赖过期导入，导致双动作模型和双动作回放无法按当前训练产物正确执行。
-- **Impact**：需要并发双动作可视化时，必须显式使用 `python -m visualization.main --device cascade --concurrent`；未传 `--concurrent` 时，原单动作可视化路径保持不变。
+- **What changed**：`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 不再导入 `solutions.A.deprecated.pn.Petri`，而是和单动作级联环境一样读取 `config/cluster_tool/cascade.yaml` 并直接实例化 `solutions.A.petri_net.ClusterTool`。`ClusterTool.step()` 和 `_fire()` 扩展为同时支持单动作与双动作并发执行，并继续返回统一的 5 元组结果；TM2/TM3 动作分组改为从当前 `id2t_name` 与 transport 映射动态生成。
+- **Why**：deprecated `Petri` 已经不是当前 A 方案的真实运行时；继续绑定旧网会让并发 rollout、UI、模型动作空间与当前级联逻辑脱节。
+- **Impact**：A 方案并发训练、并发 UI、并发回放现在统一复用当前 `ClusterTool` 运行时；并发 WAIT 固定为 `5s`，不再存在 legacy 并发动作名兼容层。
 
-### A 方案并发环境：删除错误的 legacy 动作名回退（2026-03-29）
+### 可视化：并发适配器与回放判定改为当前运行时口径（2026-03-29）
 
-- **What changed**：`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 删除了 `_resolve_concurrent_transition_names` 及相关 legacy 动作名回退，`TM2_TRANSITION_NAMES/TM3_TRANSITION_NAMES` 直接固定为当前并发环境真实使用的动作名集合。`visualization/main_window.py` 的并发序列识别也改为直接复用这两组动作名，不再维护独立硬编码列表。
-- **Why**：此前 legacy 分支把并发动作名真源拆成两套口径，UI 与环境可能各自命中不同集合，导致并发回放识别和动作映射出现漂移。
-- **Impact**：并发环境与可视化现在只认当前 `Env_PN_Concurrent` 的真实动作名；错误的 legacy 名称不会再被静默接受。
+- **What changed**：`visualization/main.py` 的并发分支会同步透传 `route_code`、`single_route_name`、`single_route_config`、`process_time_map` 给 `Env_PN_Concurrent`。`visualization/petri_adapter.py` 改为直接消费当前 net 的真实库所与真实变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。`visualization/main_window.py` 的 Model B 判定改为“显式 `runtime_mode` / `device_mode` 优先，双非 WAIT 动作兜底”，并恢复并发级联 runtime 的路线横幅与路径切换。
+- **Why**：旧 UI 口径同时依赖过期导入、旧阶段名映射和错误的并发判定规则，会把当前 `ClusterTool` 导出的序列误判，或者把并发动作压回单动作执行。
+- **Impact**：需要并发双动作可视化时，继续使用 `python -m visualization.main --device cascade --concurrent`；同时当前单动作导出的 `actions=[action, \"WAIT\"]` 序列不会再被误识别为并发。`visualization/smoke_test.py` 的环境引用也已修正到 `solutions.A.rl_env.Env_PN_Concurrent`。
 
 ## 2026-03-27
 

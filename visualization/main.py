@@ -66,12 +66,20 @@ def build_adapter(
         raise ValueError(f"不支持的适配器: {adapter_name}")
     env_overrides = dict(env_overrides or {})
     runtime_mode = str(env_overrides.get("runtime_mode", "concurrent" if concurrent else "single")).lower()
+    selected_route_code = env_overrides.get("single_route_code", route_code)
     if runtime_mode == "concurrent":
         if str(device_mode).lower() != "cascade":
             raise ValueError("并发可视化仅支持 cascade 设备模式")
-        env = Env_PN_Concurrent(device="cpu", detailed_reward=True)
+        env = Env_PN_Concurrent(
+            device="cpu",
+            detailed_reward=True,
+            device_mode=device_mode,
+            route_code=None if selected_route_code is None else int(selected_route_code),
+            process_time_map=env_overrides.get("single_process_time_map"),
+            single_route_config=env_overrides.get("single_route_config"),
+            single_route_name=env_overrides.get("single_route_name"),
+        )
         return PetriAdapter(env, step_verbose=step_verbose)
-    selected_route_code = env_overrides.get("single_route_code", route_code)
     effective_robot_capacity = int(env_overrides.get("single_robot_capacity", robot_capacity))
     env = Env_PN_Single(
         detailed_reward=True,
@@ -160,7 +168,7 @@ def _ensure_runtime_adapter(
     want_concurrent = runtime_mode == "concurrent"
     if is_concurrent_adapter == want_concurrent and window._device_mode == target_mode:
         window._concurrent_runtime = want_concurrent
-        window._action_config_cascade_route.setEnabled(target_mode == "cascade" and not want_concurrent)
+        window._action_config_cascade_route.setEnabled(target_mode == "cascade")
         return True, ""
     if window._adapter_factory is None:
         return False, "当前窗口未注入适配器工厂，无法切换运行模式。"
@@ -484,7 +492,7 @@ def main() -> int:
             route_code=args.single_route_code,
             env_overrides=ov,
             step_verbose=not args.quiet,
-            concurrent=concurrent_mode,
+            concurrent=window._concurrent_runtime,
         )
 
     window.set_adapter_factory(adapter_factory)
@@ -494,7 +502,7 @@ def main() -> int:
         window.center_canvas.set_device_mode(selected_device)
         window._action_device_cascade.setChecked(selected_device == "cascade")
         window._action_device_single.setChecked(selected_device == "single")
-        window._action_config_cascade_route.setEnabled(selected_device == "cascade" and not concurrent_mode)
+        window._action_config_cascade_route.setEnabled(selected_device == "cascade")
         window._refresh_status_message()
     window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     

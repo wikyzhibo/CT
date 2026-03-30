@@ -40,6 +40,7 @@
   - 并发关闭（回退单动作）: `python -m solutions.A.ppo_trainer --no-concurrent --device cascade`
   - 参数: `--concurrent`(默认开启), `--no-concurrent`, `--checkpoint`, `--compute-device`, `--rollout-n-envs`, `--artifact-dir`
   - `--rollout-n-envs` 对并发模式同样生效（使用 `VectorEnv_Concurrent` 并行采样）
+  - 并发环境 `Env_PN_Concurrent` 直接消费 `config/cluster_tool/cascade.yaml + ClusterTool` 当前级联运行时；观测维度与 TM2/TM3 动作维度由真实 net 探针动态读取，不再依赖 legacy 动作名表
 - 导出推理序列:
   - `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>`（输出 `results/action_sequences/<out_name>.json`，默认 `--out-name tmp` 即 `results/action_sequences/tmp.json`）
   - `--model` 为已存在的 `.pt` 文件路径时直接使用；否则按 `results/models/<相对路径>` 解析。
@@ -54,6 +55,7 @@
 4. 禁止继续在主文档中引用已移除的旧观测切换参数。
 5. `solutions.A.ppo_trainer` 默认走双动作并发训练；仅在显式传 `--no-concurrent` 时回退单动作路径。
 6. 并发模式下 WAIT 只保留单档 `5s`（TM2/TM3 各一个 WAIT 动作）。
+7. 并发模式的 TM2/TM3 动作分组以 `ClusterTool.get_enable_t()` 和当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
 
 ## Examples
 - 正例:
@@ -84,6 +86,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-29: `solutions.A.ppo_trainer` 的并发探针环境继续是 `Env_PN_Concurrent`，但该环境现已直接复用 `ClusterTool` 当前级联运行时；TM2/TM3 动作维度与观测维度由真实 net 探针动态读取，和 UI / rollout wrapper 保持同一口径，不再依赖 legacy `u_LP1_s1/t_s1` 命名集合。
 - 2026-03-29: 并发训练路径切换为 `collect_rollout_ultra_concurrent` + `VectorEnv_Concurrent`，`--rollout-n-envs` 现对并发模式同样生效；输出新增 rollout/update 分段计时与 steps/sec 统计。
 - 2026-03-29: `solutions.A.ppo_trainer` 新增并发默认训练路径；支持 `--concurrent/--no-concurrent` 切换；并发模式 WAIT 约束为单档 5s。
 - 2026-03-27: 统一输出规范：训练与导出产物全面迁移到 `results/` 目录族（`action_sequences/gantt/training_logs/topology_cache/models`）；`--artifact-dir` 改为运行名称前缀，不再控制目录位置。
