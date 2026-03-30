@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-03-30
+
+### A 方案：`u_LP` 节拍门控改为 LP 队首 token 负 `stay_time` 倒计时（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 的 `u_LP` 放行判定不再使用 `time - _last_u_LP_fire_time`，改为读取 `LP` 队首 token：`stay_time < 0` 表示仍在节拍倒计时、`stay_time >= 0` 才允许发片。每次 `u_LP` 实际发射后，仅给“新的 LP 队首 token”写入 `-required_interval`；`_advance_and_compute_reward` 对 `LP` 上负 `stay_time` 做向 0 推进；`get_next_event_delta` 同步读取该倒计时作为下一事件。
+- **Why**：旧方案若提前给后续多片 token 预写累计负值（如第二片 `-180`、第三片 `-360`），在前片延后发射时会破坏“相邻发片最小间隔”约束。
+- **Impact**：首片保持可立即发射（初始 `stay_time=0`）；后续每片的等待起点变为“上一片实际发射时刻”，可严格保证节拍间隔。resident/Q-time 判定口径保持不变（仍作用于腔室与运输位）。
+
 ## 2026-03-29
 
 ### A 方案并发环境：从 deprecated `Petri` 切到当前 `ClusterTool`（2026-03-29）

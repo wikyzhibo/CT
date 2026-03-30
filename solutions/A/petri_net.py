@@ -923,6 +923,11 @@ class ClusterTool:
             if p_type != _SOURCE and safe_dt > 0:
                 for tok in tokens:
                     tok.stay_time += safe_dt
+            elif p_type == _SOURCE and safe_dt > 0 and p.name == "LP":
+                # LP 上仅推进负 stay_time（节拍倒计时），不累计正驻留时间。
+                for tok in tokens:
+                    if tok.stay_time < 0:
+                        tok.stay_time = min(0, int(tok.stay_time) + safe_dt)
 
             if safe_dt > 0 and p.is_pm:
                 if not has_tok:
@@ -1153,6 +1158,7 @@ class ClusterTool:
                 self.entered_wafer_count += 1
                 self._last_u_LP_fire_time = int(start_time)
                 self._u_LP_release_count += 1
+                self._arm_lp_head_with_takt_delay()
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -1297,13 +1303,14 @@ class ClusterTool:
         return target
 
     def _allow_start(self):
-        """returns True if u_LP can fire now, based on WIP limit and takt."""
+        """returns True if u_LP can fire now, based on WIP and LP head gate."""
         if not int(self.entered_wafer_count) < int(self.max_wafers_in_system):
             return False
-        required = self._takt_required_interval()
-        if required is None:
-            return True
-        return (self.time - self._last_u_LP_fire_time) >= int(required)
+        lp_place = self._place_by_name.get("LP")
+        if lp_place is None or len(lp_place.tokens) == 0:
+            return False
+        # LP 队首 token 负 stay_time 表示尚在节拍倒计时，>=0 才允许发片。
+        return int(lp_place.tokens[0].stay_time) >= 0
 
     def _takt_required_interval(self) -> Optional[int]:
         """
@@ -1341,6 +1348,23 @@ class ClusterTool:
         if required < 0:
             required = 0
         return required
+
+    def _arm_lp_head_with_takt_delay(self) -> None:
+        """
+        每次 u_LP 发射后，仅给新的 LP 队首 token 写入节拍倒计时（负 stay_time）。
+        这样下一片的等待起点是“上一片实际发射时刻”，可严格保证发片间隔。
+        """
+        lp_place = self._place_by_name.get("LP")
+        if lp_place is None or len(lp_place.tokens) == 0:
+            return
+        required = self._takt_required_interval()
+        head = lp_place.tokens[0]
+        if required is None:
+            if int(head.stay_time) < 0:
+                head.stay_time = 0
+            return
+        required_int = max(0, int(required))
+        head.stay_time = -required_int
 
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
@@ -1608,10 +1632,11 @@ class ClusterTool:
                         delta = 0
                     if best is None or delta < best:
                         best = delta
-        required = self._takt_required_interval()
-        if required is not None:
-            delta_takt = self._last_u_LP_fire_time + int(required) - self.time
-            if delta_takt > 0:
+        lp_place = self._place_by_name.get("LP")
+        if lp_place is not None and len(lp_place.tokens) > 0:
+            head_stay = int(lp_place.tokens[0].stay_time)
+            if head_stay < 0:
+                delta_takt = -head_stay
                 if best is None or delta_takt < best:
                     best = delta_takt
         return best
