@@ -157,7 +157,7 @@ class ClusterTool:
         assert config is not None, "config must be provided"
         self.config = config
 
-        # ====== 基本配置 =======
+        # ====== 1) 运行边界与奖励超参 ======
         self.MAX_TIME = config.MAX_TIME
         self.n_wafer = int(config.n_wafer)
         self.max_wafers_in_system = int(config.max_wafers_in_system)
@@ -173,54 +173,42 @@ class ClusterTool:
         self.transport_overtime_coef_penalty = float(config.transport_overtime_coef_penalty)
         self.time_coef_penalty = float(config.time_coef_penalty)
         
+        # ====== 2) 驻留/Q-time 与动作时长 ======
         self.P_Residual_time = int(config.P_Residual_time)
         self.D_Residual_time = int(config.D_Residual_time)
-        self.T_transport = int(config.T_transport)
-        self.T_load = int(config.T_load)
-        
-        self.stop_on_scrap = bool(config.stop_on_scrap)
-
-        self.robot_capacity = 1
         self._dual_arm = bool(getattr(config, 'dual_arm', False))
         self.swap_duration = 10
 
+        # ====== 3) 清洗配置（统一 map 入口） ======
         self.cleaning_enabled = bool(config.cleaning_enabled)
-        self.cleaning_targets = set(config.cleaning_targets)
         self.cleaning_trigger_wafers = config.cleaning_trigger_wafers
         self.cleaning_duration = max(0, int(config.cleaning_duration))
-        self._cleaning_trigger_map: Dict[str, int] = dict(
-            config.cleaning_trigger_wafers_map
-        ) if getattr(config, "cleaning_trigger_wafers_map", None) else {
-            c: config.cleaning_trigger_wafers for c in config.cleaning_targets
-        }
-        self._cleaning_duration_map: Dict[str, int] = dict(
-            config.cleaning_duration_map
-        ) if getattr(config, "cleaning_duration_map", None) else {
-            c: max(0, int(config.cleaning_duration)) for c in config.cleaning_targets
-        }
+        trigger_map_cfg = getattr(config, "cleaning_trigger_wafers_map", None)
+        duration_map_cfg = getattr(config, "cleaning_duration_map", None)
+        if trigger_map_cfg is None or duration_map_cfg is None:
+            raise ValueError("cleaning_trigger_wafers_map and cleaning_duration_map must be provided")
+        self._cleaning_trigger_map: Dict[str, int] = dict(trigger_map_cfg)
+        self._cleaning_duration_map: Dict[str, int] = dict(duration_map_cfg)
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
         
-        self.device_mode = str(config.device_mode).lower()
-        if self.device_mode != "cascade":
-            raise ValueError("ClusterTool now supports cascade mode only")
-        self.config.device_mode = self.device_mode
-        self.single_device_mode = self.device_mode
+        # ====== 4) 路由配置与 stage 覆盖缓存 ======
+        self.ttime = 5
         self.single_route_config = getattr(config, "single_route_config", None)
+        if self.single_route_config is None:
+            raise ValueError("single_route_config must be provided")
         self.single_route_name = getattr(config, "single_route_name", None)
-        self._selected_single_route_name: Optional[str] = None
         self._route_stage_proc_time_map: Dict[str, int] = {}
         self._route_stage_cleaning_duration_map: Dict[str, int] = {}
         self._route_stage_cleaning_trigger_map: Dict[str, int] = {}
 
-        # ====== 路径解析 ======
-        self._selected_single_route_name = self.single_route_name
+        # ====== 5) 路径解析（build_net 前） ======
         _cfg = dict(self.single_route_config or {})
         _cfg_chambers = dict(_cfg.get("chambers") or {})
         _routes = dict(_cfg.get("routes") or {})
         self._route_stages = []
         _route_chambers: List[str] = []
-        if self._selected_single_route_name is not None:
-            _rn = str(self._selected_single_route_name)
+        if self.single_route_name is not None:
+            _rn = str(self.single_route_name)
             _source_name = str((_cfg.get("source") or {}).get("name", "LP1"))
             if _source_name == "LP":
                 _source_name = "LP1"
@@ -258,8 +246,7 @@ class ClusterTool:
                         for name in stage.candidates:
                             if name not in _route_chambers:
                                 _route_chambers.append(name)
-            self.single_route_name = self._selected_single_route_name
-            self.config.single_route_name = self._selected_single_route_name
+            self.config.single_route_name = self.single_route_name
 
         if _route_chambers:
             self.chambers = tuple(_route_chambers)
@@ -269,6 +256,7 @@ class ClusterTool:
                 for name, spec in _cfg_chambers.items()
                 if str((spec or {}).get("kind", "process")) != "buffer"
             ) or tuple(_cfg_chambers.keys())
+        # 先给出占位默认值，构网后以 route_meta 为准覆盖。
         self._timeline_chambers = self.chambers
         self._u_targets = {}
         self._step_map = {}
@@ -287,6 +275,7 @@ class ClusterTool:
         if self._route_stage_cleaning_trigger_map:
             self._cleaning_trigger_map.update(self._route_stage_cleaning_trigger_map)
 
+        # ====== 6) 构网输入与构网结果 ======
         obs_config = {
             "P_Residual_time": self.P_Residual_time,
             "D_Residual_time": self.D_Residual_time,
@@ -299,18 +288,19 @@ class ClusterTool:
         }
         info = build_net(
             n_wafer=self.n_wafer,
-            ttime=max(1, self.T_transport),
-            robot_capacity=self.robot_capacity,
+            ttime=self.ttime,
+            robot_capacity=1,
             process_time_map=raw,
-            device_mode=self.device_mode,
+            device_mode="cascade",
             obs_config=obs_config,
             route_config=self.single_route_config,
-            route_name=self._selected_single_route_name or self.single_route_name,
+            route_name=self.single_route_name,
             n_wafer_route1=getattr(self.config, "n_wafer_route1", None),
             n_wafer_route2=getattr(self.config, "n_wafer_route2", None),
         )
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
+        # ====== 7) route_meta：阶段/拓扑/类型映射 ======
         if not self._route_stages:
             # 从 route_meta 反推用于节拍分析的内部阶段（不含 LP/LP_done）
             aliases = route_meta.get("release_station_aliases") or {}
@@ -353,6 +343,7 @@ class ClusterTool:
         self._ready_chambers = tuple(route_meta.get("chambers", ()))
         self._single_process_chambers = self.chambers
 
+        # ====== 8) Petri 静态结构索引 ======
         self.m0: np.ndarray = info["m0"]
         self.m: np.ndarray = self.m0.copy()
         self.k: np.ndarray = info["capacity"]
@@ -388,16 +379,14 @@ class ClusterTool:
         self.idle_idx: Dict[str, int] = info["idle_idx"]
         self.P = info["P"]
         self.T = info["T"]
-        self.ttime = 5
-
         # 预计算的 pre/pst 库所索引与运输位索引（构网返回或本地计算以兼容旧版）
         self._pre_place_indices: List[np.ndarray] = info["pre_place_indices"]
         self._pst_place_indices: List[np.ndarray] = info["pst_place_indices"]
         self._transport_pre_place_idx: List[int] = info["transport_pre_place_idx"]
         self._fixed_topology: bool = bool(info.get("fixed_topology", False))
 
+        # ====== 9) Episode 状态与统计容器 ======
         self.marks: List[Place] = self._clone_marks(info["marks"])
-
         self.ori_marks = self._clone_marks(self.marks)
 
         self.time = 0
@@ -415,7 +404,6 @@ class ClusterTool:
         self._qtime_violated_tokens: Set[int] = set()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
-        self._next_machine_id = 1
         self._place_use_count: Dict[str, int] = {
             str(place.name): 0 for place in self.marks
         }
@@ -425,6 +413,7 @@ class ClusterTool:
         self._tm2_transition_indices: List[int] = []
         self._tm3_transition_indices: List[int] = []
 
+        # ====== 10) 甘特/清洗状态与节拍缓存 ======
         self._last_deadlock = False
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
@@ -450,6 +439,7 @@ class ClusterTool:
             all_types = {1}
         self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
+        # ====== 11) 训练/性能与奖励开关 ======
         self._training = True
         self._profiling_enabled = True
         self._step_profile = {
@@ -463,11 +453,12 @@ class ClusterTool:
             "other_s": 0.0,
         }
         self._last_state_scan: Dict[str, Any] = {}
-        self._is_cascade: bool = (self.device_mode == "cascade")
+        self._is_cascade: bool = True
         self._do_time_cost: bool = True
         self._do_proc_reward: bool = True
         self._do_transport_penalty: bool = True
         self._do_warn_penalty: bool = True
+        # ====== 12) 观测缓存与索引重建 ======
         self._ready_chambers_set: frozenset = frozenset(self._ready_chambers)
         self._place_by_name: Dict[str, Place] = {}
         self._obs_place_names: List[str] = []
@@ -624,14 +615,13 @@ class ClusterTool:
                 reward_result["scrap_info"] = scrap_info
             else:
                 reward_result -= float(self.scrap_event_penalty)
-            if self.stop_on_scrap:
-                action_mask = self.get_action_mask(wait_action_start=_mask_start, n_actions=_mask_n)
-                obs = self.get_obs()
-                if _pf:
-                    self._record_step_profile(total_s=perf_counter() - step_start,
-                        get_enable_t_s=0.0, fire_s=0.0, build_obs_s=0.0,
-                        advance_and_reward_s=0.0, next_event_delta_s=0.0)
-                return True, reward_result, True, action_mask, obs
+            action_mask = self.get_action_mask(wait_action_start=_mask_start, n_actions=_mask_n)
+            obs = self.get_obs()
+            if _pf:
+                self._record_step_profile(total_s=perf_counter() - step_start,
+                    get_enable_t_s=0.0, fire_s=0.0, build_obs_s=0.0,
+                    advance_and_reward_s=0.0, next_event_delta_s=0.0)
+            return True, reward_result, True, action_mask, obs
 
         if finish:
             if detailed_reward:
@@ -679,7 +669,6 @@ class ClusterTool:
         self._qtime_violated_tokens.clear()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
-        self._next_machine_id = 1
         self._place_use_count = {str(place.name): 0 for place in self.marks}
         self._last_deadlock = False
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
@@ -710,10 +699,10 @@ class ClusterTool:
 
     def _get_obs_place_order(self) -> List[str]:
         """返回观测顺序：LP1/LP2 + 运输位 + 腔室。"""
-        tm_names = ["TM2", "TM3"] if self.device_mode == "cascade" else ["TM1"]
+        tm_names = ["TM2", "TM3"]
         tm_names = [n for n in tm_names if n in self.id2p_name]
         candidates = list(self.chambers)
-        if self.device_mode == "cascade" and "LLC" not in candidates:
+        if "LLC" not in candidates:
             candidates.append("LLC")
         chambers: List[str] = []
         seen: Set[str] = set()
@@ -1546,7 +1535,7 @@ class ClusterTool:
         遍历 marks 中运输位与加工腔室的 token。
         """
         best = None
-        t_transport = self.T_transport
+        t_transport = self.ttime
         _CHAMBER_TYPES = (CHAMBER, 5)
         for place in self.marks:
             tokens = place.tokens
@@ -1661,11 +1650,7 @@ class ClusterTool:
         return True, target_name
 
     def _next_robot_machine(self) -> int:
-        if self.robot_capacity <= 1:
-            return 1
-        machine_id = self._next_machine_id
-        self._next_machine_id = 2 if machine_id == 1 else 1
-        return machine_id
+        return 1
 
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:

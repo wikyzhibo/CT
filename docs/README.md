@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-30: `continuous-model/pn-single.md`：A 方案 `ClusterTool/PetriEnvConfig` 初始化字段收敛（移除 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode` 等配置/运行时冗余口径；`single_route_config` 必填；清洗参数运行时统一 map 入口）。
 - 2026-03-30: 移除配置/运行时 `route_code`、`route4_takt_interval` 与 `build_fixed_takt_result`；路线统一 `single_route_name` + `single_route_config`；见 `continuous-model/pn-single.md`、`visualization/ui-guide.md`、`CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：级联并行选机由 robin 改为 `use_count` 最小优先（并列随机），并移除 robin 指针相关实现；详见该文档 Change Notes 与 `CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：`ClusterTool` 装载口 `u_LP*` 掩码改为按 `LP1`/`LP2` 独立使能；移除 `_allow_start` / `_pending_lp_release_type` 链；详见该文档 Change Notes。

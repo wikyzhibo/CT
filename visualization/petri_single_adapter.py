@@ -40,7 +40,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
         self.env = env
         self.net = env.net
         self.step_verbose = step_verbose
-        self.device_mode = str(getattr(self.net, "single_device_mode", "single")).lower()
+        self.device_mode = str(getattr(self.net, "device_mode", "cascade")).lower()
         self._last_reward_detail: Dict[str, float] = {}
         self._history: List[Dict[str, Any]] = []
         self._step_count = 0
@@ -159,10 +159,6 @@ class PetriSingleAdapter(AlgorithmAdapter):
         transports: List[ChamberState] = []
         release_schedule: Dict[str, list] = {}
         trigger_map = getattr(self.net, "_cleaning_trigger_map", None)
-        if trigger_map is not None:
-            targets = {c for c, t in trigger_map.items() if int(t) > 0}
-        else:
-            targets = set(getattr(self.net, "cleaning_targets", {"PM3", "PM4"}))
         cascade_lp_slots: List[Tuple[int, Place, List[WaferState]]] = []
         for idx, place in enumerate(self.net.marks):
             wafers = [
@@ -216,8 +212,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 chamber_trigger = int(trigger_map.get(place.name, 0))
                 countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
             else:
-                trigger = int(getattr(self.net, "cleaning_trigger_wafers", 2))
-                countdown = max(0, trigger - processed) if place.name in targets else -1
+                countdown = -1
             chambers.append(
                 ChamberState(
                     name=display_name,
@@ -253,8 +248,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 chamber_trigger = int(trigger_map.get(place0.name, 0))
                 countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
             else:
-                trigger = int(getattr(self.net, "cleaning_trigger_wafers", 2))
-                countdown = max(0, trigger - processed) if place0.name in targets else -1
+                countdown = -1
             chambers.append(
                 ChamberState(
                     name=display_name,

@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：`ClusterTool/PetriEnvConfig` 初始化字段收敛（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode`、`_selected_single_route_name`；固定 `ttime=5`，发生 scrap 即终止；路由名统一只用 `single_route_name`。`config/cluster_tool/env_config.py` 下线配置字段 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`，并将 `single_route_config` 设为必填（支持通过 `single_route_config_path` 自动装载）。`visualization/petri_single_adapter.py` 不再依赖 `cleaning_targets`。
+- **Why**：这些参数在当前 A 方案级联路径已固定常量或重复表达，保留会增加配置歧义与维护成本。
+- **Impact**：`cascade.yaml` 需移除上述下线键；运行时清洗参数统一从 `cleaning_trigger_wafers_map/cleaning_duration_map` 读取；旧脚本若仍设置已下线字段将被忽略或需迁移。
+
 ### A 方案：并行选机从 robin 改为 `use_count` 最小优先（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 robin 指针相关状态与函数（`_cascade_round_robin_*`、`_single_round_robin_*`、`_rr_*`、`_allow_t_by_machine_round_robin`、`_advance_round_robin_after_u_fire` 等），新增库所级 `use_count` 映射。并行 gate 下的 `get_action_mask` 改为按候选目标 `use_count` 最小优先，仅放行 1 个目标；最小值并列时随机选 1 个。`_is_next_stage_available` 同步改用相同规则。`_fire` 在 `t_*` 把晶圆放入目标库所时对该目标 `use_count += 1`。

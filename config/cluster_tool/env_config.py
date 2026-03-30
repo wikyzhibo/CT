@@ -78,17 +78,10 @@ class PetriEnvConfig(BaseModel):
 
     D_Residual_time: int = 20
     P_Residual_time: int = 15
-    T_transport: int = 5
-    T_load: int = 5
-
-    stop_on_scrap: bool = True
     max_wafers_in_system: int = 7
 
-    single_robot_capacity: int = 1
     dual_arm: bool = False
-    device_mode: str = "single"
     cleaning_enabled: bool = True
-    cleaning_targets: List[str] = Field(default_factory=lambda: ["PM3", "PM4"])
     cleaning_trigger_wafers: int = 5
     cleaning_duration: int = 150
     process_time_map: Dict[str, int] = Field(default_factory=_default_single_process_time_map)
@@ -112,6 +105,8 @@ class PetriEnvConfig(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_chamber_config(self) -> PetriEnvConfig:
+        if self.single_route_config is None:
+            raise ValueError("single_route_config must be provided")
         if self.chambers is not None:
             pt_map = dict(self.process_time_map)
             for name, spec in self.chambers.items():
@@ -131,15 +126,20 @@ class PetriEnvConfig(BaseModel):
                 for name, spec in (self.chambers or {}).items()
                 if isinstance(spec, dict)
             }
-            self.cleaning_targets = sorted(
-                [name for name, trig in self.cleaning_trigger_wafers_map.items() if int(trig) > 0]
-            )
         else:
+            trig_map = dict(self.cleaning_trigger_wafers_map or {})
+            dur_map = dict(self.cleaning_duration_map or {})
+            if not trig_map and not dur_map:
+                default_targets = ("PM3", "PM4")
+                trig_map = {c: self.cleaning_trigger_wafers for c in default_targets}
+                dur_map = {c: self.cleaning_duration for c in default_targets}
+            elif not trig_map or not dur_map:
+                raise ValueError("cleaning_trigger_wafers_map and cleaning_duration_map must be provided together")
             self.cleaning_trigger_wafers_map = {
-                c: self.cleaning_trigger_wafers for c in self.cleaning_targets
+                str(name): max(0, int(value)) for name, value in trig_map.items()
             }
             self.cleaning_duration_map = {
-                c: self.cleaning_duration for c in self.cleaning_targets
+                str(name): max(0, int(value)) for name, value in dur_map.items()
             }
         return self
 
@@ -151,7 +151,6 @@ class PetriEnvConfig(BaseModel):
     def _format_brief(self) -> str:
         lines = ["PetriEnvConfig (简略模式):"]
         lines.append(f"  晶圆数: {self.n_wafer}")
-        lines.append(f"  停止条件: stop_on_scrap={self.stop_on_scrap}")
 
         if self.routes is not None:
             if isinstance(self.routes, dict):
@@ -164,8 +163,6 @@ class PetriEnvConfig(BaseModel):
 
         if self.n_wafer_route1 is not None or self.n_wafer_route2 is not None:
             lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
-        lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
-        lines.append(f"  单设备模式: {self.device_mode}")
         if self.single_route_config is not None:
             sel = self.single_route_name or "<auto>"
             lines.append(f"  单设备配置驱动路径: enabled (route={sel})")
@@ -188,8 +185,7 @@ class PetriEnvConfig(BaseModel):
 
         lines.append("\n【基础配置】")
         lines.append(f"  n_wafer: {self.n_wafer}")
-        lines.append(f"  stop_on_scrap: {self.stop_on_scrap}")
-        lines.append(f" max_wafers: {self.max_wafers_in_system}")
+        lines.append(f"  max_wafers: {self.max_wafers_in_system}")
 
         lines.append("\n【奖励参数】")
         lines.append(f"  done_event_reward: {self.done_event_reward}")
@@ -235,7 +231,6 @@ class PetriEnvConfig(BaseModel):
         else:
             lines.append("  place_display_names: None")
 
-        lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
         lines.append(f"  single_route_config: {'set' if self.single_route_config is not None else 'None'}")
         lines.append(f"  single_route_config_path: {self.single_route_config_path}")
         lines.append(f"  single_route_name: {self.single_route_name}")

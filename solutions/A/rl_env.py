@@ -97,8 +97,6 @@ class Env_PN_Single(EnvBase):
             raise ValueError("Env_PN_Single now supports cascade mode only")
         path = dir / "cascade.yaml"
         config = PetriEnvConfig.load(path)
-        config.device_mode = str(device_mode).lower()
-        config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
         if single_route_config is not None:
             config.single_route_config = dict(single_route_config)
         if single_route_name is not None:
@@ -275,7 +273,6 @@ class Env_PN_Concurrent(EnvBase):
         if mode_name != "cascade":
             raise ValueError("Env_PN_Concurrent now supports cascade mode only")
         config = PetriEnvConfig.load(dir / "cascade.yaml")
-        config.device_mode = mode_name
         config.wait_durations = [5]
         if single_route_config is not None:
             config.single_route_config = dict(single_route_config)

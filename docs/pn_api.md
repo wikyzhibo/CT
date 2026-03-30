@@ -110,13 +110,9 @@ class BasedToken:
 - `solutions/Continuous_model/construct_single.py`
 - 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`；构网同时返回 `pre_place_indices`、`pst_place_indices`、`transport_pre_place_idx`（每变迁的 pre/pst 库所索引及运输位 pre 索引），供 `get_action_mask`、`_fire` 等复用以减少检索
 - `d_TM1` 在构网中设置 `processing_time=5s`（默认），用于约束“运输位停留后才能 `t_*` 进入腔室”
-- 通过 `PetriEnvConfig.single_robot_capacity` 控制 `d_TM1` 容量：
-  - `1`：Single Arm（单臂）
-  - `2`：Dual Arm（双臂）
-- 单设备清洗与腔室配置：支持全局扁平字段或腔室集成块 `chambers`。
-  - **扁平方式**：`cleaning_enabled`、`cleaning_targets`、`cleaning_trigger_wafers`、`cleaning_duration`；所有在 `cleaning_targets` 内的腔室共用同一触发次数与清洁时长。
-  - **腔室集成方式**：在配置中提供 `chambers`，每腔室可配置 `process_time`、`cleaning_duration`、`cleaning_trigger_wafers`。若提供 `chambers`，会生成/覆盖 `process_time_map`、`cleaning_trigger_wafers_map`、`cleaning_duration_map`。
-  - ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_net`，每个 PM 实例获得对应腔室的清洁参数。
+- 机械手容量固定为 1；双臂模式仅改变 swap 规则，不改变 place 容量口径。
+- 单设备清洗参数统一为 per-chamber map：`cleaning_trigger_wafers_map`、`cleaning_duration_map`。若配置提供 `chambers`，会优先从每腔室块生成/覆盖上述 map。
+- ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_net`，每个 PM 实例获得对应腔室的清洁参数。
 
 **工艺路线**
 - 级联（`device_mode=cascade`）下路线由 `PetriEnvConfig.single_route_name` 在 `single_route_config.routes` 中选取；具体拓扑与 stage 工时以 JSON 为准（仓库示例见 `config/cluster_tool/cascade_routes_1_star.json`）。不再使用数字别名 `route_code` / `single_route_code` 或 `route4_takt_interval`。
@@ -136,7 +132,7 @@ class BasedToken:
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`
 - `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`、`steps_per_sec`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `next_event_delta` / `advance_time` / `check_scrap` / `other` 的 `total_ms / avg_ms / ratio_pct`
-  - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`cleaning_targets` 内腔室）合并计算容量占用
+  - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`_cleaning_trigger_map` 中启用清洗的腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - 追责链路由当前路线的 `release_chain_by_u` / `release_station_aliases`（来自构网 `route_meta`）决定，不再按固定 `single_route_code` 枚举。
 - 清洗事件日志会附加写入 `fire_log`（`event_type=cleaning_start|cleaning_end`），用于后续追责/复盘。
