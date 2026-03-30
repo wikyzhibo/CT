@@ -1098,22 +1098,6 @@ class ClusterTool:
             pre_place_idx = int(pre_places[0])
             pst_place_idx = int(pst_places[0])
 
-            if t_name.startswith("u_") and self._is_cascade:
-                src0 = pre_place.name
-                if src0 in self._cascade_round_robin_pairs:
-                    head_tok = pre_place.tokens[0] if len(pre_place.tokens) > 0 else None
-                    tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
-                    stage_targets = self._current_stage_targets_for_source(src0, tok_gate)
-                    if self._dual_arm:
-                        sync_tgt = self._first_parallel_target_dual_arm(src0)
-                    else:
-                        sync_tgt = self._first_receivable_parallel_target(
-                            src0,
-                            stage_targets=stage_targets,
-                        )
-                    if sync_tgt is not None:
-                        self._rr_set_next(src0, sync_tgt)
-
             tok = pre_place.pop_head()
             wafer_id = tok.token_id
             self._track_leave(tok, pre_place.name)
@@ -1936,58 +1920,10 @@ class ClusterTool:
         pst_place = self.marks[int(pst_idx[0])]
         return self._is_swap_eligible(pst_place)
 
-    def _first_parallel_target_dual_arm(self, source: str) -> Optional[str]:
-        """双臂模式：从当前指针起循环，找第一个非清洗的腔室（不检查容量）。"""
-        if source not in self._cascade_round_robin_pairs:
-            return None
-        rr_targets = tuple(self._cascade_round_robin_pairs[source])
-        if not rr_targets:
-            return None
-        start = self._rr_get_next(source) or rr_targets[0]
-        if start not in rr_targets:
-            start = rr_targets[0]
-        k = rr_targets.index(start)
-        n = len(rr_targets)
-        for i in range(n):
-            name = rr_targets[(k + i) % n]
-            tp = self._get_place(name)
-            if tp.is_cleaning:
-                continue
-            return name
-        return None
-
-    def _first_receivable_parallel_target(
-        self,
-        source: str,
-        stage_targets: Optional[Tuple[str, ...]] = None,
-    ) -> Optional[str]:
-        """级联并行下游：从当前指针起循环，找第一个未满且非清洗的腔室。"""
-        if source not in self._cascade_round_robin_pairs:
-            return None
-        rr_targets = tuple(self._cascade_round_robin_pairs[source])
-        if stage_targets:
-            allowed = set(stage_targets)
-            rr_targets = tuple(t for t in rr_targets if t in allowed)
-        if not rr_targets:
-            return None
-        stage_expected = self._expected_target_for_source_stage(source, rr_targets)
-        start = stage_expected or rr_targets[0]
-        k = rr_targets.index(start)
-        n = len(rr_targets)
-        for i in range(n):
-            name = rr_targets[(k + i) % n]
-            tp = self._get_place(name)
-            if tp.is_cleaning:
-                continue
-            if len(tp.tokens) >= tp.capacity:
-                continue
-            return name
-        return None
-
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
-        级联并行源：从 robin 指针起循环选取第一个可接收下游；单候选源：只检查该候选。
-        双臂模式跳过容量检查，只检查非清洗。
+        级联并行源：期望下游为 `_expected_target_for_source_stage`（route gate 与轮转指针对齐），
+        不再环扫其它并行腔室；单臂满或清洗则不可出片，双臂仅清洗阻塞（容量由 TM `t_*` 侧 swap 逻辑处理）。
         """
         candidates = tuple(self._u_targets.get(source, ()))
         if source in self._cascade_round_robin_pairs:
@@ -1995,11 +1931,15 @@ class ClusterTool:
             head_tok = source_place.tokens[0] if len(source_place.tokens) > 0 else None
             tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
             stage_targets = self._current_stage_targets_for_source(source, tok_gate)
-            if self._dual_arm:
-                tgt = self._first_parallel_target_dual_arm(source)
-            else:
-                tgt = self._first_receivable_parallel_target(source, stage_targets=stage_targets)
-            return (tgt is not None, tgt)
+            exp = self._expected_target_for_source_stage(source, stage_targets)
+            if exp is None:
+                return False, None
+            tp = self._get_place(exp)
+            if tp.is_cleaning:
+                return False, None
+            if not self._dual_arm and len(tp.tokens) >= tp.capacity:
+                return False, None
+            return True, exp
         if not candidates:
             return False, None
         pointer_target = candidates[0]

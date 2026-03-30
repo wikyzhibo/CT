@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：级联并行腔室轮转改为严格指针（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_first_receivable_parallel_target`、`_first_parallel_target_dual_arm`。`_is_next_stage_available` 对 `_cascade_round_robin_pairs` 中的源仅根据 `_expected_target_for_source_stage(source, _current_stage_targets_for_source(...))` 检查**单一**期望腔室：单臂满或清洗则 `u_*` 不使能，双臂仅清洗不使能。`_fire` 的 `u_*` 分支不再在 `pop_head` 前调用 `_current_stage_targets_for_source` 或 `_rr_set_next`。
+- **Why**：使能/掩码层统一决定期望下游；`_fire` 只执行已选变迁；轮转指针仅在 `t_*` 装入并行腔室后推进，不再通过环扫改投其它 PM。
+- **Impact**：指针落在满/清洗腔室时可能增加等待，不再自动跳过到其它空腔；详见 `continuous-model/pn-single.md` 规则 17/18。
+
 ### A 方案：`ClusterTool` 装载口发片掩码改为按 LP 独立使能（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_allow_start`、`_pending_lp_release_type`、`_pop_lp_token_for_release` 及 `_peek_lp_token_by_type` / `_lp_releasable_types` / `_select_lp_release_type`；`get_action_mask` 对 `LP1`/`LP2` 各自队首独立应用全局 WIP、`wafer_type_alloc`（`_allow_start_for_route_type`）、队首 `stay_time` 与结构使能；`_fire` 从装载口取 token 仅为 `pre_place.pop_head()`。移除运行时对 `route_meta.lp_release_pattern_types` 的读取；`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。队首 `route_type` 与 `wafer_type_to_load_port` 不一致时抛出 `RuntimeError`。
