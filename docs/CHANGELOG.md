@@ -14,6 +14,12 @@
 - **Why**：4-8/4-9 同时存在两条子路径且需两种晶圆并行；原单模板 queue 与单路由节拍口径无法表达“按类型静态绑定子路径”与“按策略共享/拆分节拍”。
 - **Impact**：A 方案在 `single_route_name=4-8/4-9` 下可直接运行双子路径；4-8 使用共享节拍（含抽象 `3000/180` override）且 LP 发片按 pattern 循环；4-9 按子路径拆分节拍组，LP 同时可发时随机选类型（仍单步只发一片）。
 
+### A 方案：新增 `4-10/4-11/4-12` 双子路径路线（2026-03-30）
+
+- **What changed**：`config/cluster_tool/cascade_routes_1_star.json` 新增 `routes.4-10`、`routes.4-11`、`routes.4-12`。三条路线均采用 `subpaths(path1/path2)` + `takt_policy=split_by_subpath` + `wafer_type_alloc={path1:1,path2:2}`。其中 `4-11` 的两条子路径均包含 `repeat` 语法段（`count=2`）以表达中段循环。
+- **Why**：补充 4 系列新的双子路径工艺模板，并按“各自计算节拍”口径让 path1/path2 独立分析节拍周期，避免共享节拍对不同子路径节奏的干扰。
+- **Impact**：可直接使用 `single_route_name=4-10|4-11|4-12` 运行配置驱动级联构网；LP 类型配比默认为 1:2，且节拍门控按子路径拆分生效（非 shared）。
+
 ## 2026-03-29
 
 ### A 方案并发环境：从 deprecated `Petri` 切到当前 `ClusterTool`（2026-03-29）

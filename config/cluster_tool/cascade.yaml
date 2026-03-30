@@ -1,5 +1,5 @@
-MAX_TIME: 5000
-n_wafer: 13
+MAX_TIME: 8000
+n_wafer: 6
 single_robot_capacity: 1
 device_mode: cascade
 time_coef_penalty: 8
@@ -9,13 +9,13 @@ processing_coef_reward: 5.0
 in_system_time_penalty_coef: 0.0
 done_event_reward: 500
 scrap_event_penalty: 4000
-release_event_penalty: 5
+release_event_penalty: 4
 wait_durations:
   - 5
 stop_on_scrap: true
-max_wafers_in_system: 20
+max_wafers_in_system: 5
 cleaning_enabled: false
 route4_takt_interval: 0
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "4-9"
+single_route_name: "4-12"
 dual_arm: true
