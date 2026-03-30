@@ -83,7 +83,6 @@ class Env_PN_Single(EnvBase):
         eval_mode: bool = False,
         device_mode: str = "cascade",
         robot_capacity: int = 1,
-        route_code: Optional[int] = None,
         single_route_config: Optional[Dict[str, Any]] = None,
         single_route_name: Optional[str] = None,
         process_time_map: Optional[Dict[str, int]] = None,
@@ -100,8 +99,6 @@ class Env_PN_Single(EnvBase):
         config = PetriEnvConfig.load(path)
         config.device_mode = str(device_mode).lower()
         config.single_robot_capacity = 2 if int(robot_capacity) == 2 else 1
-        if route_code is not None:
-            config.route_code = int(route_code)
         if single_route_config is not None:
             config.single_route_config = dict(single_route_config)
         if single_route_name is not None:
@@ -268,7 +265,6 @@ class Env_PN_Concurrent(EnvBase):
         seed=None,
         detailed_reward: bool = False,
         device_mode: str = "cascade",
-        route_code: Optional[int] = None,
         single_route_config: Optional[Dict[str, Any]] = None,
         single_route_name: Optional[str] = None,
         process_time_map: Optional[Dict[str, int]] = None,
@@ -281,8 +277,6 @@ class Env_PN_Concurrent(EnvBase):
         config = PetriEnvConfig.load(dir / "cascade.yaml")
         config.device_mode = mode_name
         config.wait_durations = [5]
-        if route_code is not None:
-            config.route_code = int(route_code)
         if single_route_config is not None:
             config.single_route_config = dict(single_route_config)
         if single_route_name is not None:

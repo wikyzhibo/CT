@@ -20,11 +20,7 @@ from solutions.A.construct import BasedToken
 from solutions.A.model_builder import build_net
 from solutions.A.construct.route_compiler_single import normalize_route_spec
 from solutions.A.deprecated.pn import Place
-from solutions.A.takt_analysis import (
-    TAKT_HORIZON,
-    analyze_cycle,
-    build_fixed_takt_result,
-)
+from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
 from visualization.plot import Op, plot_gantt_hatched_residence
 
 CHAMBER = 1
@@ -98,31 +94,6 @@ else:
 
 
 class ClusterTool:
-    _VALID_ROUTE_CODES: Dict[str, Set[int]] = {
-        "cascade": {1, 2, 3, 4, 5, 6},
-    }
-
-    @classmethod
-    def _normalize_route_code(cls, raw_route_code: Any, device_mode: str) -> int:
-        if device_mode not in cls._VALID_ROUTE_CODES:
-            valid_modes = sorted(cls._VALID_ROUTE_CODES.keys())
-            raise ValueError(
-                f"invalid device_mode={device_mode!r}; expected one of {valid_modes}"
-            )
-        try:
-            route_code = int(raw_route_code)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"invalid route_code={raw_route_code!r}; route_code must be an integer"
-            ) from exc
-        valid_route_codes = sorted(cls._VALID_ROUTE_CODES[device_mode])
-        if route_code not in cls._VALID_ROUTE_CODES[device_mode]:
-            raise ValueError(
-                f"invalid route_code={route_code!r} for device_mode={device_mode!r}; "
-                f"expected one of {valid_route_codes}"
-            )
-        return route_code
-
     @staticmethod
     def _extract_route_stage_overrides(
         normalized: Sequence[Any],
@@ -233,12 +204,8 @@ class ClusterTool:
         self.device_mode = str(config.device_mode).lower()
         if self.device_mode != "cascade":
             raise ValueError("ClusterTool now supports cascade mode only")
-        self.route_code = self._normalize_route_code(config.route_code, self.device_mode)
         self.config.device_mode = self.device_mode
-        self.config.route_code = self.route_code
-        self.route4_takt_interval = int(getattr(config, "route4_takt_interval", 0) or 0)
         self.single_device_mode = self.device_mode
-        self.single_route_code = self.route_code
         self.single_route_config = getattr(config, "single_route_config", None)
         self.single_route_name = getattr(config, "single_route_name", None)
         self._selected_single_route_name: Optional[str] = None
@@ -335,7 +302,6 @@ class ClusterTool:
             ttime=max(1, self.T_transport),
             robot_capacity=self.robot_capacity,
             process_time_map=raw,
-            route_code=self.route_code,
             device_mode=self.device_mode,
             obs_config=obs_config,
             route_config=self.single_route_config,
@@ -1620,11 +1586,12 @@ class ClusterTool:
         unknown_stage_places = sorted(
             place for place in stage_place_set if place not in self._step_map
         )
+        _rn = self.single_route_name or self._selected_single_route_name or "?"
         if unknown_stage_places:
             raise ValueError(
                 "route stage contains places not in step map: "
                 f"{unknown_stage_places}; device_mode={self.device_mode!r}, "
-                f"route_code={self.route_code!r}, stages={stage_details}"
+                f"single_route_name={_rn!r}, stages={stage_details}"
             )
 
         proc_places = set(self._base_proc_time_map.keys())
@@ -1633,7 +1600,7 @@ class ClusterTool:
             raise ValueError(
                 "takt stage mismatch: process_time map has out-of-route places: "
                 f"{out_of_stage_proc_places}; device_mode={self.device_mode!r}, "
-                f"route_code={self.route_code!r}, stages={stage_details}, "
+                f"single_route_name={_rn!r}, stages={stage_details}, "
                 f"process_time_places={sorted(proc_places)}"
             )
 
@@ -1642,7 +1609,7 @@ class ClusterTool:
             raise ValueError(
                 "takt stage mismatch: route chambers missing from process_time map: "
                 f"{missing_proc_places}; device_mode={self.device_mode!r}, "
-                f"route_code={self.route_code!r}, stages={stage_details}, "
+                f"single_route_name={_rn!r}, stages={stage_details}, "
                 f"process_time_places={sorted(proc_places)}"
             )
 
@@ -1663,10 +1630,6 @@ class ClusterTool:
                 "cycle_length": horizon,
                 "cycle_takts": [0.0 for _ in range(horizon)],
             }
-        if self.device_mode == "cascade" and self.route_code == 4:
-            if self.route4_takt_interval > 0:
-                return build_fixed_takt_result(self.route4_takt_interval)
-            return None
 
         return self._compute_takt_result_from_stage_lists(self._route_stages)
 

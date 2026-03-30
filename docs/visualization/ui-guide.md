@@ -50,7 +50,7 @@
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
   - `--concurrent` 下 `sequence[*].actions` 必须提供 `[tm2, tm3]` 两个动作名；WAIT 只支持 `WAIT` / `WAIT_5s`
   - `replay_env_overrides` 建议显式包含 `runtime_mode`；若缺失，UI 只会在同一步检测到两个非 WAIT 动作时自动切到并发 runtime
-  - `replay_env_overrides` 建议包含: `runtime_mode`, `route_code`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
+  - `replay_env_overrides` 建议包含: `runtime_mode`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
   - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp.json`；其它名字为 `results/action_sequences/<out_name>.json`
 
 ## Behavior Rules
@@ -92,7 +92,8 @@
 - `../viz.md`
 
 ## Change Notes
-- 2026-03-29: 并发可视化运行时切换到当前 `ClusterTool`：`Env_PN_Concurrent` 不再绑定 `deprecated.pn.Petri`，而是直接加载 `config/cluster_tool/cascade.yaml` 构建级联并发环境；`main.py` 在并发分支会同步透传 `route_code/single_route_name/single_route_config/process_time_map`。`petri_adapter.py` 改为遍历当前 net 的真实库所和变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。
+- 2026-03-30: 移除 `route_code` / `--single-route-code`：回放与 CLI 仅以 `single_route_name` / `single_route_config` 对齐构网；`replay_env_overrides` 不再包含 `route_code`。
+- 2026-03-29: 并发可视化运行时切换到当前 `ClusterTool`：`Env_PN_Concurrent` 不再绑定 `deprecated.pn.Petri`，而是直接加载 `config/cluster_tool/cascade.yaml` 构建级联并发环境；`main.py` 在并发分支会同步透传 `single_route_name/single_route_config/process_time_map`。`petri_adapter.py` 改为遍历当前 net 的真实库所和变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。
 - 2026-03-29: Model B 并发识别收口为“显式 runtime 优先 + 双非 WAIT 兜底”：`main_window.py` 优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当缺失显式标识且同一步出现两个非 WAIT 动作时才切并发 runtime，避免把单动作导出序列 `actions=[action, "WAIT"]` 误判为并发。同时恢复并发级联 runtime 的路线横幅与路径切换。
 - 2026-03-22: LLC/LLD 可视化同步：`petri_single_adapter._time_to_scrap` 新增 `place_type=5`（`LLC/LLD`）分支，阈值使用 `process_time + 3*P_Residual_time - stay_time`；`wafer_item/chamber_widget` 在 `proc_time>0` 时将 `place_type=5` 按加工腔渲染（外圈进度、完成橙色、scrap 红色）。
 - 2026-03-22: `--debug` 变迁区：`TRANSITIONS` 按 `id2t_name` 顺序固定两列（顺次两两一排），不再按 `u_LP`/`t_PM*` 等语义规则配对；级联与单设备一致。

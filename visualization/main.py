@@ -57,7 +57,6 @@ def build_adapter(
     adapter_name: str,
     device_mode: str = "cascade",
     robot_capacity: int = 1,
-    route_code: int | None = None,
     env_overrides: dict | None = None,
     step_verbose: bool = True,
     concurrent: bool = False,
@@ -66,7 +65,6 @@ def build_adapter(
         raise ValueError(f"不支持的适配器: {adapter_name}")
     env_overrides = dict(env_overrides or {})
     runtime_mode = str(env_overrides.get("runtime_mode", "concurrent" if concurrent else "single")).lower()
-    selected_route_code = env_overrides.get("single_route_code", route_code)
     if runtime_mode == "concurrent":
         if str(device_mode).lower() != "cascade":
             raise ValueError("并发可视化仅支持 cascade 设备模式")
@@ -74,7 +72,6 @@ def build_adapter(
             device="cpu",
             detailed_reward=True,
             device_mode=device_mode,
-            route_code=None if selected_route_code is None else int(selected_route_code),
             process_time_map=env_overrides.get("single_process_time_map"),
             single_route_config=env_overrides.get("single_route_config"),
             single_route_name=env_overrides.get("single_route_name"),
@@ -85,7 +82,6 @@ def build_adapter(
         detailed_reward=True,
         device_mode=device_mode,
         robot_capacity=effective_robot_capacity,
-        route_code=None if selected_route_code is None else int(selected_route_code),
         process_time_map=env_overrides.get("single_process_time_map"),
         single_route_config=env_overrides.get("single_route_config"),
         single_route_name=env_overrides.get("single_route_name"),
@@ -440,13 +436,6 @@ def main() -> int:
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
     parser.add_argument("--device", type=str, default="cascade", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
-    parser.add_argument(
-        "--single-route-code",
-        type=int,
-        default=None,
-        choices=[0, 1, 2, 3, 4, 5, 6],
-        help="路径代号（single:0/1, cascade:1-6；不传则由配置/回放覆盖）",
-    )
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--concurrent", action="store_true", help="启用并发双动作可视化（仅支持 cascade）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
@@ -465,7 +454,6 @@ def main() -> int:
         args.adapter,
         device_mode=selected_device,
         robot_capacity=1,
-        route_code=args.single_route_code,
         step_verbose=not args.quiet,
         concurrent=concurrent_mode,
     )
@@ -489,7 +477,6 @@ def main() -> int:
             args.adapter,
             device_mode=mode,
             robot_capacity=robot_capacity,
-            route_code=args.single_route_code,
             env_overrides=ov,
             step_verbose=not args.quiet,
             concurrent=window._concurrent_runtime,

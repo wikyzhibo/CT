@@ -92,8 +92,6 @@ class PetriEnvConfig(BaseModel):
     cleaning_trigger_wafers: int = 5
     cleaning_duration: int = 150
     process_time_map: Dict[str, int] = Field(default_factory=_default_single_process_time_map)
-    route_code: int = 1
-    route4_takt_interval: int = 0
     single_route_config: Optional[Dict[str, Any]] = None
     single_route_config_path: Optional[str] = None
     single_route_name: Optional[str] = None
@@ -168,15 +166,12 @@ class PetriEnvConfig(BaseModel):
             lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
         lines.append(f"  单设备机械手容量: {self.single_robot_capacity}")
         lines.append(f"  单设备模式: {self.device_mode}")
-        lines.append(f"  单设备路径代号: {self.route_code}")
         if self.single_route_config is not None:
             sel = self.single_route_name or "<auto>"
             lines.append(f"  单设备配置驱动路径: enabled (route={sel})")
         elif self.single_route_config_path:
             sel = self.single_route_name or "<auto>"
             lines.append(f"  单设备配置驱动路径文件: {self.single_route_config_path} (route={sel})")
-        if str(self.device_mode).lower() == "cascade" and int(self.route_code) == 4:
-            lines.append(f"  route4手动节拍: {self.route4_takt_interval}s")
 
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -241,11 +236,9 @@ class PetriEnvConfig(BaseModel):
             lines.append("  place_display_names: None")
 
         lines.append(f"  single_robot_capacity: {self.single_robot_capacity}")
-        lines.append(f"  route_code: {self.route_code}")
         lines.append(f"  single_route_config: {'set' if self.single_route_config is not None else 'None'}")
         lines.append(f"  single_route_config_path: {self.single_route_config_path}")
         lines.append(f"  single_route_name: {self.single_route_name}")
-        lines.append(f"  route4_takt_interval: {self.route4_takt_interval}")
         lines.append("\n【奖励分项】固定全开（无 reward_config）")
 
         lines.append("=" * 60)

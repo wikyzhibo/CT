@@ -400,9 +400,6 @@ class PetriMainWindow(QMainWindow):
                 path = entry.get("path")
                 if path:
                     return str(path).strip()
-        rc = getattr(net, "single_route_code", None)
-        if rc is not None:
-            return f"(legacy route_code={rc})"
         return ""
 
     def _update_route_banner_text(self) -> None:
@@ -413,10 +410,6 @@ class PetriMainWindow(QMainWindow):
         plain = self._route_path_plain_from_net()
         fallback = "（无路径描述：非配置驱动拓扑或缺少 routes.path）"
         ff = ui_params.stats_panel.font_family
-        if plain.startswith("(legacy route_code="):
-            self.route_path_label.setTextFormat(Qt.TextFormat.PlainText)
-            self.route_path_label.setText(plain)
-            return
         if plain:
             self.route_path_label.setTextFormat(Qt.TextFormat.RichText)
             self.route_path_label.setText(

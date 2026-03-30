@@ -104,7 +104,7 @@ class BasedToken:
 **说明**：单设备 Petri 网实现（独立文件，不改原 `pn.py`），仅 1 个机械手，8 个腔体命名如下：
 - `LP`, `LP_done`, `PM1`~`PM6`
 - 其中 `PM2` 为展示腔体，不参与工艺流转；`PM5` 为 UI 占位腔体（模型不参与流转）
-- `PM6` 是否参与工艺由 `PetriEnvConfig.single_route_code` 决定
+- `PM6` 是否参与工艺由当前 `single_route_config` 所选路线的 `routes[<name>].sequence` 决定
 
 **构网来源**
 - `solutions/Continuous_model/construct_single.py`
@@ -119,15 +119,7 @@ class BasedToken:
   - ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_net`，每个 PM 实例获得对应腔室的清洁参数。
 
 **工艺路线**
-- `single_device_mode="cascade"`：
-  - `single_route_code=1`：`LP -> PM7/PM8 -> LLC -> PM1/PM2/PM3/PM4 -> LLD -> PM9/PM10 -> LP_done`（兼容旧模板）
-  - `single_route_code=2`：`LP -> PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> PM9/PM10 -> LP_done`（新增模板）
-  - `single_route_code=3`：`LP -> PM7/PM8 -> LLC -> PM1/PM2 -> LLD -> LP_done`
-  - `single_route_code=4`：`LP -> [PM7 -> PM8 -> LLC -> LLD] * 5 -> LP_done`（严格顺序循环 5 次）
-  - `single_route_code=5`：`LP -> PM7/PM8 -> PM9/PM10 -> LP_done`（路线 D，无 LLC/LLD 中转）
-- `single_route_code=0`（single 模式默认）：`LP -> PM1(100s) -> PM3/PM4(300s) -> LP_done`
-- `single_route_code=1`（single 模式）：`LP -> PM1(100s) -> PM3/PM4(300s) -> PM6(300s) -> LP_done`
-- `single_route_code=4` 可配置手动节拍：`route4_takt_interval`（秒）。`>0` 时按固定间隔门控 `u_LP`，`<=0` 时不做节拍门控。
+- 级联（`device_mode=cascade`）下路线由 `PetriEnvConfig.single_route_name` 在 `single_route_config.routes` 中选取；具体拓扑与 stage 工时以 JSON 为准（仓库示例见 `config/cluster_tool/cascade_routes_1_star.json`）。不再使用数字别名 `route_code` / `single_route_code` 或 `route4_takt_interval`。
 - 双臂模式约束：`u_*` 仅在可解析到有效目标腔室时才允许发射；若下游层满导致目标不可解析，则该 `u_*` 必须禁用，避免出现 `LP -> d_TM1 -> LP_done` 的非法短路。
 - 上述约束同样适用于 `d_TM1` 为空时：双臂“可任意取片”不等于可忽略目标可达性，目标不可解析时必须禁用 `u_*`。
 - 单/级联模式路由门控统一改为 token 队列：`route_queue + route_head_idx`。
@@ -146,8 +138,7 @@ class BasedToken:
 - `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`、`steps_per_sec`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `next_event_delta` / `advance_time` / `check_scrap` / `other` 的 `total_ms / avg_ms / ratio_pct`
   - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`cleaning_targets` 内腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
-  - `single_route_code=0`：追责站点 `s1=PM1`，`s2=PM3∪PM4`，`u_LP` 链路按 `s1 -> s2` 判定
-  - `single_route_code=1`：在上述基础上增加 `s3=PM6`，`u_LP` 链路扩展为 `s1 -> s2 -> s3`
+  - 追责链路由当前路线的 `release_chain_by_u` / `release_station_aliases`（来自构网 `route_meta`）决定，不再按固定 `single_route_code` 枚举。
 - 清洗事件日志会附加写入 `fire_log`（`event_type=cleaning_start|cleaning_end`），用于后续追责/复盘。
 - `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
 - 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
@@ -161,7 +152,6 @@ class BasedToken:
   cfg = PetriEnvConfig(
       n_wafer=12,
       max_wafers_in_system=5,
-      route_code=0,
   )
   ```
 
@@ -178,9 +168,7 @@ class BasedToken:
 - `blame_release_violations` 将 `fire_log` 中的 `cleaning_start` 转为清洁占位区间，与晶圆区间一并计入下游站点容量，故 PM3/PM4 同时清洁时对 s2 的释放会被正确追责
 
 **设备模式字段**
-- `single_device_mode`: `single` 或 `cascade`。
-  - `single`: 使用原单设备路径（可叠加 `single_route_code`）。
-  - `cascade`: 使用级联路径模板（`single_route_code=1/2/3/4/5`），接口仍保持单动作离散动作空间（`transition + wait`）。
+- `single_device_mode`: 当前 A 方案 `ClusterTool` 仅支持 `cascade`；路线由 `single_route_name` + `single_route_config` 指定。
 
 **驻留时间更新规则（单设备）**
 - `LP`（type=3）中的 token 不更新 `stay_time`，与 `pn.py` 保持一致

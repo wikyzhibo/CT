@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：移除 `route_code`、`route4_takt_interval` 与 `build_fixed_takt_result`（2026-03-30）
+
+- **What changed**：删除 `PetriEnvConfig.route_code`、`route4_takt_interval`；`ClusterTool` 不再设置 `route_code` / `single_route_code`；`model_builder.build_net` 去掉 `route_code` 参数及返回中的 `single_route_code`；删除 `takt_analysis.build_fixed_takt_result` 与 `_compute_takt_result` 内旧 route4 固定节拍分支；`Env_PN_Single` / `Env_PN_Concurrent` 去掉 `route_code` 形参；可视化 `build_adapter` 去掉 `--single-route-code`；`export_inference_sequence` 的 `replay_env_overrides` 不再输出 `route_code`。
+- **Why**：路线已统一由 `single_route_name` + `single_route_config` 驱动；数字别名与 route4 专用节拍入口已弃用。
+- **Impact**：旧回放 JSON 若仅含 `route_code` 需改为提供 `single_route_name`（及必要时内嵌 `single_route_config`）。变迁级 `t_route_code_map` 命名保留，与已删除的配置字段无关。
+
 ### A 方案：级联并行腔室轮转改为严格指针（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_first_receivable_parallel_target`、`_first_parallel_target_dual_arm`。`_is_next_stage_available` 对 `_cascade_round_robin_pairs` 中的源仅根据 `_expected_target_for_source_stage(source, _current_stage_targets_for_source(...))` 检查**单一**期望腔室：单臂满或清洗则 `u_*` 不使能，双臂仅清洗不使能。`_fire` 的 `u_*` 分支不再在 `pop_head` 前调用 `_current_stage_targets_for_source` 或 `_rr_set_next`。

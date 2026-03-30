@@ -233,7 +233,6 @@ def build_net(
     ttime: int = 5,
     robot_capacity: int = 1,
     process_time_map: Optional[Dict[str, int]] = None,
-    route_code: int = 0,
     device_mode: str = "cascade",
     obs_config: Optional[Dict[str, Any]] = None,
     route_config: Optional[Mapping[str, Any]] = None,
@@ -247,7 +246,6 @@ def build_net(
     约束：
     - route_config 必填，schema 需包含 source/sink/chambers/robots/routes
     - route_name 用于选择具体路线
-    - route_code 仅用于兼容旧配置的路由别名选择
     - device_mode 必须是 cascade，single 路径已下线
 
     返回 dict 除 pre/pst/m0/md/marks/id2p_name/id2t_name 等外，还包含预计算索引（供 get_enable_t/_fire 复用）：
@@ -257,7 +255,6 @@ def build_net(
     - process_time_map: Dict[str, int]，与 route_meta["chambers"] 一致的腔室工序时长（已含默认填充与取整到 5 秒）
     """
     mode = str(device_mode).lower()
-    route_code = int(route_code)
     if mode != "cascade":
         raise ValueError("build_net now supports cascade only")
     if route_config is None:
@@ -562,7 +559,6 @@ def build_net(
         "n_wafer": n_wafer,
         "n_wafer_route1": int(c_lp.get("LP1", 0)),
         "n_wafer_route2": int(c_lp.get("LP2", 0)),
-        "single_route_code": route_code,
         "single_device_mode": mode,
         "route_meta": route_meta,
         "t_route_code_map": t_route_code_map,

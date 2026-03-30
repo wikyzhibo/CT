@@ -50,7 +50,7 @@ class PetriSingleAdapter(AlgorithmAdapter):
             self.disabled_chambers = set()
         else:
             self.disabled_chambers = {"PM2", "PM5"}
-            if int(getattr(self.net, "single_route_code", 0)) == 0:
+            if "PM6" not in getattr(self.net, "chambers", ()):
                 self.disabled_chambers.add("PM6")
 
     def reset(self) -> StateInfo:

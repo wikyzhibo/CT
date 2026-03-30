@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-30: 移除配置/运行时 `route_code`、`route4_takt_interval` 与 `build_fixed_takt_result`；路线统一 `single_route_name` + `single_route_config`；见 `continuous-model/pn-single.md`、`visualization/ui-guide.md`、`CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：级联并行腔室轮转改为严格指针（删除 `_first_receivable_parallel_target` 等；`_fire` 不再同步指针）；详见该文档 Change Notes 与 `CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：`ClusterTool` 装载口 `u_LP*` 掩码改为按 `LP1`/`LP2` 独立使能；移除 `_allow_start` / `_pending_lp_release_type` 链；详见该文档 Change Notes。
 - 2026-03-30: `continuous-model/pn-single.md`：级联固定拓扑由单 `LP` 改为 `LP1`/`LP2`；`build_net`/`ClusterTool` 与 TM2 观测维度（9 维）同步说明见该文档 Change Notes。

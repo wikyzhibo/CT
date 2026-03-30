@@ -238,7 +238,6 @@ def _rollout_single_sequence(
         # 回放时固定为本次 episode 的实际工序时长，避免可视化重启后与导出时不一致。
         "process_time_map": dict(getattr(env.net, "_base_proc_time_map", {})),
         "robot_capacity": int(robot_capacity),
-        "route_code": int(getattr(env.net, "single_route_code", 0)),
         "device_mode": str(device_mode),
         # 配置驱动路线信息：用于可视化重建与导出时一致的路径拓扑。
         "single_route_name": getattr(env.net, "single_route_name", None),

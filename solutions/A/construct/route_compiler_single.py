@@ -454,7 +454,7 @@ def build_route_meta_from_route_ir(
             step_map[place] = step
         step += 1
 
-    # 聚合生成 u_targets，支持重复段同名 stage（例如 route4 的 LLD->PM7/LP_done）
+    # 聚合生成 u_targets，支持重复段同名 stage（例如循环段的 LLD->PM7/LP_done）
     u_targets: Dict[str, List[str]] = {}
     for i in range(len(full_stage_candidates) - 1):
         src_stage = full_stage_candidates[i]
