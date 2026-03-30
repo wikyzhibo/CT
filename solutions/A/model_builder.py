@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from solutions.A.construct.build_marks import build_marks_for_single_net
+from solutions.A.construct.build_takt import build_takt_payload
 from solutions.A.construct.build_topology import get_topology
 from solutions.A.construct.preprocess_config import preprocess_chamber_runtime_blocks
 from solutions.A.construct.build_route_queue import (
@@ -532,6 +533,25 @@ def build_net(
         for tid, sp in wafer_type_to_subpath.items()
     }
     route_meta["load_port_names"] = ("LP1", "LP2")
+    aliases = dict(route_meta.get("release_station_aliases") or {})
+    ordered_keys = sorted(
+        [k for k in aliases.keys() if str(k).startswith("s")],
+        key=lambda x: int(str(x)[1:]) if str(x)[1:].isdigit() else 0,
+    )
+    route_stages = [list(aliases[k]) for k in ordered_keys]
+    takt_payload = build_takt_payload(
+        route_stages=route_stages,
+        base_proc_time_map=process_time_map_out,
+        cleaning_enabled=bool(ctx.get("cleaning_enabled", False)),
+        cleaning_duration=int(ctx.get("cleaning_duration", 150)),
+        cleaning_duration_map=dict(ctx.get("cleaning_duration_map") or {}),
+        cleaning_trigger_map=dict(ctx.get("cleaning_trigger_wafers_map") or {}),
+        has_repeat_syntax_reentry=bool(has_repeat_syntax_reentry),
+        multi_subpath=bool(route_meta.get("multi_subpath", False)),
+        takt_policy=str(route_meta.get("takt_policy", "") or ""),
+        wafer_type_to_subpath=wafer_type_to_subpath,
+        subpath_route_stages=dict(route_meta.get("subpath_route_stages") or {}),
+    )
 
     pre_place_indices: List[np.ndarray] = [np.flatnonzero(pre[:, t] > 0) for t in range(t_count)]
     pst_place_indices: List[np.ndarray] = [np.flatnonzero(pst[:, t] > 0) for t in range(t_count)]
@@ -572,5 +592,6 @@ def build_net(
         "token_route_type_sequence": token_route_type_sequence,
         "route_ir": route_ir,
         "process_time_map": process_time_map_out,
+        "takt_payload": takt_payload,
         "fixed_topology": True,
     }

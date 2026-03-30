@@ -2,6 +2,12 @@
 
 ## 2026-03-30
 
+### A 方案：节拍计算迁移到构网层并移除 override 分支（2026-03-30）
+
+- **What changed**：新增 `solutions/A/construct/build_takt.py` 作为节拍计算入口，`solutions/A/model_builder.py` 在 `build_net` 内完成节拍计算并返回 `takt_payload`；`solutions/A/petri_net.py` 删除 `_build_takt_stage`、`_validate_takt_stage_inputs`、`_compute_takt_result*` 系列本地计算函数（含 `_compute_takt_result_from_override`），改为仅消费构网返回的节拍结果。
+- **Why**：节拍口径应与构网元数据同源，避免运行时重复计算与多处逻辑分叉；同时为后续重写 override 逻辑预留单一实现入口。
+- **Impact**：`ClusterTool.reset()` 不再重算节拍；当前版本不会使用 `takt_stages_override` 参与节拍计算，shared/split 仅走主路径/子路径 stage 计算结果。
+
 ### A 方案：移除 `route_code`、`route4_takt_interval` 与 `build_fixed_takt_result`（2026-03-30）
 
 - **What changed**：删除 `PetriEnvConfig.route_code`、`route4_takt_interval`；`ClusterTool` 不再设置 `route_code` / `single_route_code`；`model_builder.build_net` 去掉 `route_code` 参数及返回中的 `single_route_code`；删除 `takt_analysis.build_fixed_takt_result` 与 `_compute_takt_result` 内旧 route4 固定节拍分支；`Env_PN_Single` / `Env_PN_Concurrent` 去掉 `route_code` 形参；可视化 `build_adapter` 去掉 `--single-route-code`；`export_inference_sequence` 的 `replay_env_overrides` 不再输出 `route_code`。

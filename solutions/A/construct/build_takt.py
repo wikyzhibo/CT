@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
+
+
+def _build_takt_stage(
+    stage_idx: int,
+    stage_places: Sequence[str],
+    base_proc_time_map: Mapping[str, int],
+    cleaning_enabled: bool,
+    cleaning_duration: int,
+    cleaning_duration_map: Mapping[str, int],
+    cleaning_trigger_map: Mapping[str, int],
+) -> Optional[Dict[str, Any]]:
+    valid_places = [
+        str(place)
+        for place in list(stage_places or [])
+        if int(base_proc_time_map.get(str(place), 0) or 0) > 0
+    ]
+    if not valid_places:
+        return None
+
+    base_p = max(int(base_proc_time_map[place]) for place in valid_places)
+    q: Optional[int] = None
+    d = 0
+    if cleaning_enabled:
+        cleaning_candidates: List[Tuple[int, int, int, str]] = []
+        for place in valid_places:
+            trigger = int(cleaning_trigger_map.get(place, 0))
+            if trigger <= 0:
+                continue
+            duration = int(cleaning_duration_map.get(place, cleaning_duration))
+            score = int(base_proc_time_map.get(place, 0)) + duration
+            cleaning_candidates.append((score, trigger, duration, place))
+        if cleaning_candidates:
+            _, q, d, _ = max(cleaning_candidates, key=lambda item: (item[0], item[3]))
+
+    return {
+        "name": f"s{stage_idx + 1}",
+        "p": int(base_p),
+        "m": len(valid_places),
+        "q": q,
+        "d": int(d),
+    }
+
+
+def _compute_takt_result_from_stage_lists(
+    route_stages: Sequence[Sequence[str]],
+    base_proc_time_map: Mapping[str, int],
+    cleaning_enabled: bool,
+    cleaning_duration: int,
+    cleaning_duration_map: Mapping[str, int],
+    cleaning_trigger_map: Mapping[str, int],
+) -> Optional[Dict[str, Any]]:
+    analyzer_stages: List[Dict[str, Any]] = []
+    for i, stage in enumerate(route_stages):
+        if not stage:
+            continue
+        stage_cfg = _build_takt_stage(
+            stage_idx=i,
+            stage_places=list(stage),
+            base_proc_time_map=base_proc_time_map,
+            cleaning_enabled=cleaning_enabled,
+            cleaning_duration=cleaning_duration,
+            cleaning_duration_map=cleaning_duration_map,
+            cleaning_trigger_map=cleaning_trigger_map,
+        )
+        if stage_cfg is None:
+            continue
+        analyzer_stages.append(stage_cfg)
+    if not analyzer_stages:
+        return None
+    try:
+        return analyze_cycle(analyzer_stages, max_parts=10000)
+    except Exception:
+        return None
+
+
+def _compute_takt_result(
+    route_stages: Sequence[Sequence[str]],
+    base_proc_time_map: Mapping[str, int],
+    cleaning_enabled: bool,
+    cleaning_duration: int,
+    cleaning_duration_map: Mapping[str, int],
+    cleaning_trigger_map: Mapping[str, int],
+    has_repeat_syntax_reentry: bool,
+) -> Optional[Dict[str, Any]]:
+    if not route_stages:
+        return None
+    if has_repeat_syntax_reentry:
+        horizon = int(TAKT_HORIZON)
+        return {
+            "fast_takt": 0.0,
+            "peak_slow_takts": [],
+            "cycle_length": horizon,
+            "cycle_takts": [0.0 for _ in range(horizon)],
+        }
+    return _compute_takt_result_from_stage_lists(
+        route_stages=route_stages,
+        base_proc_time_map=base_proc_time_map,
+        cleaning_enabled=cleaning_enabled,
+        cleaning_duration=cleaning_duration,
+        cleaning_duration_map=cleaning_duration_map,
+        cleaning_trigger_map=cleaning_trigger_map,
+    )
+
+
+def build_takt_payload(
+    *,
+    route_stages: Sequence[Sequence[str]],
+    base_proc_time_map: Mapping[str, int],
+    cleaning_enabled: bool,
+    cleaning_duration: int,
+    cleaning_duration_map: Mapping[str, int],
+    cleaning_trigger_map: Mapping[str, int],
+    has_repeat_syntax_reentry: bool,
+    multi_subpath: bool,
+    takt_policy: str,
+    wafer_type_to_subpath: Mapping[int, str],
+    subpath_route_stages: Mapping[str, Sequence[Sequence[str]]],
+) -> Dict[str, Any]:
+    if not multi_subpath:
+        takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = {
+            1: _compute_takt_result(
+                route_stages=route_stages,
+                base_proc_time_map=base_proc_time_map,
+                cleaning_enabled=cleaning_enabled,
+                cleaning_duration=cleaning_duration,
+                cleaning_duration_map=cleaning_duration_map,
+                cleaning_trigger_map=cleaning_trigger_map,
+                has_repeat_syntax_reentry=has_repeat_syntax_reentry,
+            )
+        }
+    else:
+        all_types = sorted(set(int(k) for k in wafer_type_to_subpath.keys()) or {1})
+        policy = str(takt_policy or "").strip().lower()
+        if policy == "split_by_subpath":
+            takt_result_by_type = {}
+            for t_id in all_types:
+                subpath = str(wafer_type_to_subpath.get(int(t_id), "") or "")
+                stages = list(subpath_route_stages.get(subpath) or [])
+                takt_result_by_type[int(t_id)] = _compute_takt_result_from_stage_lists(
+                    route_stages=stages,
+                    base_proc_time_map=base_proc_time_map,
+                    cleaning_enabled=cleaning_enabled,
+                    cleaning_duration=cleaning_duration,
+                    cleaning_duration_map=cleaning_duration_map,
+                    cleaning_trigger_map=cleaning_trigger_map,
+                )
+        else:
+            shared = _compute_takt_result(
+                route_stages=route_stages,
+                base_proc_time_map=base_proc_time_map,
+                cleaning_enabled=cleaning_enabled,
+                cleaning_duration=cleaning_duration,
+                cleaning_duration_map=cleaning_duration_map,
+                cleaning_trigger_map=cleaning_trigger_map,
+                has_repeat_syntax_reentry=has_repeat_syntax_reentry,
+            )
+            takt_result_by_type = {int(t_id): shared for t_id in all_types}
+
+    takt_result_default = takt_result_by_type.get(1)
+    if takt_result_default is None and takt_result_by_type:
+        takt_result_default = next(iter(takt_result_by_type.values()))
+    return {
+        "takt_result_by_type": takt_result_by_type,
+        "takt_result_default": takt_result_default,
+    }

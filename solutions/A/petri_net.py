@@ -20,7 +20,6 @@ from solutions.A.construct import BasedToken
 from solutions.A.model_builder import build_net
 from solutions.A.construct.route_compiler_single import normalize_route_spec
 from solutions.A.deprecated.pn import Place
-from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
 from visualization.plot import Op, plot_gantt_hatched_residence
 
 CHAMBER = 1
@@ -291,6 +290,7 @@ class ClusterTool:
         obs_config = {
             "P_Residual_time": self.P_Residual_time,
             "D_Residual_time": self.D_Residual_time,
+            "cleaning_enabled": self.cleaning_enabled,
             "cleaning_duration": self.cleaning_duration,
             "cleaning_trigger_wafers": self.cleaning_trigger_wafers,
             "cleaning_duration_map": self._cleaning_duration_map,
@@ -343,12 +343,6 @@ class ClusterTool:
         }
         self._wafer_type_alloc_total_weight: int = int(sum(self._wafer_type_alloc_by_type.values()))
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
-        self._takt_stages_override: List[Any] = list(route_meta.get("takt_stages_override") or [])
-        self._default_subpath: str = str(route_meta.get("default_subpath", "") or "")
-        self._subpath_route_stages: Dict[str, List[List[str]]] = {
-            str(name): [list(stage) for stage in list(stages or [])]
-            for name, stages in dict(route_meta.get("subpath_route_stages") or {}).items()
-        }
         self._wafer_type_to_load_port: Dict[int, str] = {
             int(k): str(v) for k, v in dict(route_meta.get("wafer_type_to_load_port") or {}).items()
         }
@@ -455,8 +449,14 @@ class ClusterTool:
         self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
         self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
-        self._takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = self._compute_takt_results_by_type()
-        self._takt_result: Optional[Dict[str, Any]] = self._takt_result_by_type.get(1)
+        takt_payload = dict(info.get("takt_payload") or {})
+        self._takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = {
+            int(k): v
+            for k, v in dict(takt_payload.get("takt_result_by_type") or {}).items()
+        }
+        self._takt_result: Optional[Dict[str, Any]] = takt_payload.get("takt_result_default")
+        if self._takt_result is None:
+            self._takt_result = self._takt_result_by_type.get(1)
         if self._takt_result is None and self._takt_result_by_type:
             self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time: int = 0
@@ -712,10 +712,6 @@ class ClusterTool:
         self._chamber_timeline = {name: [] for name in self._timeline_chambers}
         self._chamber_active = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
-        self._takt_result_by_type = self._compute_takt_results_by_type()
-        self._takt_result = self._takt_result_by_type.get(1)
-        if self._takt_result is None and self._takt_result_by_type:
-            self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
         all_types = (
@@ -1535,196 +1531,6 @@ class ClusterTool:
                 if p.name.startswith("PM")
             },
         }
-
-    # 节拍分析器内部会统一给每道工序 p 加运输时间常量（当前口径为 +20）
-    _TRANSPORT_TIME_FOR_TAKT: int = 20
-
-    def _build_takt_stage(self, stage_idx: int, stage_places: List[str]) -> Optional[Dict[str, Any]]:
-        """
-        将一层 route stage 归一化为 analyzer 输入。
-        - 并行 stage 的 p 取该层瓶颈（max）
-        - 清洗参数优先取该层中最可能形成慢节拍的腔室（max(p+d)）
-        """
-        valid_places = [
-            place
-            for place in stage_places
-            if int(self._base_proc_time_map.get(place, 0) or 0) > 0
-        ]
-        if not valid_places:
-            return None
-        base_p = max(int(self._base_proc_time_map[place]) for place in valid_places)
-        q: Optional[int] = None
-        d = 0
-        if self.cleaning_enabled:
-            cleaning_candidates: List[Tuple[int, int, int, str]] = []
-            for place in valid_places:
-                trigger = int(self._cleaning_trigger_map.get(place, 0))
-                if trigger <= 0:
-                    continue
-                duration = int(self._cleaning_duration_map.get(place, self.cleaning_duration))
-                score = int(self._base_proc_time_map.get(place, 0)) + duration
-                cleaning_candidates.append((score, trigger, duration, place))
-            if cleaning_candidates:
-                _, q, d, _ = max(cleaning_candidates, key=lambda item: (item[0], item[3]))
-        return {
-            "name": f"s{stage_idx + 1}",
-            "p": int(base_p),
-            "m": len(valid_places),
-            "q": q,
-            "d": int(d),
-        }
-
-    def _validate_takt_stage_inputs(self) -> None:
-        stage_details = [
-            f"s{idx + 1}={list(stage)}" for idx, stage in enumerate(self._route_stages)
-        ]
-        stage_place_set: Set[str] = set()
-        for stage in self._route_stages:
-            for place in stage:
-                stage_place_set.add(str(place))
-
-        unknown_stage_places = sorted(
-            place for place in stage_place_set if place not in self._step_map
-        )
-        _rn = self.single_route_name or self._selected_single_route_name or "?"
-        if unknown_stage_places:
-            raise ValueError(
-                "route stage contains places not in step map: "
-                f"{unknown_stage_places}; device_mode={self.device_mode!r}, "
-                f"single_route_name={_rn!r}, stages={stage_details}"
-            )
-
-        proc_places = set(self._base_proc_time_map.keys())
-        out_of_stage_proc_places = sorted(proc_places - stage_place_set)
-        if out_of_stage_proc_places and not self._fixed_topology:
-            raise ValueError(
-                "takt stage mismatch: process_time map has out-of-route places: "
-                f"{out_of_stage_proc_places}; device_mode={self.device_mode!r}, "
-                f"single_route_name={_rn!r}, stages={stage_details}, "
-                f"process_time_places={sorted(proc_places)}"
-            )
-
-        missing_proc_places = sorted(set(self.chambers) - proc_places)
-        if missing_proc_places:
-            raise ValueError(
-                "takt stage mismatch: route chambers missing from process_time map: "
-                f"{missing_proc_places}; device_mode={self.device_mode!r}, "
-                f"single_route_name={_rn!r}, stages={stage_details}, "
-                f"process_time_places={sorted(proc_places)}"
-            )
-
-    def _compute_takt_result(self) -> Optional[Dict[str, Any]]:
-        """
-        根据当前加工配方（路线 + 工序时长 + 清洗参数）调用节拍分析器，
-        analyzer 内部会统一把每道工序处理时间按「工序时长 + 运输时间」计入节拍。
-        失败或无可分析工序时返回 None。
-        """
-        if not self._route_stages:
-            return None
-        self._validate_takt_stage_inputs()
-        if self._has_repeat_syntax_reentry:
-            horizon = int(TAKT_HORIZON)
-            return {
-                "fast_takt": 0.0,
-                "peak_slow_takts": [],
-                "cycle_length": horizon,
-                "cycle_takts": [0.0 for _ in range(horizon)],
-            }
-
-        return self._compute_takt_result_from_stage_lists(self._route_stages)
-
-    def _compute_takt_result_from_stage_lists(
-        self,
-        route_stages: Sequence[Sequence[str]],
-    ) -> Optional[Dict[str, Any]]:
-        analyzer_stages: List[Dict[str, Any]] = []
-        for i, stage in enumerate(route_stages):
-            if not stage:
-                continue
-            stage_cfg = self._build_takt_stage(stage_idx=i, stage_places=list(stage))
-            if stage_cfg is None:
-                continue
-            analyzer_stages.append(stage_cfg)
-        if not analyzer_stages:
-            return None
-        try:
-            return analyze_cycle(analyzer_stages, max_parts=10000)
-        except Exception:
-            return None
-
-    def _compute_takt_result_from_override(self) -> Optional[Dict[str, Any]]:
-        raw = list(self._takt_stages_override or [])
-        if not raw:
-            return None
-
-        def _infer_shared_override_m(stage_idx: int) -> int:
-            """
-            shared 多子路径 + 数字 override 场景：
-            以“各子路径的有效工序层（过滤 p<=0）”按顺序对齐，统计该层并行机台总数。
-            例如 4-8：
-              - 第 1 有效工序层：path1=PM7, path2=PM1/PM2/PM3/PM4 -> m=5
-              - 第 2 有效工序层：path1=PM10, path2=PM10 -> m=1（去重）
-            """
-            policy = str(self._takt_policy or "").strip().lower()
-            if not (self._multi_subpath and policy == "shared" and self._subpath_route_stages):
-                return 1
-            merged_places: Set[str] = set()
-            for _, stages in self._subpath_route_stages.items():
-                process_layers: List[List[str]] = []
-                for stage in list(stages or []):
-                    valid_places = [
-                        str(place)
-                        for place in list(stage or [])
-                        if int(self._base_proc_time_map.get(place, 0) or 0) > 0
-                    ]
-                    if valid_places:
-                        process_layers.append(valid_places)
-                if stage_idx < len(process_layers):
-                    merged_places.update(process_layers[stage_idx])
-            return max(1, int(len(merged_places)))
-
-        analyzer_stages: List[Dict[str, Any]] = []
-        for i, item in enumerate(raw):
-            if isinstance(item, (int, float)):
-                p_val = int(round(float(item)))
-                m_val = _infer_shared_override_m(i)
-            elif isinstance(item, dict):
-                p_val = int(round(float(item.get("p", 0) or 0)))
-                m_val = max(1, int(item.get("m", 1) or 1))
-            else:
-                continue
-            if p_val <= 0:
-                continue
-            analyzer_stages.append(
-                {"name": f"s{i + 1}", "p": int(p_val), "m": int(m_val), "q": None, "d": 0}
-            )
-        if not analyzer_stages:
-            return None
-        try:
-            result = analyze_cycle(analyzer_stages, max_parts=10000)
-            return result
-        except Exception:
-            return None
-
-    def _compute_takt_results_by_type(self) -> Dict[int, Optional[Dict[str, Any]]]:
-        if not self._multi_subpath:
-            return {1: self._compute_takt_result()}
-
-        all_types = sorted(set(self._wafer_type_to_subpath.keys()) or {1})
-        policy = str(self._takt_policy or "").strip().lower()
-        if policy == "split_by_subpath":
-            out: Dict[int, Optional[Dict[str, Any]]] = {}
-            for t_id in all_types:
-                subpath = self._wafer_type_to_subpath.get(int(t_id), "")
-                stages = self._subpath_route_stages.get(str(subpath), [])
-                out[int(t_id)] = self._compute_takt_result_from_stage_lists(stages)
-            return out
-
-        # shared / 默认：一套节拍给所有类型
-        shared = self._compute_takt_result_from_override()
-        if shared is None:
-            shared = self._compute_takt_result()
-        return {int(t_id): shared for t_id in all_types}
 
     @staticmethod
     def _clone_marks(marks: List[Place]) -> List[Place]:

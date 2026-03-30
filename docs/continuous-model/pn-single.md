@@ -93,6 +93,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-30: **A 方案节拍计算职责迁移到构网层**：`solutions/A/construct/build_takt.py` 新增构网期节拍计算入口并在 `solutions/A/model_builder.py` 内调用；`ClusterTool` 初始化仅消费 `build_net` 返回的 `takt_payload`，`reset()` 不再重算节拍。`_compute_takt_result_from_override` 已删除，当前运行时不再消费 `takt_stages_override` 计算节拍（后续如需新口径需在构网层重建）。
 - 2026-03-30: **移除 `route_code` / `route4_takt_interval`**：`PetriEnvConfig` 与 `ClusterTool` 不再接受配置项 `route_code`、`route4_takt_interval`；`model_builder.build_net` 不再接收/回传 `route_code`；删除 `takt_analysis.build_fixed_takt_result` 及 `_compute_takt_result` 中依赖旧 route4 固定节拍的特例；回放与可视化仅以 `single_route_name` / `single_route_config` 重建路线。变迁级 `t_route_code_map`（子路径编码）保留，与已删除的配置字段无关。
 - 2026-03-30: **并行腔室轮转（级联）**：删除 `_first_receivable_parallel_target` 与 `_first_parallel_target_dual_arm`。`_is_next_stage_available` 对并行源仅校验 `_expected_target_for_source_stage` 所指单一腔室：单臂满或清洗则屏蔽 `u_*`，双臂清洗则屏蔽；**不再**环扫其它并行腔室。`_fire` 的 u_* 路径移除对 `_current_stage_targets_for_source` / `_rr_set_next` 的调用；指针仅在 `t_*` 落入并行候选腔室时推进。行为规则 17/18/24/29 已同步重写。
 - 2026-03-30: `ClusterTool` 装载口 `u_LP*`：`get_action_mask` 改为按 `LP1`/`LP2` **各自**队首独立使能（全局 WIP + `wafer_type_alloc` + 队首 `stay_time` + 结构使能）；移除 `_allow_start` 与 `_pending_lp_release_type`、`_pop_lp_token_for_release`；`_fire` 从装载口取 token 仅为 `pop_head()`。运行时**不再**消费 `route_meta.lp_release_pattern_types`（构网仍可输出）；`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。
