@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`ClusterTool` 观测缓存生命周期（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_init_obs_cache`、`_obs_specs`；观测顺序、各库所 `offset`、`obs_dim` 与 `_obs_buffer` 仅在 `__init__` 中按 `load_port_names + TM2/TM3 + chambers` 构建一次；`reset()` 仅按 `_obs_place_names` 重绑 `_obs_places` 到克隆后的 `Place` 实例。
+- **Why**：`reset` 替换 `marks` 后需指向新库所对象，但布局与维度不变，避免重复全量重建。
+- **Impact**：无对外 API 变化；若未来在运行中改变网结构或各库所 `get_obs_dim()`，须在构造时保证与训练假设一致（当前不支持在 `reset` 中变更观测布局）。
+
 ### A 方案：`ClusterTool.render_gantt` 占位；移除 `_chamber_timeline` / `_chamber_active`（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_timeline_chambers`、`_chamber_timeline`、`_chamber_active` 及 `_fire` 中仅服务于时间线的分支；`render_gantt(out_path, title_suffix=None)` **保留方法签名**，方法体为空（不生成 PNG、不写文件）。删除 `Op` / `plot_gantt_hatched_residence` 与仅甘特使用的 `pathlib.Path` 导入。

@@ -192,6 +192,7 @@ class BasedToken:
 
 **观测补充（单设备）**
 - `Env_PN_Single` 的 observation 统一由 `ClusterTool.get_obs()` 返回（`float32`），顺序为 `LP -> TM -> chamber*`，`LP_done` 不进入主体观测。
+- 观测布局（库所顺序、`obs_dim`、各段 `offset`）在 `ClusterTool.__init__` 中确定；`reset()` 仅将 `_obs_places` 重新绑定到克隆后的库所对象，不重建 `obs_dim` 与 buffer。
 - PM 库所固定 9 维，末尾第 9 维改为 `near_cleaning_norm`（语义位置不变）：
   - `near_cleaning_norm = (1-is_cleaning) * clip((2-r)/2, 0, 1)`
   - `r = max(N-c, 0)`，`N = max(1, cleaning_trigger_wafers)`，`c = max(0, processed_wafer_count)`

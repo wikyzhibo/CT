@@ -173,20 +173,29 @@ class ClusterTool:
         # ====== 11) 训练/性能与奖励开关 ======
         self._training = True
         self._last_state_scan: Dict[str, Any] = {}
+
         # ====== 12) 观测缓存与索引重建 ======
         self._ready_chambers_set: frozenset = frozenset(self._ready_chambers)
         self._place_by_name: Dict[str, Place] = {}
         self._obs_place_names: List[str] = []
-        self._obs_places: List[Place] = []
-        self._obs_offsets: List[int] = []
-        self._obs_specs: List[Dict[str, Any]] = []
         self.obs_dim: int = 0
-        self._obs_buffer: np.ndarray = np.zeros(0, dtype=np.float32)
         self._obs_return_copy: bool = True
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
         self._lp_done = self._place_by_name.get("LP_done")
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
-        self._init_obs_cache()
+        order = list(self._load_port_names) + ["TM2", "TM3"] + list(self.chambers)
+        obs_names = [name for name in order if name in self._place_by_name]
+        self._obs_place_names = obs_names
+        self._obs_places = [self._place_by_name[name] for name in obs_names]
+        offsets: List[int] = []
+        cursor = 0
+        for place in self._obs_places:
+            dim = int(place.get_obs_dim())
+            offsets.append(cursor)
+            cursor += dim
+        self._obs_offsets = offsets
+        self.obs_dim = int(cursor)
+        self._obs_buffer = np.zeros(self.obs_dim, dtype=np.float32)
         self._build_transition_index()
         if not self._training:
             print(self._takt_result)
@@ -342,7 +351,7 @@ class ClusterTool:
         self.marks = self._clone_marks(self.ori_marks)
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
         self._lp_done = self._place_by_name.get("LP_done")
-        self._init_obs_cache()
+        self._obs_places = [self._place_by_name[name] for name in self._obs_place_names]
         self.time = 0
         self.entered_wafer_count = 0
         self.done_count = 0
@@ -377,67 +386,10 @@ class ClusterTool:
         enabled_t = sorted(i for i in range(T) if bool(mask[i]))
         return None, enabled_t
 
-    def _get_obs_place_order(self) -> List[str]:
-        """返回观测顺序：LP1/LP2 + 运输位 + 腔室。"""
-        tm_names = ["TM2", "TM3"]
-        tm_names = [n for n in tm_names if n in self.id2p_name]
-        candidates = list(self.chambers)
-        if "LLC" not in candidates:
-            candidates.append("LLC")
-        chambers: List[str] = []
-        seen: Set[str] = set()
-        for name in candidates:
-            if not (name.startswith("PM") or name in {"LLC", "LLD"}):
-                continue
-            if name in seen:
-                continue
-            chambers.append(name)
-            seen.add(name)
-        if not chambers:
-            chambers = ["PM1", "PM3", "PM4"]
-        lp_names = [n for n in self._load_port_names if n in self.id2p_name]
-        return lp_names + tm_names + chambers
-
-    def _init_obs_cache(self) -> None:
-        order = self._get_obs_place_order()
-        obs_names = [name for name in order if name in self._place_by_name]
-        obs_places = [self._place_by_name[name] for name in obs_names]
-        offsets: List[int] = []
-        specs: List[Dict[str, Any]] = []
-        cursor = 0
-        for place in obs_places:
-            dim = int(place.get_obs_dim())
-            offsets.append(cursor)
-            specs.append({"name": place.name, "offset": cursor, "dim": dim})
-            cursor += dim
-        self._obs_place_names = obs_names
-        self._obs_places = obs_places
-        self._obs_offsets = offsets
-        self._obs_specs = specs
-        self.obs_dim = int(cursor)
-        self._obs_buffer = np.zeros(self.obs_dim, dtype=np.float32)
-
     def get_obs(self) -> np.ndarray:
-        if self.obs_dim == 0:
-            return np.zeros(0, dtype=np.float32)
-        self._update_ll_direction_obs_flags()
-        buffer = self._obs_buffer
-        buffer[:] = 0.0
         for place, offset in zip(self._obs_places, self._obs_offsets):
-            place.write_obs_fast(buffer, offset)
-        if self._obs_return_copy:
-            return buffer.copy()
-        return buffer
-
-    def _update_ll_direction_obs_flags(self) -> None:
-        """
-        方向 one-hot 临时禁用：LLC/LLD 的 in/out 始终置 0。
-        """
-        for ll_name in ("LLC", "LLD"):
-            place = self._place_by_name.get(ll_name)
-            if place is None or not hasattr(place, "set_direction_flags"):
-                continue
-            place.set_direction_flags(False, False)
+            place.write_obs_fast(self._obs_buffer, offset)
+        return self._obs_buffer
 
     def _advance_and_compute_reward(self,dt: int, t1: int, t2: int, detailed: bool = False) -> tuple:
         """
