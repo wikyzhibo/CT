@@ -180,10 +180,11 @@ class ClusterTool:
         self._obs_places: List[Place] = []
         self._obs_offsets: List[int] = []
         self._obs_specs: List[Dict[str, Any]] = []
-        self._obs_dim: int = 0
+        self.obs_dim: int = 0
         self._obs_buffer: np.ndarray = np.zeros(0, dtype=np.float32)
         self._obs_return_copy: bool = True
-        self._rebuild_place_cache()
+        self._place_by_name = {p1.name: p1 for p1 in self.marks}
+        self._lp_done = self._place_by_name.get("LP_done")
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._init_obs_cache()
         self._build_transition_index()
@@ -339,7 +340,8 @@ class ClusterTool:
 
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
-        self._rebuild_place_cache()
+        self._place_by_name = {p1.name: p1 for p1 in self.marks}
+        self._lp_done = self._place_by_name.get("LP_done")
         self._init_obs_cache()
         self.time = 0
         self.entered_wafer_count = 0
@@ -396,10 +398,6 @@ class ClusterTool:
         lp_names = [n for n in self._load_port_names if n in self.id2p_name]
         return lp_names + tm_names + chambers
 
-    def _rebuild_place_cache(self) -> None:
-        self._place_by_name = {p.name: p for p in self.marks}
-        self._lp_done = self._place_by_name.get("LP_done")
-
     def _init_obs_cache(self) -> None:
         order = self._get_obs_place_order()
         obs_names = [name for name in order if name in self._place_by_name]
@@ -416,11 +414,11 @@ class ClusterTool:
         self._obs_places = obs_places
         self._obs_offsets = offsets
         self._obs_specs = specs
-        self._obs_dim = int(cursor)
-        self._obs_buffer = np.zeros(self._obs_dim, dtype=np.float32)
+        self.obs_dim = int(cursor)
+        self._obs_buffer = np.zeros(self.obs_dim, dtype=np.float32)
 
     def get_obs(self) -> np.ndarray:
-        if self._obs_dim == 0:
+        if self.obs_dim == 0:
             return np.zeros(0, dtype=np.float32)
         self._update_ll_direction_obs_flags()
         buffer = self._obs_buffer
@@ -430,9 +428,6 @@ class ClusterTool:
         if self._obs_return_copy:
             return buffer.copy()
         return buffer
-
-    def get_obs_dim(self) -> int:
-        return int(self._obs_dim)
 
     def _update_ll_direction_obs_flags(self) -> None:
         """
@@ -444,13 +439,7 @@ class ClusterTool:
                 continue
             place.set_direction_flags(False, False)
 
-    def _advance_and_compute_reward(
-        self,
-        dt: int,
-        t1: int,
-        t2: int,
-        detailed: bool = False,
-    ) -> tuple:
+    def _advance_and_compute_reward(self,dt: int, t1: int, t2: int, detailed: bool = False) -> tuple:
         """
         单次 marks 遍历完成：reward 计算 + stay_time 推进 + 清洗/idle 推进 + scrap/qtime 检测。
         排序：reward 使用推进前 stay_time，scrap/qtime 使用推进后 stay_time。
@@ -592,14 +581,7 @@ class ClusterTool:
             return parts, scan_info
         return total_reward, scan_info
 
-    def _fire(
-        self,
-        t_idx: int | Sequence[int],
-        start_time: int,
-        end_time: int,
-        is_swap: bool = False,
-        swap_indices: Optional[Set[int]] = None,
-    ) -> Dict[str, Any] | List[Dict[str, Any]]:
+    def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
         is_multi = not isinstance(t_idx, (int, np.integer))
         transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
         if not transitions:
@@ -734,11 +716,7 @@ class ClusterTool:
             return log_entries[0]
         return log_entries
 
-    def _should_cancel_resident_scrap_after_fire(
-        self,
-        scan: Dict[str, Any],
-        log_entry: Optional[Dict[str, Any]],
-    ) -> bool:
+    def _should_cancel_resident_scrap_after_fire(self, scan: Dict[str, Any], log_entry: Optional[Dict[str, Any]]) -> bool:
         if isinstance(log_entry, list):
             for item in log_entry:
                 if self._should_cancel_resident_scrap_after_fire(scan=scan, log_entry=item):
@@ -818,11 +796,7 @@ class ClusterTool:
             targets.append(name)
         return tuple(targets)
 
-    def _stage_targets_for_candidates(
-        self,
-        candidates: Sequence[str],
-        tok_gate: object,
-    ) -> Tuple[str, ...]:
+    def _stage_targets_for_candidates(self, candidates: Sequence[str], tok_gate: object) -> Tuple[str, ...]:
         candidate_targets = tuple(str(x) for x in candidates)
         if not candidate_targets:
             return tuple()
@@ -1078,7 +1052,6 @@ class ClusterTool:
             p.cleaning_remaining = p.cleaning_remaining
             p.cleaning_reason = p.cleaning_reason
 
-
     def get_next_event_delta(self) -> Optional[int]:
         """
         计算当前时刻到下一个关键事件的时间差（秒）。
@@ -1222,22 +1195,6 @@ class ClusterTool:
                         "type": "resident",
                     }
         return False, None
-
-    def _check_qtime_violation(self) -> None:
-        """检查运输位 Q-Time 超时并按 wafer 去重累计，不施加惩罚。"""
-        if self._training:
-            return
-        qtime_limit = int(self.D_Residual_time)
-        for place in self.marks:
-            if place.type != DELIVERY_ROBOT or len(place.tokens) == 0:
-                continue
-            for tok in place.tokens:
-                token_id = tok.token_id
-                if token_id < 0 or token_id in self._qtime_violated_tokens:
-                    continue
-                if tok.stay_time > qtime_limit:
-                    self._qtime_violated_tokens.add(token_id)
-                    self.qtime_violation_count += 1
 
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
 

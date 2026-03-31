@@ -148,7 +148,7 @@ class Env_PN_Single(EnvBase):
         return self.net.id2t_name[int(value)]
 
     def _make_spec(self):
-        obs_dim = self.net.get_obs_dim()
+        obs_dim = self.net.obs_dim
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask=Binary(n=self.n_actions, dtype=torch.bool),
@@ -271,7 +271,7 @@ class Env_PN_Concurrent(EnvBase):
         self.set_seed(seed)
 
     def _make_spec(self):
-        obs_dim = self.net.get_obs_dim()
+        obs_dim = self.net.obs_dim
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
             action_mask_tm2=Binary(n=self.n_actions_tm2, dtype=torch.bool),
