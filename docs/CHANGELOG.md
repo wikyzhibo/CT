@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`petri_net.ClusterTool` 移除 step 分段 Profiling（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_profiling_enabled`、`_step_profile`、`_record_step_profile`、`get_step_profile_summary()`；`step()` 内不再使用 `perf_counter` 分段计时。`solutions/A/ppo_trainer.py` 训练结束不再打印 `[Step Time Profile]` 及各分段耗时。
+- **Why**：移除网内热路径性能采样与训练结束汇总输出。
+- **Impact**：外部若曾依赖 `get_step_profile_summary()`，需改用 `cProfile` 等工具；训练日志仅保留既有 batch/汇总时间指标。
+
 ### A 方案：`petri_net.ClusterTool` 移除晶圆时间统计链（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_token_stats`、`_track_enter`、`_track_leave`、`calc_wafer_statistics`、仅用于统计的 `route_meta.system_entry_places` 缓存与 `enable_statistics`。`_fire` 不再调用追踪方法；保留 `_chamber_timeline` / `render_gantt` / `get_next_event_delta`。

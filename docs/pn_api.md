@@ -132,14 +132,12 @@ class BasedToken:
 - `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）；`advance_time()` 内会同步完成 `scrap/qtime` 状态扫描，减少重复 token 遍历。补充：非 WAIT 路径下，若本步 `u_*` 已取走与 `scrap_info` 同 `token_id` 且同源腔室的 resident wafer，则撤销本步 scrap（不终止、不追加 `scrap_penalty`）。
 - `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。通过扫描 `marks` 中运输位 d_TM* 与加工腔室的 token，用不同规则计算；节拍为「下一节拍时刻 − 当前时间」。用于 wait 时截断推进量，避免跨过取片或发片决策点。
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
-- `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`
-- `get_step_profile_summary() -> Dict[str, Any]`：返回 step 分段耗时统计，含 `count`、`total_ms`、`avg_ms`、`steps_per_sec`，以及 `get_enable_t`（mask 计算）/ `fire` / `build_obs` / `reward` / `next_event_delta` / `advance_time` / `check_scrap` / `other` 的 `total_ms / avg_ms / ratio_pct`
+- `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`。
   - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`_cleaning_trigger_map` 中启用清洗的腔室）合并计算容量占用
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - 追责链路由当前路线的 `release_chain_by_u` / `release_station_aliases`（来自构网 `route_meta`）决定，不再按固定 `single_route_code` 枚举。
 - 清洗事件日志会附加写入 `fire_log`（`event_type=cleaning_start|cleaning_end`），用于后续追责/复盘。
 - （A 方案 `ClusterTool` 已移除 `calc_wafer_statistics()`；左栏统计见上文「统计」与适配器。）
-- 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
 
 **max_wafers1_in_system / max_wafers2_in_system 门控（2026-03-31）**
 - What changed：`ClusterTool` 在制品上限门控：`u_LP` 发片时 `entered_wafer_count += 1`，`t_LP_done` 完成时 `entered_wafer_count -= 1`；按类型维护 `_entered_wafer_count_by_type`。单路线：`entered_wafer_count < max_wafers1_in_system` 时才允许发片；双子路径：不再使用单一全局在制数卡总 WIP，`_allow_start_for_route_type` 对 `route_type` 1/2 分别要求 `_entered_wafer_count_by_type[type] + 1 <= max_wafers1_in_system` 或 `<= max_wafers2_in_system`。

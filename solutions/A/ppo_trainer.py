@@ -1389,41 +1389,6 @@ def train_single(
     print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
     print(f"  Best reward: {best_reward:.2f}", flush=True)
 
-    # Ultra 模式下训练真实发生在 ultra_state["env"]，这里从其内部环境提取 step profile。
-    step_profile = None
-    profile_env = ultra_state.get("env")
-    if isinstance(profile_env, FastEnvWrapper) and hasattr(profile_env.env, "net"):
-        step_profile = profile_env.env.net.get_step_profile_summary()
-    elif isinstance(profile_env, VectorEnv) and profile_env.envs:
-        first_env = profile_env.envs[0]
-        if isinstance(first_env, FastEnvWrapper) and hasattr(first_env.env, "net"):
-            step_profile = first_env.env.net.get_step_profile_summary()
-
-    if isinstance(step_profile, dict) and int(step_profile.get("count", 0)) > 0:
-        print(
-            f"[Step Time Profile] steps={int(step_profile['count'])} "
-            f"| total={float(step_profile['total_ms']):.2f}ms "
-            f"| avg_step={float(step_profile['avg_ms']):.4f}ms "
-            f"| steps_per_sec={float(step_profile.get('steps_per_sec', 0.0)):.2f}",
-            flush=True,
-        )
-        ordered_segments = [
-            ("get_enable_t", "get_enable_t"),
-            ("fire", "_fire"),
-            ("build_obs", "build_obs"),
-            ("advance_and_reward", "advance+reward"),
-            ("next_event_delta", "next_event"),
-            ("other", "other"),
-        ]
-        for key, label in ordered_segments:
-            seg = step_profile["segments"][key]
-            print(
-                f"  {label:<12} total={float(seg['total_ms']):.2f}ms "
-                f"| avg={float(seg['avg_ms']):.4f}ms "
-                f"| ratio={float(seg['ratio_pct']):.2f}%",
-                flush=True,
-            )
-
     final_path = os.path.join(str(backup_dir), f"{model_prefix}_final.pt")
     torch.save(policy_module.state_dict(), final_path)
     torch.save(policy_module.state_dict(), run_final_model_path)

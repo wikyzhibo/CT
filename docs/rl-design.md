@@ -169,11 +169,6 @@ python -m solutions.PPO.run_ppo --checkpoint solutions/PPO/saved_models/CT_ppo_b
 - 平均 batch 耗时（rollout vs update 占比百分比）
 - 平均 steps/sec
 
-**Step 分段 Profiling**（`pn_single.py`）：
-- 默认开启（`_profiling_enabled=True`），训练和评估模式均有效
-- 分段：`get_enable_t` / `_fire` / `build_obs` / `advance_and_reward` / `next_event_delta` / `other`
-- 训练结束后自动输出各分段累计耗时、平均耗时和占比
-
 ### 核心文件
 
 | 文件                                      | 功能              | 关键类/函数                                      |
