@@ -213,13 +213,12 @@ class ClusterTool:
         self,
         a1=None,
         a2=None,
-        detailed_reward: bool = False,
         wait_duration: Optional[int] = None,
-        with_reward: bool = True,
     ):
         """
         单设备 / 并发一步推进入口。
-        返回：(done, reward_result, scrap, action_mask, obs)。
+        返回：(done, reward, scrap, action_mask, obs)。
+        reward：标量 float。
         action_mask：非并发为全量 ndarray；并发为 (mask_tm2, mask_tm3)。
         """
         SCRAPE = False
@@ -229,10 +228,15 @@ class ClusterTool:
         _lp_done = self._lp_done
 
         if self.time >= self.MAX_TIME:
-            timeout_reward = {"total": -100.0, "timeout": True} if detailed_reward else -100.0
             action_mask = self.get_action_mask(wait_action_start=_mask_start, n_actions=_mask_n)
             obs = self.get_obs()
-            return True, timeout_reward, True, action_mask, obs
+            return (
+                True,
+                -100.0,
+                True,
+                action_mask,
+                obs,
+            )
 
         transitions: List[int] = []
         if a1 is not None:
@@ -265,24 +269,18 @@ class ClusterTool:
                     actual_dt = min(requested_wait, next_event_delta)
 
             t2 = t1 + actual_dt
-            reward_result, scan_info = self._advance_and_compute_reward(
-                actual_dt, t1, t2, detailed=detailed_reward)
+            reward, scan_info = self._advance_and_compute_reward(actual_dt, t1, t2)
             self._consecutive_wait_time += (t2 - t1)
 
             if self._consecutive_wait_time >= self.idle_timeout and not self._idle_penalty_applied:
                 self._idle_penalty_applied = True
-                if detailed_reward:
-                    reward_result["idle_timeout_penalty"] = -float(self.idle_event_penalty)
-                    reward_result["total"] -= float(self.idle_event_penalty)
-                else:
-                    reward_result -= float(self.idle_event_penalty)
+                reward -= float(self.idle_event_penalty)
         else:
             self._consecutive_wait_time = 0
             swap_indices = {t_idx for t_idx in transitions if self._will_swap(int(t_idx))}
             action_duration = self.swap_duration if swap_indices else self.ttime
             t2 = t1 + action_duration
-            reward_result, scan_info = self._advance_and_compute_reward(
-                action_duration, t1, t2, detailed=detailed_reward)
+            reward, scan_info = self._advance_and_compute_reward(action_duration, t1, t2)
             log_entry = self._fire(
                 transitions,
                 start_time=t1,
@@ -295,19 +293,13 @@ class ClusterTool:
                 self.fire_log.append(log_entry)
 
             if self._per_wafer_reward > 0:
-                if detailed_reward:
-                    reward_result["wafer_done_bonus"] += self._per_wafer_reward
-                    reward_result["total"] += self._per_wafer_reward
-                else:
-                    reward_result += self._per_wafer_reward
+                reward += self._per_wafer_reward
                 self._per_wafer_reward = 0.0
 
         finish = len(_lp_done.tokens) >= self.n_wafer
-        scan = scan_info if isinstance(scan_info, dict) else {}
-        is_scrap = bool(scan.get("is_scrap", False))
-        scrap_info = scan.get("scrap_info")
-        if "is_scrap" not in scan:
-            is_scrap, scrap_info = self._check_scrap()
+        scan = scan_info
+        is_scrap = bool(scan["is_scrap"])
+        scrap_info = scan["scrap_info"]
         # 非 WAIT 场景下，若本步 u_* 已取走同一 resident wafer，则撤销本步 scrap。
         if self._should_cancel_resident_scrap_after_fire(scan=scan, log_entry=log_entry):
             is_scrap = False
@@ -318,27 +310,30 @@ class ClusterTool:
         if is_scrap:
             self.scrap_count += 1
             self.resident_violation_count += 1
-            if detailed_reward:
-                reward_result["scrap_penalty"] -= float(self.scrap_event_penalty)
-                reward_result["total"] -= float(self.scrap_event_penalty)
-                reward_result["scrap_info"] = scrap_info
-            else:
-                reward_result -= float(self.scrap_event_penalty)
+            reward -= float(self.scrap_event_penalty)
             action_mask = self.get_action_mask(wait_action_start=_mask_start, n_actions=_mask_n)
             obs = self.get_obs()
-            return True, reward_result, True, action_mask, obs
+            return (
+                True,
+                float(reward),
+                True,
+                action_mask,
+                obs,
+            )
 
         if finish:
-            if detailed_reward:
-                reward_result["finish_bonus"] += float(self.finish_event_reward)
-                reward_result["total"] += float(self.finish_event_reward)
-            else:
-                reward_result += float(self.finish_event_reward)
+            reward += float(self.finish_event_reward)
             SCRAPE = False
 
         action_mask = self.get_action_mask(wait_action_start=_mask_start, n_actions=_mask_n)
         obs = self.get_obs()
-        return bool(finish), reward_result, SCRAPE, action_mask, obs
+        return (
+            bool(finish),
+            float(reward),
+            SCRAPE,
+            action_mask,
+            obs,
+        )
 
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
@@ -388,38 +383,20 @@ class ClusterTool:
             place.write_obs_fast(self._obs_buffer, offset)
         return self._obs_buffer
 
-    def _advance_and_compute_reward(self,dt: int, t1: int, t2: int, detailed: bool = False) -> tuple:
+    def _advance_and_compute_reward(self, dt: int, t1: int, t2: int) -> tuple:
         """
-        单次 marks 遍历完成：reward 计算 + stay_time 推进 + 清洗/idle 推进 + scrap/qtime 检测。
-        排序：reward 使用推进前 stay_time，scrap/qtime 使用推进后 stay_time。
-        返回 (reward_result, scan_info)。
+        推进仿真时间并累计本步奖励。
+        返回：(total_reward, scan_info)。stay 推进后在下方内联驻留 scrap 扫描写入 is_scrap/scrap_info；
+        step 只消费该 dict。
         """
         safe_dt = max(0, int(dt))
         self.time += safe_dt
         _training = self._training
+        is_scrap = False
+        scrap_info = None
 
         total_reward = 0.0
-        if detailed:
-            parts = {
-                "time_cost": 0.0, "proc_reward": 0.0, "safe_reward": 0.0,
-                "warn_penalty": 0.0, "penalty": 0.0, "wafer_done_bonus": 0.0,
-                "finish_bonus": 0.0, "scrap_penalty": 0.0,
-            }
-
-        tc = -float(safe_dt * self.time_coef_penalty)
-        total_reward += tc
-        if detailed:
-            parts["time_cost"] = tc
-
-        is_scrap = False
-        scrap_info: Optional[Dict[str, Any]] = None
-        qtime_new_violations: List[int] = []
-        qtime_limit = self.D_Residual_time
-        p_residual = self.P_Residual_time
-        proc_coef = self.processing_coef_reward
-        transport_coef = self.transport_overtime_coef_penalty
-        warn_coef = self.warn_coef_penalty
-        check_qtime = not _training
+        total_reward += -float(safe_dt * self.time_coef_penalty)
         _SOURCE = SOURCE
 
         for p in self.marks:
@@ -436,26 +413,13 @@ class ClusterTool:
                     if remain < 0:
                         remain = 0
                     progress = safe_dt if safe_dt < remain else remain
-                    r = proc_coef * float(progress)
-                    total_reward += r
-                    if detailed:
-                        parts["proc_reward"] += r
-
-                left = proc_time + p_residual - head_stay
-                if left <= p_residual:
-                    r = -(warn_coef * safe_dt)
-                    total_reward += r
-                    if detailed:
-                        parts["warn_penalty"] += r
+                    total_reward += self.processing_coef_reward * float(progress)
             elif has_tok and p_type == DELIVERY_ROBOT:
-                for tok in tokens:
-                    deadline = tok.enter_time + qtime_limit
-                    over_start = t1 if t1 > deadline else deadline
-                    if t2 > over_start:
-                        r = -float(t2 - over_start) * float(transport_coef)
-                        total_reward += r
-                        if detailed:
-                            parts["penalty"] += r
+                tok = tokens[0]
+                deadline = tok.enter_time + self.D_Residual_time
+                over_start = t1 if t1 > deadline else deadline
+                if t2 > over_start:
+                    total_reward += -float(t2 - over_start) * float(self.transport_overtime_coef_penalty)
 
             if p_type != _SOURCE and safe_dt > 0:
                 for tok in tokens:
@@ -487,47 +451,35 @@ class ClusterTool:
                                 "processed_wafer_count": p.processed_wafer_count,
                             })
 
-            if has_tok and (not is_scrap) and p_type in (CHAMBER, 5):
-                head = tokens[0]
-                post_stay = head.stay_time
-                remaining_proc = p.processing_time - post_stay
-                resident_limit = (
-                    p_residual * 3 if p.name in {"LLC", "LLD"} else p_residual
-                )
-                if remaining_proc < -resident_limit:
-                    overtime = -remaining_proc - resident_limit
-                    scrap_info = {
-                        "token_id": head.token_id,
-                        "place": p.name,
-                        "stay_time": post_stay,
-                        "proc_time": p.processing_time,
-                        "overtime": overtime,
-                        "type": "resident",
-                    }
-                    is_scrap = True
-            if check_qtime and has_tok and p_type == DELIVERY_ROBOT:
-                for tok in tokens:
-                    tid = tok.token_id
-                    if tid < 0 or tid in self._qtime_violated_tokens:
-                        continue
-                    if tok.stay_time > qtime_limit:
-                        qtime_new_violations.append(tid)
-
-        for tid in qtime_new_violations:
-            if tid not in self._qtime_violated_tokens:
-                self._qtime_violated_tokens.add(tid)
-                self.qtime_violation_count += 1
+            # 驻留违规扫描
+            if not has_tok:
+                continue
+            if p.type == CHAMBER:
+                resident_limit = self.P_Residual_time
+            elif p.type == 5:
+                resident_limit = self.P_Residual_time * 3
+            else:
+                continue
+            tok = p.tokens[0]
+            remaining = p.processing_time - tok.stay_time
+            if remaining < -resident_limit:
+                overtime = -remaining - resident_limit
+                is_scrap = True
+                scrap_info = {
+                    "token_id": tok.token_id,
+                    "place": p.name,
+                    "stay_time": tok.stay_time,
+                    "proc_time": p.processing_time,
+                    "overtime": overtime,
+                    "type": "resident",
+                }
+                break
 
         scan_info: Dict[str, Any] = {
             "is_scrap": is_scrap,
             "scrap_info": scrap_info,
-            "qtime_new_violations": qtime_new_violations,
         }
         self._last_state_scan = scan_info
-
-        if detailed:
-            parts["total"] = total_reward
-            return parts, scan_info
         return total_reward, scan_info
 
     def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
@@ -952,15 +904,6 @@ class ClusterTool:
             cloned.append(cp)
         return cloned
 
-    def _get_place(self, name: str) -> Place:
-        place = self._place_by_name.get(name)
-        if place is None:
-            raise KeyError(f"unknown place: {name}")
-        return place
-
-    def _get_place_index(self, name: str) -> int:
-        return self.id2p_name.index(name)
-
     def _transition_target_place(self, t_idx: int) -> Optional[str]:
         """根据变迁后置库所索引返回目标库所名，避免依赖 t_* 命名格式。"""
         if t_idx < 0 or t_idx >= len(self._pst_place_indices):
@@ -1049,7 +992,7 @@ class ClusterTool:
         trigger = self._cleaning_trigger_map.get(source_name, 0)
         if trigger <= 0:
             return
-        source_place = self._get_place(source_name)
+        source_place = self._place_by_name.get(source_name)
         source_place.processed_wafer_count = source_place.processed_wafer_count + 1
         source_place.last_proc_type = source_name
         if source_place.is_cleaning:
@@ -1108,39 +1051,18 @@ class ClusterTool:
         candidates = tuple(self._u_targets.get(source, ()))
         if not candidates:
             return False, None
-        source_place = self._get_place(source)
+        source_place = self._place_by_name.get(source)
         head_tok = source_place.tokens[0] if len(source_place.tokens) > 0 else None
         tok_gate = head_tok.route_queue[head_tok.route_head_idx] if head_tok is not None else -1
         target_name = self._select_min_use_count_target(candidates, tok_gate)
         if target_name is None:
             return False, None
-        target_place = self._get_place(target_name)
+        target_place = self._place_by_name.get(target_name)
         if target_place.is_cleaning:
             return False, None
         if not self._dual_arm and len(target_place.tokens) >= target_place.capacity:
             return False, None
         return True, target_name
-
-    def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
-        for p in self.marks:
-            if p.type not in (CHAMBER, 5):
-                continue
-            resident_limit = (
-                self.P_Residual_time * 1 if p.name in {"LLC", "LLD"} else self.P_Residual_time
-            )
-            for tok in p.tokens:
-                remaining = p.processing_time - tok.stay_time
-                if remaining < -resident_limit:
-                    overtime = -remaining - resident_limit
-                    return True, {
-                        "token_id": tok.token_id,
-                        "place": p.name,
-                        "stay_time": tok.stay_time,
-                        "proc_time": p.processing_time,
-                        "overtime": overtime,
-                        "type": "resident",
-                    }
-        return False, None
 
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
 

@@ -10,7 +10,7 @@ from .petri_adapter import PetriAdapter
 
 
 def run_smoke() -> None:
-    env = Env_PN_Concurrent(detailed_reward=True)
+    env = Env_PN_Concurrent()
     adapter = PetriAdapter(env)
     state = adapter.reset()
     print("time:", state.time)

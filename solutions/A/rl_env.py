@@ -103,7 +103,6 @@ class Env_PN_Single(EnvBase):
         self.wait_action_indices = list(range(self.wait_action_start, self.n_actions))
         self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
         self._make_spec()
-        self._last_reward_detail: dict = {}
         self._out_time = torch.zeros(1, dtype=torch.int64)
         self._out_reward = torch.zeros(1, dtype=torch.float32)
         if seed is None:
@@ -183,7 +182,6 @@ class Env_PN_Single(EnvBase):
 
     def _reset(self, td_params):
         self.net.reset()
-        self._last_reward_detail = {}
         if self.eval_mode:
             self.net.eval()
         else:
@@ -193,26 +191,17 @@ class Env_PN_Single(EnvBase):
     def _step(self, tensordict=None):
         action = int(tensordict["action"].item())
         wait_duration = self.parse_wait_action(action)
-        use_detailed_reward = self.eval_mode
         if wait_duration is not None:
             done, reward_result, scrap, action_mask, obs = self.net.step(
-                wait_duration=int(wait_duration), detailed_reward=use_detailed_reward
+                wait_duration=int(wait_duration),
             )
         else:
             _, transition_idx = self._decode_action(action)
             done, reward_result, scrap, action_mask, obs = self.net.step(
-                a1=int(transition_idx), detailed_reward=use_detailed_reward
+                a1=int(transition_idx),
             )
         deadlock = bool(getattr(self.net, "_last_deadlock", False))
-        reward = float(reward_result) if not isinstance(reward_result, dict) else float(reward_result.get("total", 0.0))
-        if self.eval_mode and isinstance(reward_result, dict):
-            detail = {}
-            for k, v in reward_result.items():
-                if isinstance(v, (int, float)):
-                    detail[k] = float(v)
-                elif isinstance(v, dict) and k == "scrap_info":
-                    detail[k] = v
-            self._last_reward_detail = detail
+        reward = float(reward_result)
 
         self._out_time[0] = self.net.time
         self._out_reward[0] = reward
@@ -245,7 +234,7 @@ class Env_PN_Concurrent(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False
 
-    def __init__(self, device: str = "cpu", seed=None, detailed_reward: bool = False):
+    def __init__(self, device: str = "cpu", seed=None):
         super().__init__(device=device)
         dir = Path(__file__).parents[2] / "config" / "cluster_tool"
         config = PetriEnvConfig.load(dir / "cascade.yaml")
@@ -263,7 +252,6 @@ class Env_PN_Concurrent(EnvBase):
         self.tm2_transition_names = [self.net.id2t_name[idx] for idx in self.tm2_transition_indices]
         self.tm3_transition_names = [self.net.id2t_name[idx] for idx in self.tm3_transition_indices]
 
-        self.detailed_reward = detailed_reward
         self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
         self._make_spec()
         if seed is None:
@@ -317,10 +305,9 @@ class Env_PN_Concurrent(EnvBase):
 
         done, reward_result, scrap, action_mask, obs = self.net.step(
             a1=a1, a2=a2,
-            with_reward=True, detailed_reward=self.detailed_reward
         )
 
-        reward = reward_result.get('total', 0) if isinstance(reward_result, dict) else reward_result
+        reward = float(reward_result)
         mask_tm2, mask_tm3 = action_mask
         time = self.net.time
         terminated = bool(done)
@@ -396,18 +383,15 @@ class FastEnvWrapper:
                 self.wait_action_start,
                 self.wait_durations,
             )
-            detailed = bool(getattr(self.env, "eval_mode", False))
             if bool(is_wait):
                 done, reward_result, scrap, action_mask, obs = self.env.net.step(
                     wait_duration=int(wait_duration),
-                    detailed_reward=detailed,
                 )
             else:
                 done, reward_result, scrap, action_mask, obs = self.env.net.step(
                     a1=int(transition_idx),
-                    detailed_reward=detailed,
                 )
-            reward = float(reward_result) if not isinstance(reward_result, dict) else float(reward_result.get("total", 0.0))
+            reward = float(reward_result)
             deadlock = bool(getattr(self.env.net, "_last_deadlock", False))
             last_scan = getattr(self.env.net, "_last_state_scan", None)
             scan_scrap = bool(last_scan.get("is_scrap", False)) if isinstance(last_scan, dict) else False
@@ -512,10 +496,8 @@ class FastEnvWrapper_Concurrent:
         done, reward_result, scrap, action_mask, obs = env.net.step(
             a1=a1,
             a2=a2,
-            with_reward=True,
-            detailed_reward=False,
         )
-        reward = float(reward_result) if not isinstance(reward_result, dict) else float(reward_result.get("total", 0.0))
+        reward = float(reward_result)
         scrap = bool(scrap)
         done = bool(done)
         terminated = done or scrap

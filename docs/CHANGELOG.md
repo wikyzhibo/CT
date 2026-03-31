@@ -2,6 +2,31 @@
 
 ## 2026-03-31
 
+### A 方案：删除 `ClusterTool._check_scrap`，驻留 scrap 内联至 `_advance_and_compute_reward`（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `ClusterTool._check_scrap`；原循环与 `LLC`/`LLD` 阈值逻辑并入 `_advance_and_compute_reward` stay 推进循环之后。`docs/pn_api.md`、`docs/continuous-model/pn-single.md` 规则 22–23 同步（规则 22 明确 `LLC`/`LLD` 为 `3 * P_Residual_time`）。
+- **Why**：单一实现位置；避免独立方法与内联双轨。
+- **Impact**：外部不再存在 `ClusterTool._check_scrap` 方法名；行为与删除前一致。
+
+### A 方案：`ClusterTool.step` 不再对 scrap 做兜底 `_check_scrap`（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 中 `step` 删除对 `scan_info` 的类型分支与「缺 `is_scrap` 键则再调 `_check_scrap`」分支；直接读取 `_advance_and_compute_reward` 返回的 `scan_info`。`_advance_and_compute_reward` 增补 docstring，明确第二项为含 `is_scrap`/`scrap_info` 的 dict。
+- **Why**：驻留 scrap 单一来源已在时间推进后由 `_advance_and_compute_reward` 写入；外层防御与主路径重复。
+- **Impact**：`step` 假定每步均经 `_advance_and_compute_reward` 得到完整 `scan_info`（与当前两条分支一致）。
+
+### A 方案：`ClusterTool` 奖励仅标量（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 中 `_advance_and_compute_reward` 返回 `(float, scan_info)`；`step` 第二返回值**始终**为标量 `float`，删除 `detailed_reward` 形参及内部分项 `dict`。`Env_PN_Single` / `Env_PN_Concurrent` / `FastEnvWrapper` / `visualization/petri_adapter.py` / `petri_single_adapter.py` 同步去掉 `detailed_reward` / `with_reward` 传参与 dict 解析。
+- **Why**：训练与推理只消费总奖励；避免维护双形态出口。
+- **Impact**：可视化 `get_reward_breakdown()` / `info["detail"]` 恒为空（无分项）；数值与旧版 `detailed_reward=False` 时 `total` 一致。
+
+### A 方案：`ClusterTool` 驻留 scrap 与奖励出口（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 中 `_advance_and_compute_reward` 在 stay 推进后写入驻留 `scan_info`。（后续同日条目「奖励仅标量」已改为 `_advance_and_compute_reward` 返回 `float`、不再返回分项 `dict`；再后来同日条目删除 `_check_scrap` 方法、逻辑内联至本方法。）
+- **Why**：单一 scrap 语义来源。
+- **Impact**：见 `docs/continuous-model/pn-single.md` 规则 22–23。
+
+
 ### A 方案：`ClusterTool` 并发掩码与 `get_enable_t` 移除（2026-03-31）
 
 - **What changed**：`ClusterTool(config, concurrent=False)`；`get_action_mask(..., concurrent=None)` 在并发实例上返回 `(mask_tm2, mask_tm3)`，否则返回全量 `ndarray`；`step` 第四项与之一致。删除 `get_enable_t()`。`Env_PN_Concurrent` 使用 `ClusterTool(..., concurrent=True)` 并删除 `_build_action_masks`；`visualization/petri_adapter.py` 对使能枚举显式使用 `get_action_mask(..., concurrent=False)`；`visualization/main.py` 并发推理改用 `env.net.get_action_mask(...)`。

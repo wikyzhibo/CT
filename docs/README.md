@@ -47,6 +47,9 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `pn_api.md` / `continuous-model/pn-single.md` / `CHANGELOG.md`：删除 `ClusterTool._check_scrap`，驻留 scrap 判定内联至 `_advance_and_compute_reward`；见 `CHANGELOG.md`。
+- 2026-03-31: `pn_api.md` / `continuous-model/pn-single.md` / `CHANGELOG.md`：`ClusterTool.step` 仅消费 `_advance_and_compute_reward` 的 `scan_info`，不再对 scrap 做外层 `_check_scrap` 兜底；见 `CHANGELOG.md`。
+- 2026-03-31: `pn_api.md` / `CHANGELOG.md`：A 方案 `ClusterTool.step` 第二返回值仅为标量 `float`；移除 `detailed_reward` 与奖励分项 `dict`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md` / `training/training-guide.md`：`ClusterTool(config, concurrent=...)`；`get_action_mask` 并发时返回 TM2/TM3 掩码；移除 `get_enable_t`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md`：`solutions/A/petri_net.py`（`ClusterTool`）移除 step 分段 profiling 与 `get_step_profile_summary`；`ppo_trainer` 不再打印 `[Step Time Profile]`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md`：`solutions/A/petri_net.py`（`ClusterTool`）移除 `_token_stats` / `calc_wafer_statistics`；可视化 `StateInfo.stats` 时长类为占位；见 `CHANGELOG.md`。

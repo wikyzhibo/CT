@@ -72,22 +72,16 @@ class PetriSingleAdapter(AlgorithmAdapter):
         wait_duration = self.env.parse_wait_action(int(action))
         if wait_duration is not None:
             done, reward_result, scrap, _action_mask, _obs = self.net.step(
-                detailed_reward=True,
                 wait_duration=int(wait_duration),
             )
         else:
             _, transition_idx = self.env._decode_action(int(action))
             done, reward_result, scrap, _action_mask, _obs = self.net.step(
                 a1=int(transition_idx),
-                detailed_reward=True,
             )
 
-        reward = float(reward_result.get("total", 0.0)) if isinstance(reward_result, dict) else float(reward_result)
-        self._last_reward_detail = (
-            {k: float(v) for k, v in reward_result.items() if isinstance(v, (int, float))}
-            if isinstance(reward_result, dict)
-            else {"total": reward}
-        )
+        reward = float(reward_result)
+        self._last_reward_detail = {}
         if self.step_verbose and self._last_reward_detail:
             nonzero = {k: v for k, v in self._last_reward_detail.items() if isinstance(v, (int, float)) and v != 0}
             if nonzero:

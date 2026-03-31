@@ -68,7 +68,7 @@ def build_adapter(
     if runtime_mode == "concurrent":
         if str(device_mode).lower() != "cascade":
             raise ValueError("并发可视化仅支持 cascade 设备模式")
-        env = Env_PN_Concurrent(device="cpu", detailed_reward=True)
+        env = Env_PN_Concurrent(device="cpu")
         return PetriAdapter(env, step_verbose=step_verbose)
     effective_robot_capacity = int(env_overrides.get("single_robot_capacity", robot_capacity))
     env = Env_PN_Single(single_route_config=env_overrides.get("single_route_config"),

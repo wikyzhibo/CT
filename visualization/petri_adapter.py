@@ -72,14 +72,8 @@ class PetriAdapter(AlgorithmAdapter):
         result = self._call_net_step(tm2_action, tm3_action)
         done, reward_result, scrap, _action_mask, _obs = self._unpack_step_result(result)
 
-        if isinstance(reward_result, dict):
-            self._last_reward_detail = {
-                k: float(v) for k, v in reward_result.items() if isinstance(v, (int, float))
-            }
-            reward = float(reward_result.get("total", 0.0))
-        else:
-            self._last_reward_detail = {}
-            reward = float(reward_result)
+        self._last_reward_detail = {}
+        reward = float(reward_result)
 
         if not done:
             done = getattr(self.net, "done_count", 0) >= getattr(self.net, "n_wafer", 0)
@@ -204,16 +198,9 @@ class PetriAdapter(AlgorithmAdapter):
         return raw, -1
 
     def _call_net_step(self, a1: Optional[int], a2: Optional[int]):
-        try:
-            if a1 is None and a2 is None:
-                return self.net.step(wait_duration=5, detailed_reward=True)
-            return self.net.step(a1=a1, a2=a2, with_reward=True, detailed_reward=True)
-        except TypeError:
-            if a1 is None and a2 is None:
-                return self.net.step(wait_duration=5)
-            if a1 is not None:
-                return self.net.step(a1=a1, detailed_reward=True)
-            return self.net.step(a1=a2, detailed_reward=True)
+        if a1 is None and a2 is None:
+            return self.net.step(wait_duration=5)
+        return self.net.step(a1=a1, a2=a2)
 
     @staticmethod
     def _unpack_step_result(result):

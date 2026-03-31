@@ -63,8 +63,8 @@
 19. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值随机”决策，禁止同一步并行目标多放行。
 20. `_fire` 不再维护任何 round-robin 指针状态；并行目标选择完全由 `get_action_mask` / `_is_next_stage_available` 的 `use_count` 规则决定。
 21. 级联观测中 `TM2` 的目标 one-hot 采用固定 **9** 维逐目标编码；`TM3` 为 **8** 维（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
-22. 驻留 scrap 口径：普通腔室阈值为 `process_time + P_Residual_time`；`LLC/LLD` 阈值为 `process_time + 3 * P_Residual_time`。超过阈值会按 `resident` 类型计入 scrap 判定。
-23. 同一步内先推进时间再发射变迁：若 `_advance_and_compute_reward` 已对本步标 `resident` scrap，且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
+22. 驻留 scrap 口径：在 `ClusterTool._advance_and_compute_reward` 内 stay 推进后内联扫描；对 `type` 为加工腔室或类型 5 的库所遍历 token，令 `remaining = processing_time - stay_time`，`resident_limit` 为普通腔室 `P_Residual_time`，`LLC`/`LLD` 为 `3 * P_Residual_time`；当 `remaining < -resident_limit` 时按 `resident` 计入（实现见 `solutions/A/petri_net.py`）。`step` 只读取该步 `scan_info`，**不会**再单独扫描或按缺键兜底。
+23. 同一步内先推进时间再发射变迁：若本步 `scan_info` 已标 `resident` scrap（来源为 `_advance_and_compute_reward` 内联判定），且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
 24. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
 25. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
 26. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。

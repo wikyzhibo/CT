@@ -131,8 +131,8 @@ class BasedToken:
 - `reset()`：重置网状态；返回 `(None, enabled_transition_indices)`，第二项为当前使能变迁索引的有序列表，由 `get_action_mask(..., concurrent=False)` 的前 `T` 维派生（与 RL 掩码中变迁段一致）。`Env_PN_Single` 等封装通常忽略该返回值，另行调用 `get_action_mask` 构建 `action_mask`。
 - `get_action_mask(wait_action_start=None, n_actions=None, concurrent=None)`：`concurrent` 为 `None` 时跟随构造参数 `concurrent`。`concurrent=False` 时返回完整离散动作掩码 `np.ndarray`（`transition + wait`）。`concurrent=True` 时返回 `(mask_tm2, mask_tm3)` 两段局部布尔向量（末维为各自 WAIT，恒为可执行）。使能与 wait 规则在完整掩码上统一完成后再投影到 TM。已移除 `get_enable_t()`。
 - `step(...)` 第四项 `action_mask`：非并发为 `np.ndarray`；并发为 `(mask_tm2, mask_tm3)`，与 `get_action_mask` 一致。
-- `Env_PN_Single`：`eval_mode=True` 时仍启用 `detailed_reward` 与 `net.eval()`；动作合法性仅通过 TensorDict 的 `action_mask`（及 `ClusterTool.step` 返回值中的 mask）表达，不在环境上缓存逐步使能列表。
-- `step(a1=None, detailed_reward=False, wait_duration=None)`：执行单步并返回 `(done, reward_result, scrap, action_mask)`（动作校验 -> 发射/等待 -> 时间推进 -> 奖励 -> mask）；`advance_time()` 内会同步完成 `scrap/qtime` 状态扫描，减少重复 token 遍历。补充：非 WAIT 路径下，若本步 `u_*` 已取走与 `scrap_info` 同 `token_id` 且同源腔室的 resident wafer，则撤销本步 scrap（不终止、不追加 `scrap_penalty`）。
+- `Env_PN_Single`：`eval_mode=True` 时仍调用 `net.eval()`；动作合法性仅通过 TensorDict 的 `action_mask`（及 `ClusterTool.step` 返回值中的 mask）表达，不在环境上缓存逐步使能列表。
+- `step(a1=None, a2=None, wait_duration=None)`：执行单步并返回 `(done, reward, scrap, action_mask, obs)`。第二项 `reward` **仅为**标量 `float`（无分项字典）。`_advance_and_compute_reward` 返回 `(float, scan_info)`，在 stay 推进后于方法内**内联**驻留 scrap 扫描（遍历 `CHAMBER`/类型 5 库所，阈值见 `docs/continuous-model/pn-single.md` 规则 22）写入驻留 `scrap` 至 `scan_info`。补充：非 WAIT 路径下，若本步 `u_*` 已取走与 `scrap_info` 同 `token_id` 且同源腔室的 resident wafer，则撤销本步 scrap（不终止、不追加 scrap 惩罚项到标量外部分）。
 - `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。通过扫描 `marks` 中运输位 d_TM* 与加工腔室的 token，用不同规则计算；节拍为「下一节拍时刻 − 当前时间」。用于 wait 时截断推进量，避免跨过取片或发片决策点。
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`。
@@ -161,7 +161,7 @@ class BasedToken:
   - `robot_capacity` 固定为 1（暂不考虑双臂死锁锁定规则）；
   - `get_action_mask()` 内部使能判定先检查 `u_LP`，再扫描系统内 token 生成候选 `u_*/t_*` 并直接写 mask；
   - 运行时除 `LP/LP_done` 外库所按 unit-capacity（1）约束；
-  - `check_scrap` 判定改为基于 token 剩余时间：`remaining < -P_Residual_time` 视为驻留违规。
+  - 驻留 scrap 在 `_advance_and_compute_reward` 内联判定（`remaining` 与 `resident_limit`，`LLC`/`LLD` 阈值见 `continuous-model/pn-single.md` 规则 22）。
   - 非 WAIT 路径保留“先时间推进再 fire”；若本步 fire 已同步取走触发 resident 违规的同一 wafer，则撤销该步 scrap 影响。
 
 **事后追责相关字段**
