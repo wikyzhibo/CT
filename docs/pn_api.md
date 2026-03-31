@@ -87,9 +87,11 @@ class BasedToken:
 用于配置奖励系数、驻留时间、最大晶圆数、优化开关等。
 
 常用配置项：
-- `n_wafer`
+- `n_wafer1`
+- `n_wafer2`
 - `stop_on_scrap`
-- `max_wafers_in_system`
+- `max_wafers1_in_system`
+- `max_wafers2_in_system`
 - `optimize_reward_calc`
 - `optimize_state_update`
 - `cache_indices`
@@ -139,15 +141,17 @@ class BasedToken:
 - `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
 - 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
 
-**max_wafers_in_system 门控（2026-03-18）**
-- What changed：`pn_single` 新增在制品并发上限门控。`u_LP` 发片时 `entered_wafer_count += 1`，`t_LP_done` 完成时 `entered_wafer_count -= 1`；当 `entered_wafer_count >= max_wafers_in_system` 时禁用 `u_LP`。
-- Why：避免配置项仅存在于 `env_config` 但在单设备执行链不生效，统一与 `pn.py` 的语义口径。
-- Impact / How to use：该限制只作用于入口发片动作 `u_LP`，不改变 `n_wafer` 的完工判定。`max_wafers_in_system=0` 时会从首步起禁止发片。
+**max_wafers1_in_system / max_wafers2_in_system 门控（2026-03-31）**
+- What changed：`ClusterTool` 在制品上限门控：`u_LP` 发片时 `entered_wafer_count += 1`，`t_LP_done` 完成时 `entered_wafer_count -= 1`；按类型维护 `_entered_wafer_count_by_type`。单路线：`entered_wafer_count < max_wafers1_in_system` 时才允许发片；双子路径：不再使用单一全局在制数卡总 WIP，`_allow_start_for_route_type` 对 `route_type` 1/2 分别要求 `_entered_wafer_count_by_type[type] + 1 <= max_wafers1_in_system` 或 `<= max_wafers2_in_system`。
+- Why：上限由配置显式给定；`wafer_type_alloc` 不用于推导 WIP 上限。
+- Impact / How to use：该限制只作用于入口发片动作 `u_LP*`，不改变 `n_wafer1+n_wafer2` 的完工判定。`max_wafers1_in_system=0` 时单路线从首步起禁止发片；双子路径下 `route_type` 非 1/2 会抛错。
 - Example：
   ```python
   cfg = PetriEnvConfig(
-      n_wafer=12,
-      max_wafers_in_system=5,
+      n_wafer1=12,
+      n_wafer2=0,
+      max_wafers1_in_system=5,
+      max_wafers2_in_system=4,
   )
   ```
 

@@ -64,10 +64,10 @@ class ConfigEditor(QWidget):
     def _build_basic_form(self) -> None:
         layout = QFormLayout(self.basic_group)
 
-        self.fields["n_wafer"] = self._spin(0, 1000, 8)
-        self.fields["n_wafer_route1"] = self._spin(0, 1000, 8)
-        self.fields["n_wafer_route2"] = self._spin(0, 1000, 0)
-        self.fields["max_wafers_in_system"] = self._spin(0, 1000, 8)
+        self.fields["n_wafer1"] = self._spin(0, 1000, 8)
+        self.fields["n_wafer2"] = self._spin(0, 1000, 0)
+        self.fields["max_wafers1_in_system"] = self._spin(0, 1000, 8)
+        self.fields["max_wafers2_in_system"] = self._spin(0, 1000, 8)
         self.fields["stop_on_scrap"] = self._check(True)
 
         # 时间/腔室相关参数
@@ -81,10 +81,10 @@ class ConfigEditor(QWidget):
         self.fields["idle_timeout"] = self._spin(0, 10000, 700)
         self.fields["idle_event_penalty"] = self._spin(0, 100000, 1000)
 
-        layout.addRow("n_wafer", self.fields["n_wafer"])
-        layout.addRow("n_wafer_route1", self.fields["n_wafer_route1"])
-        layout.addRow("n_wafer_route2", self.fields["n_wafer_route2"])
-        layout.addRow("max_wafers_in_system", self.fields["max_wafers_in_system"])
+        layout.addRow("n_wafer1", self.fields["n_wafer1"])
+        layout.addRow("n_wafer2", self.fields["n_wafer2"])
+        layout.addRow("max_wafers1_in_system", self.fields["max_wafers1_in_system"])
+        layout.addRow("max_wafers2_in_system", self.fields["max_wafers2_in_system"])
         layout.addRow("stop_on_scrap", self.fields["stop_on_scrap"])
         layout.addRow("D_Residual_time", self.fields["D_Residual_time"])
         layout.addRow("P_Residual_time", self.fields["P_Residual_time"])
@@ -140,6 +140,20 @@ class ConfigEditor(QWidget):
             data["scrap_event_penalty"] = data["R_scrap"]
         if "idle_event_penalty" not in data and "idle_penalty" in data:
             data["idle_event_penalty"] = data["idle_penalty"]
+        if (
+            "max_wafers1_in_system" not in data
+            and "max_wafers2_in_system" not in data
+            and "max_wafers_in_system" in data
+        ):
+            v = data["max_wafers_in_system"]
+            data["max_wafers1_in_system"] = v
+            data["max_wafers2_in_system"] = v
+        if "n_wafer1" not in data and "n_wafer" in data:
+            data["n_wafer1"] = int(data["n_wafer"])
+            data["n_wafer2"] = 0
+        if "n_wafer1" not in data and data.get("n_wafer_route1") is not None:
+            data["n_wafer1"] = int(data["n_wafer_route1"])
+            data["n_wafer2"] = int(data.get("n_wafer_route2") or 0)
         for key, widget in self.fields.items():
             value = self._get_value(data, key)
             if value is None:

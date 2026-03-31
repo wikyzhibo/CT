@@ -47,6 +47,9 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `continuous-model/pn-single.md`：移除 `lp_release_pattern` 构网链与 `route_meta.lp_release_pattern_types`；行为规则 32–33；见 `CHANGELOG.md`。
+- 2026-03-31: `continuous-model/pn-single.md`：`n_wafer` 替换为 `n_wafer1`/`n_wafer2`，移除构网 `wafer_type_alloc_by_type`；行为规则 33；见 `CHANGELOG.md`。
+- 2026-03-31: `continuous-model/pn-single.md`：`max_wafers_in_system` 替换为 `max_wafers1_in_system`/`max_wafers2_in_system`；行为规则 32；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`build_takt_payload` 清洗口径收敛到 `chamber_blocks`；行为规则 34；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`preprocess_chamber_runtime_blocks` 顺序与清洗严格缺省、移除默认清洗形参；`cascade_routes_1_star.json` chambers 补全；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`preprocess_chamber_runtime_blocks` 移除 `process_time_map` 形参；行为规则与 Change Notes 同步；见 `CHANGELOG.md`。

@@ -548,7 +548,7 @@ class Petri:
         print(config.format(detailed=True))
         
         # 将配置参数设置为实例属性
-        self.n_wafer = config.n_wafer
+        self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
         self.time_coef = float(getattr(config, "time_coef", getattr(config, "time_coef_penalty", 1.0)))
         self.done_event_reward = config.done_event_reward
         self.finish_event_reward = config.finish_event_reward
@@ -583,7 +583,7 @@ class Petri:
         # 晶圆进入系统限制
         self.entered_wafer_count = 0  # 已进入系统的晶圆数
         self.done_count = 0           # 已完成的晶圆数 (用于进度条和统计)
-        self.max_wafers_in_system = config.max_wafers_in_system  # 最大允许进入系统的晶圆数
+        self.max_wafers1_in_system = int(config.max_wafers1_in_system)
 
         self.shot = "s"
 
@@ -597,11 +597,8 @@ class Petri:
         # 双机械手协作：TM2 负责 LP1/LP2/s1/s2放入/s4取出/s5/LP_done，TM3 负责 s2取出/s3/s4放入
         
         # 晶圆数量分配（可配置）
-        # 注意：config 中 n_wafer_route1/2 可能为 None，需要检查
-        _route1 = getattr(config, 'n_wafer_route1', None)
-        _route2 = getattr(config, 'n_wafer_route2', None)
-        self.n_wafer_route1 = _route1 if _route1 is not None else self.n_wafer // 2
-        self.n_wafer_route2 = _route2 if _route2 is not None else self.n_wafer - self.n_wafer // 2
+        self.n_wafer_route1 = int(config.n_wafer1)
+        self.n_wafer_route2 = int(config.n_wafer2)
         
         modules = {
             "LP1": ModuleSpec(tokens=self.n_wafer_route1, ptime=0, capacity=self.n_wafer_route1),  # 路线1晶圆
@@ -1787,7 +1784,7 @@ class Petri:
                     mask[t_idx] = False
         
         # ========== 限制进入系统的晶圆数量 ==========
-        if self.entered_wafer_count >= self.max_wafers_in_system:
+        if self.entered_wafer_count >= self.max_wafers1_in_system:
             if "u_LP1_s1" in self.id2t_name:
                 t_idx = self._get_transition_index("u_LP1_s1")
                 mask[t_idx] = False

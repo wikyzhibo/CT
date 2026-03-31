@@ -22,8 +22,11 @@ class ClusterTool:
 
         # ====== 1) 运行边界与奖励超参 ======
         self.MAX_TIME = config.MAX_TIME
-        self.n_wafer = int(config.n_wafer)
-        self.max_wafers_in_system = int(config.max_wafers_in_system)
+        self.n_wafer1 = int(config.n_wafer1)
+        self.n_wafer2 = int(config.n_wafer2)
+        self.n_wafer = int(self.n_wafer1) + int(self.n_wafer2)
+        self.max_wafers1_in_system = int(config.max_wafers1_in_system)
+        self.max_wafers2_in_system = int(config.max_wafers2_in_system)
         
         self.done_event_reward = int(config.done_event_reward)
         self.finish_event_reward = self.done_event_reward * 6
@@ -55,29 +58,18 @@ class ClusterTool:
         }
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
         
-        # ====== 4) 路由配置 ======
+        # ====== 6) 构网输入与构网结果 ======
         self.ttime = 5
         self.single_route_config = config.single_route_config
         self.single_route_name = config.single_route_name
-        self._route_stages = []
-        self.chambers = tuple()
-        # 先给出占位默认值，构网后以 route_meta 为准覆盖。
-        self._timeline_chambers = self.chambers
-        self._u_targets = {}
-        self._step_map = {}
-        self._system_entry_places = set()
-        self._has_repeat_syntax_reentry = False
-        self._ready_chambers = self.chambers
-        self._single_process_chambers = self.chambers
 
-        # ====== 6) 构网输入与构网结果 ======
-        info = build_net(n_wafer=self.n_wafer,
+        info = build_net(n_wafer1=self.n_wafer1,
+                         n_wafer2=self.n_wafer2,
                          ttime=self.ttime,
                          p_residual_time=self.P_Residual_time,
                          d_residual_time=self.D_Residual_time,
                          cleaning_enabled=self._cleaning_enabled,
-                         route_config=self.single_route_config, route_name=self.single_route_name,
-                         n_wafer_route1=self.config.n_wafer_route1, n_wafer_route2=self.config.n_wafer_route2)
+                         route_config=self.single_route_config, route_name=self.single_route_name)
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
 
@@ -95,8 +87,6 @@ class ClusterTool:
         self._multi_subpath = bool(route_meta.get("multi_subpath", False))
         self._subpath_to_type: Dict[str, int] = route_meta.get("subpath_to_type")
         self._wafer_type_to_subpath: Dict[int, str] = route_meta.get("wafer_type_to_subpath")
-        self._wafer_type_alloc_by_type: Dict[int, int] = route_meta.get("wafer_type_alloc_by_type")
-        self._wafer_type_alloc_total_weight: int = int(sum(self._wafer_type_alloc_by_type.values()))
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
         self._wafer_type_to_load_port: Dict[int, str] = route_meta.get("wafer_type_to_load_port")
         self._load_port_names: Tuple[str, ...] = route_meta.get("load_port_names")
@@ -111,17 +101,10 @@ class ClusterTool:
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
-        self._token_route_queue_templates_by_type: Dict[int, Tuple[object, ...]] = {
-            int(k): tuple(v)
-            for k, v in dict(info.get("token_route_queue_templates_by_type") or {}).items()
-        }
-        self._token_route_type_sequence: List[int] = [
-            int(x) for x in list(info.get("token_route_type_sequence") or [])
-        ]
+        self._token_route_queue_templates_by_type: Dict[int, Tuple[object, ...]] = info.get("token_route_queue_templates_by_type")
+        self._token_route_type_sequence: List[int] = info.get("token_route_type_sequence")
         self._t_target_place_map: Dict[str, str] = dict(info.get("t_target_place_map") or {})
-        self._route_source_target_transport: Dict[Tuple[str, str], str] = dict(
-            info.get("route_source_target_transport") or {}
-        )
+        self._route_source_target_transport: Dict[Tuple[str, str], str] = info.get("route_source_target_transport")
         self._t_route_code_by_idx: List[int] = [
             int(self._t_route_code_map.get(name, -1)) for name in self.id2t_name
         ]
@@ -191,11 +174,7 @@ class ClusterTool:
             self._takt_result = next(iter(self._takt_result_by_type.values()))
         self._last_u_LP_fire_time: int = 0
         self._u_LP_release_count: int = 0
-        all_types = (
-            set(self._wafer_type_to_subpath.keys())
-            | set(self._takt_result_by_type.keys())
-            | set(self._wafer_type_alloc_by_type.keys())
-        )
+        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
         if not all_types:
             all_types = {1}
         self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
@@ -437,11 +416,7 @@ class ClusterTool:
         self._init_cleaning_state()
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
-        all_types = (
-            set(self._wafer_type_to_subpath.keys())
-            | set(self._takt_result_by_type.keys())
-            | set(self._wafer_type_alloc_by_type.keys())
-        )
+        all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
         if not all_types:
             all_types = {1}
         self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
@@ -1072,25 +1047,18 @@ class ClusterTool:
         return heads
 
     def _allow_start_for_route_type(self, route_type: int) -> bool:
-        """
-        双子路径场景下按 wafer_type_alloc 严格分配 max_wafers_in_system：
-        - 不做取整/四舍五入
-        - 不允许类型间借额
-        判定采用交叉乘法，避免浮点误差。
-        """
+        """双子路径：route_type 1/2 分别受 max_wafers1_in_system / max_wafers2_in_system 约束。"""
         if not self._multi_subpath:
             return True
-        total_weight = int(self._wafer_type_alloc_total_weight)
-        if total_weight <= 0:
-            return True
         type_id = int(route_type)
-        weight = int(self._wafer_type_alloc_by_type.get(type_id, 0))
-        if weight <= 0:
-            return False
+        if type_id == 1:
+            cap = int(self.max_wafers1_in_system)
+        elif type_id == 2:
+            cap = int(self.max_wafers2_in_system)
+        else:
+            raise RuntimeError(f"unsupported route_type for WIP cap: {type_id}")
         current = int(self._entered_wafer_count_by_type.get(type_id, 0))
-        lhs = int(current + 1) * total_weight
-        rhs = int(self.max_wafers_in_system) * weight
-        return lhs <= rhs
+        return int(current + 1) <= cap
 
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
@@ -1479,8 +1447,8 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
-        # LP 出片：各装载口独立门控（全局 WIP + 类型配额 + 队首节拍就绪）；可同时允许多条 u_LP*。
-        if int(self.entered_wafer_count) < int(self.max_wafers_in_system):
+        # LP 出片：单路线用全局 WIP（max_wafers1）；双子路径仅按类型上限（_allow_start_for_route_type）+ 队首节拍就绪；可同时允许多条 u_LP*。
+        if self._multi_subpath or int(self.entered_wafer_count) < int(self.max_wafers1_in_system):
             for lp_name in self._load_port_names:
                 lp_place = self._place_by_name.get(lp_name)
                 if lp_place is None or len(lp_place.tokens) == 0:

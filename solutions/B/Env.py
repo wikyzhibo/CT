@@ -28,7 +28,9 @@ class Env(EnvBase):
         cfg = clustertool_cfg if clustertool_cfg is not None else ClusterToolCfg.load()
 
         self.candidate_k = int(candidate_k if candidate_k is not None else cfg.candidate_k)
-        resolved_n_wafer = int(n_wafer if n_wafer is not None else cfg.n_wafer)
+        resolved_n_wafer = int(
+            n_wafer if n_wafer is not None else int(cfg.n_wafer1) + int(cfg.n_wafer2)
+        )
         resolved_ttime = int(ttime if ttime is not None else cfg.ttime)
         resolved_search_depth = int(search_depth if search_depth is not None else cfg.search_depth)
         resolved_takt_cycle = takt_cycle if takt_cycle is not None else cfg.takt_cycle

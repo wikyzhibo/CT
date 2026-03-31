@@ -2,6 +2,18 @@
 
 ## 2026-03-31
 
+### A 方案：移除 `lp_release_pattern` / `lp_release_pattern_types` 构网链（2026-03-31）
+
+- **What changed**：`build_token_route_queue_multi` 删除参数与返回值中的 `lp_release_pattern` / `lp_release_pattern_types`；`model_builder._build_token_type_sequence` 仅保留 `n_wafer1`/`n_wafer2` → 连续类型 1 再类型 2；`route_meta` 不再含 `lp_release_pattern_types`；`config/cluster_tool/cascade_routes_1_star.json` 的 `routes.4-8` 删除 `lp_release_pattern` 字段。
+- **Why**：发片顺序不再由路线 JSON 的 pattern 表达，与已删除的 `wafer_type_alloc` 构网口径一致。
+- **Impact**：若仓库外路线 JSON 仍含 `lp_release_pattern`，**会被忽略**（`extra` 或未读键）；类型序列只由 `PetriEnvConfig.n_wafer1`/`n_wafer2` 决定。
+
+### A 方案：`n_wafer` → `n_wafer1`/`n_wafer2`；移除 `wafer_type_alloc_by_type` 与权重配额序列（2026-03-31）
+
+- **What changed**：`PetriEnvConfig` 删除 `n_wafer`、`n_wafer_route1`、`n_wafer_route2`；新增 `n_wafer1`、`n_wafer2`。`build_net(n_wafer1, n_wafer2, ...)` 内部总片数 `n_wafer=n_wafer1+n_wafer2`；单条子路径路线要求 `n_wafer2==0`。`model_builder._build_token_type_sequence` 由 `n_wafer1`/`n_wafer2` 直接生成类型序列（连续 `1…1` 再 `2…2`）。`build_token_route_queue_multi` 不再接收 `wafer_type_alloc`；`route_meta` 不再包含 `wafer_type_alloc_by_type`。`ClusterTool` 删除对 `route_meta.wafer_type_alloc_by_type` 的依赖。`config/cluster_tool/cascade.yaml`、可视化 `config_editor`、`solutions/B/clustertool_config.py`/`clustertool_default.json`/`Env.py`/`core.py`、`PetriEnvConfig.load` 与旧键迁移同步。
+- **Why**：片数与类型分配由配置显式给定，不再从 JSON `wafer_type_alloc` 权重推导或按比例取整。
+- **Impact**：`cascade_routes_1_star.json` 中 `wafer_type_alloc` 字段仍可为文档/参考保留，**构网不再读取**；双子路径实验须设置与目标一致的 `n_wafer1`/`n_wafer2`。
+
 ### `preprocess_chamber_runtime_blocks` 顺序调整、清洗严格缺省、移除默认清洗形参（2026-03-31）
 
 - **What changed**：`solutions/A/construct/preprocess_config.py` 先扫描 `RouteIR.stages` 收集 `route_stage_*`，再对路线腔室做工时合并与 5s 取整，最后按 `route_config.chambers` 与固定拓扑并集构造 `ChamberRuntimeBlock`。删除 `default_cleaning_duration` 与 `default_cleaning_trigger_wafers` 参数；清洗时长与触发片数仅来自 route stage 或 `route_config.chambers` 显式字段，缺一即 `ValueError`。`solutions/A/model_builder.py` 不再向预处理传入上述默认。`config/cluster_tool/cascade_routes_1_star.json` 为全部 `chambers` 条目补充 `cleaning_duration` / `cleaning_trigger_wafers`。
@@ -19,6 +31,18 @@
 - **What changed**：`solutions/A/construct/preprocess_config.py` 中 `preprocess_chamber_runtime_blocks` 删除参数 `process_time_map`；合并工时初值仅来自 route stage 覆盖字典，再经 `_preprocess_process_time_map` 与 `route_config.chambers` 缺省对齐并取整到 5 秒。`solutions/A/model_builder.py` 去掉 `process_time_map=None` 调用实参；固定拓扑占位腔室未声明时 `process_time` 初值为 `0`。
 - **Why**：构网路径从未向 `build_net` 传入独立 `process_time_map`，原 `None` 会在 `dict(process_time_map)` 处失败；删除形参使契约与实现一致。
 - **Impact**：若存在仓库外调用并依赖向预处理注入独立 `process_time_map`，需改为写入 `single_route_config` 的 `chambers` 或 route stage；返回的 `build_net`["process_time_map"] 仍为腔室工时真源。
+
+### A 方案：`max_wafers_in_system` 替换为 `max_wafers1_in_system` / `max_wafers2_in_system`（2026-03-31）
+
+- **What changed**：`PetriEnvConfig` 删除 `max_wafers_in_system`；新增 `max_wafers1_in_system`、`max_wafers2_in_system`（固定整数，不由构网计算或返回）。`solutions/A/petri_net.py`：单路线用 `entered_wafer_count < max_wafers1_in_system`；双子路径不再用单一全局在制门控与 `wafer_type_alloc` 比例交叉乘法门控，`_allow_start_for_route_type` 对 `route_type` 1/2 分别比较 `_entered_wafer_count_by_type` 与 `max_wafers1_in_system`/`max_wafers2_in_system`；删除 `_wafer_type_alloc_total_weight`。`config/cluster_tool/cascade.yaml`、`visualization/config_editor.py`、`solutions/B/clustertool_config.py`、`solutions/A/deprecated/pn.py` 同步。
+- **Why**：在制上限由配置显式给定；`wafer_type_alloc` 仍用于构网/token 序列等，不再参与 WIP 上限推导。
+- **Impact**：仅含旧键 `max_wafers_in_system` 的 YAML/JSON 会被忽略（`extra=ignore`），须改为两键；两值可相同以复现原「单一全局上限」语义。
+
+### A 方案：`max_wafers_in_system` 按类型比例硬约束发片（2026-03-30）**已废止**
+
+- **Note**：2026-03-31 起由 `max_wafers1_in_system`/`max_wafers2_in_system` 替代；下述为历史记录。
+- **What changed（历史）**：`solutions/A/petri_net.py` 的 `u_LP` 放行曾从“仅全局 WIP `< max_wafers_in_system`”改为“双重门控”：在保持全局上限校验的同时，对双子路径场景按 `wafer_type_alloc` 施加类型内在制品上限；交叉乘法判定 `(type_wip+1)*sum_alloc <= max_wafers_in_system*type_alloc`。
+- **Impact（历史）**：当某类型达到其比例上限后，即使全局 WIP 仍有余量，也不会继续放该类型晶圆。
 
 ## 2026-03-30
 
@@ -60,21 +84,15 @@
 
 ### A 方案：`ClusterTool` 装载口发片掩码改为按 LP 独立使能（2026-03-30）
 
-- **What changed**：`solutions/A/petri_net.py` 删除 `_allow_start`、`_pending_lp_release_type`、`_pop_lp_token_for_release` 及 `_peek_lp_token_by_type` / `_lp_releasable_types` / `_select_lp_release_type`；`get_action_mask` 对 `LP1`/`LP2` 各自队首独立应用全局 WIP、`wafer_type_alloc`（`_allow_start_for_route_type`）、队首 `stay_time` 与结构使能；`_fire` 从装载口取 token 仅为 `pre_place.pop_head()`。移除运行时对 `route_meta.lp_release_pattern_types` 的读取；`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。队首 `route_type` 与 `wafer_type_to_load_port` 不一致时抛出 `RuntimeError`。
+- **What changed**：`solutions/A/petri_net.py` 删除 `_allow_start`、`_pending_lp_release_type`、`_pop_lp_token_for_release` 及 `_peek_lp_token_by_type` / `_lp_releasable_types` / `_select_lp_release_type`；`get_action_mask` 对 `LP1`/`LP2` 各自队首独立应用在制上限（见 2026-03-31 `max_wafers1_in_system`/`max_wafers2_in_system` 条目；此前为全局 WIP + `wafer_type_alloc` 比例门控）、`_allow_start_for_route_type`、队首 `stay_time` 与结构使能；`_fire` 从装载口取 token 仅为 `pre_place.pop_head()`。`get_next_event_delta` 对 LP 节拍取各类型队首倒计时的最小值。队首 `route_type` 与 `wafer_type_to_load_port` 不一致时抛出 `RuntimeError`。
 - **Why**：约定每装载口仅一种晶圆类型、无需「全局下一次发哪一种」与 deque 内按类型重排；双 LP 可同时出现在掩码中，由策略择一动作。
-- **Impact**：`lp_release_pattern` 仍可由构网写入 JSON，**不再**影响 `ClusterTool` 使能；依赖「掩码同刻至多一条 LP」或 pattern 排他发片的旧实验需改用新语义。
+- **Impact**：依赖「掩码同刻至多一条 LP」排他发片的旧实验需改用新语义。构网 `lp_release_pattern` 已于 2026-03-31 移除（见同日条目）。
 
 ### A 方案：双臂 swap 场景驻留豁免改为匹配被换出晶圆（2026-03-30）
 
 - **What changed**：`solutions/A/petri_net.py` 的驻留豁免函数 `_should_cancel_resident_scrap_after_fire` 新增对 swap 日志的支持：当本步 `t_*` 触发 `swap=True` 时，豁免匹配从原先 `u_*` 的 `source_place + token_id` 扩展为 `swap_source_place + swapped_token_id`。`_fire` 的 swap 日志同步写入 `swap_source_place`（PM 目标腔室名）。
 - **Why**：双臂交换中，驻留违规发生在 PM 内“被换出”的晶圆，而原逻辑仅允许 `u_*` 且只读取 `token_id`（进入 PM 的晶圆），会导致同一步已完成 swap 取片仍误判驻留违规。
 - **Impact**：仅影响双臂 swap 的同步豁免判定；非 swap 与普通 `u_*` 豁免口径保持不变。
-
-### A 方案：`max_wafers_in_system` 按类型比例硬约束发片（2026-03-30）
-
-- **What changed**：`solutions/A/petri_net.py` 的 `u_LP` 放行从“仅全局 WIP `< max_wafers_in_system`”改为“双重门控”：在保持全局上限校验的同时，对双子路径场景按 `wafer_type_alloc` 施加类型内在制品上限。实现使用交叉乘法判定 `(type_wip+1)*sum_alloc <= max_wafers_in_system*type_alloc`，不做取整/四舍五入；并新增类型内在制品计数，`u_LP` 发片时加 1，流入 `LP_done` 时减 1。
-- **Why**：双路线并行时需要严格按配置比例限制在制品占用，避免某一路线“借用”另一条路线额度导致比例失真。
-- **Impact**：当某类型达到其比例上限后，即使全局 WIP 仍有余量，也不会继续放该类型晶圆；类型间不允许借额。单路线或无有效 `wafer_type_alloc` 的场景维持原有行为。
 
 ### A 方案：`u_LP` 节拍门控改为 LP 队首 token 负 `stay_time` 倒计时（2026-03-30）
 
@@ -84,7 +102,7 @@
 
 ### A 方案：4-8/4-9 支持双子路径、双类型晶圆与分策略节拍（2026-03-30）
 
-- **What changed**：`config/cluster_tool/cascade_routes_1_star.json` 新增 `routes.4-8` 与 `routes.4-9`，并引入增量字段：`subpaths`、`wafer_type_alloc`、`takt_policy`、`takt_stages_override`（4-8）与 `lp_release_pattern`（4-8，`path1,path2,path2,path2,path2`）。`solutions/A/construct/build_route_queue.py` 新增 `build_token_route_queue_multi`，对多子路径统一构造 `target_code_map/t_route_code_map`，并输出按子路径与按 wafer_type 的 queue/template。`solutions/A/model_builder.py` 在多子路径下按并集激活变迁，返回 `token_route_queue_templates_by_type`、`token_route_type_sequence` 及 route-level 元数据（`subpath_to_type`、`wafer_type_to_subpath`、`takt_policy` 等）。`solutions/A/construct/build_marks.py` 支持按类型初始化 LP token（`route_type + route_queue`）。
+- **What changed**：`config/cluster_tool/cascade_routes_1_star.json` 新增 `routes.4-8` 与 `routes.4-9`，并引入增量字段：`subpaths`、`wafer_type_alloc`、`takt_policy`、`takt_stages_override`（4-8）。`solutions/A/construct/build_route_queue.py` 新增 `build_token_route_queue_multi`，对多子路径统一构造 `target_code_map/t_route_code_map`，并输出按子路径与按 wafer_type 的 queue/template。`solutions/A/model_builder.py` 在多子路径下按并集激活变迁，返回 `token_route_queue_templates_by_type`、`token_route_type_sequence` 及 route-level 元数据（`subpath_to_type`、`wafer_type_to_subpath`、`takt_policy` 等）。`solutions/A/construct/build_marks.py` 支持按类型初始化 LP token（`route_type + route_queue`）。（**2026-03-31**：`lp_release_pattern` 已从构网移除，见同日 Change Notes。）
 - **Why**：4-8/4-9 同时存在两条子路径且需两种晶圆并行；原单模板 queue 与单路由节拍口径无法表达“按类型静态绑定子路径”与“按策略共享/拆分节拍”。
 - **Impact**：A 方案在 `single_route_name=4-8/4-9` 下可直接运行双子路径；4-8 使用共享节拍（含抽象 `3000/180` override）且 LP 发片按 pattern 循环；4-9 按子路径拆分节拍组，LP 同时可发时随机选类型（仍单步只发一片）。
 

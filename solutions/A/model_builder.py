@@ -67,59 +67,11 @@ def _merge_route_source_target_transport(
     return merged
 
 
-def _build_token_type_sequence(
-    n_wafer: int,
-    wafer_type_alloc_by_type: Mapping[int, int],
-    lp_release_pattern_types: Sequence[int],
-) -> List[int]:
+def _build_token_type_sequence(n_wafer1: int, n_wafer2: int) -> List[int]:
+    n_wafer = int(n_wafer1) + int(n_wafer2)
     if n_wafer <= 0:
         return []
-    if lp_release_pattern_types:
-        pattern = [int(t) for t in lp_release_pattern_types if int(t) > 0]
-        if not pattern:
-            raise ValueError("lp_release_pattern_types must contain positive type ids")
-        return [pattern[i % len(pattern)] for i in range(int(n_wafer))]
-
-    weights = {int(k): max(0, int(v)) for k, v in wafer_type_alloc_by_type.items() if int(k) > 0}
-    if not weights:
-        return [1 for _ in range(int(n_wafer))]
-    total = sum(weights.values())
-    if total <= 0:
-        first_type = sorted(weights.keys())[0]
-        return [int(first_type) for _ in range(int(n_wafer))]
-    base_counts: Dict[int, int] = {}
-    fractions: List[Tuple[float, int]] = []
-    assigned = 0
-    for type_id, weight in sorted(weights.items()):
-        raw = float(n_wafer) * float(weight) / float(total)
-        cnt = int(raw)
-        base_counts[type_id] = cnt
-        assigned += cnt
-        fractions.append((raw - cnt, type_id))
-    rest = int(n_wafer) - assigned
-    fractions.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-    for i in range(rest):
-        _, tid = fractions[i % len(fractions)]
-        base_counts[tid] += 1
-
-    sequence: List[int] = []
-    rr_types = [tid for tid in sorted(base_counts.keys()) if base_counts[tid] > 0]
-    while len(sequence) < int(n_wafer):
-        progressed = False
-        for tid in rr_types:
-            if base_counts[tid] <= 0:
-                continue
-            sequence.append(int(tid))
-            base_counts[tid] -= 1
-            progressed = True
-            if len(sequence) >= int(n_wafer):
-                break
-        if not progressed:
-            break
-    if len(sequence) < int(n_wafer):
-        fill_type = rr_types[0] if rr_types else 1
-        sequence.extend([int(fill_type)] * (int(n_wafer) - len(sequence)))
-    return sequence[: int(n_wafer)]
+    return [1] * int(n_wafer1) + [2] * int(n_wafer2)
 
 
 
@@ -229,16 +181,15 @@ def parse_route(
     }
 
 
-def build_net(n_wafer: int,
+def build_net(n_wafer1: int,
+              n_wafer2: int = 0,
               ttime: int = 5,
               cleaning_enabled: bool = False,
               p_residual_time: int = 15,
               d_residual_time: int = 10,
               scrap_clip_threshold: float = 20.0,
               route_config: Optional[Mapping[str, Any]] = None,
-              route_name: Optional[str] = None,
-              n_wafer_route1: Optional[int] = None,
-              n_wafer_route2: Optional[int] = None) -> Dict[str, object]:
+              route_name: Optional[str] = None) -> Dict[str, object]:
     """
     构建 cascade-only 固定拓扑 Petri 网结构（route_config 驱动）。
 
@@ -318,6 +269,12 @@ def build_net(n_wafer: int,
         )
     default_subpath_name = next(iter(route_irs_by_name.keys()))
     route_ir = route_irs_by_name[default_subpath_name]
+
+    n_wafer1_i = int(n_wafer1)
+    n_wafer2_i = int(n_wafer2)
+    n_wafer = n_wafer1_i + n_wafer2_i
+    if len(route_irs_by_name) < 2 and n_wafer2_i != 0:
+        raise ValueError("single-subpath route requires n_wafer2==0")
 
     preprocess_result = preprocess_chamber_runtime_blocks(
         route_ir=route_ir,
@@ -400,15 +357,11 @@ def build_net(n_wafer: int,
     token_route_type_sequence: List[int] = [1 for _ in range(int(n_wafer))]
     subpath_to_type: Dict[str, int] = {default_subpath_name: 1}
     wafer_type_to_subpath: Dict[int, str] = {1: default_subpath_name}
-    wafer_type_alloc_by_type: Dict[int, int] = {1: int(n_wafer)}
-    lp_release_pattern_types: Tuple[int, ...] = tuple()
     if len(route_irs_by_name) >= 2:
         multi_payload = build_token_route_queue_multi(
             route_irs=route_irs_by_name,
             id2t_name=id2t_name,
             t_target_place=t_target_place,
-            wafer_type_alloc=dict(route_entry.get("wafer_type_alloc") or {}),
-            lp_release_pattern=list(route_entry.get("lp_release_pattern") or []),
         )
         t_route_code_map = dict(multi_payload["t_route_code_map"])
         token_route_queue = tuple(multi_payload["token_route_queue_template"])
@@ -417,16 +370,13 @@ def build_net(n_wafer: int,
         token_route_plan_templates = dict(multi_payload["token_route_plan_templates"])
         subpath_to_type = dict(multi_payload["subpath_to_type"])
         wafer_type_to_subpath = dict(multi_payload["wafer_type_to_subpath"])
-        wafer_type_alloc_by_type = dict(multi_payload["wafer_type_alloc_by_type"])
-        lp_release_pattern_types = tuple(multi_payload["lp_release_pattern_types"])
         token_route_queue_by_type = {
             int(type_id): tuple(token_route_queue_templates[subpath_name])
             for type_id, subpath_name in wafer_type_to_subpath.items()
         }
         token_route_type_sequence = _build_token_type_sequence(
-            n_wafer=int(n_wafer),
-            wafer_type_alloc_by_type=wafer_type_alloc_by_type,
-            lp_release_pattern_types=lp_release_pattern_types,
+            n_wafer1=n_wafer1_i,
+            n_wafer2=n_wafer2_i,
         )
     else:
         _, t_route_code_map, token_route_queue, token_plan = build_token_route_queue(
@@ -444,17 +394,11 @@ def build_net(n_wafer: int,
         route_irs_by_name=route_irs_by_name,
     )
     c_lp = Counter(lp_per_token)
-    if n_wafer_route1 is not None and n_wafer_route2 is not None:
-        if int(n_wafer_route1) + int(n_wafer_route2) != int(n_wafer):
-            raise ValueError(
-                f"n_wafer_route1+n_wafer_route2 must equal n_wafer: "
-                f"{n_wafer_route1}+{n_wafer_route2}!={n_wafer}"
-            )
-        if c_lp.get("LP1", 0) != int(n_wafer_route1) or c_lp.get("LP2", 0) != int(n_wafer_route2):
-            raise ValueError(
-                f"LP token distribution {dict(c_lp)} does not match "
-                f"n_wafer_route1/2=({n_wafer_route1},{n_wafer_route2})"
-            )
+    if c_lp.get("LP1", 0) != n_wafer1_i or c_lp.get("LP2", 0) != n_wafer2_i:
+        raise ValueError(
+            f"LP token distribution {dict(c_lp)} does not match "
+            f"n_wafer1/n_wafer2=({n_wafer1_i},{n_wafer2_i})"
+        )
 
     p_idx = {name: i for i, name in enumerate(id2p_name)}
 
@@ -501,8 +445,6 @@ def build_net(n_wafer: int,
     route_meta["has_repeat_syntax_reentry"] = bool(has_repeat_syntax_reentry)
     route_meta["subpath_to_type"] = subpath_to_type
     route_meta["wafer_type_to_subpath"] = wafer_type_to_subpath
-    route_meta["wafer_type_alloc_by_type"] = wafer_type_alloc_by_type
-    route_meta["lp_release_pattern_types"] = list(lp_release_pattern_types)
     route_meta["takt_policy"] = str(route_entry.get("takt_policy", "") or "")
     route_meta["takt_stages_override"] = list(route_entry.get("takt_stages_override") or [])
     route_meta["default_subpath"] = str(default_subpath_name)
@@ -569,6 +511,8 @@ def build_net(n_wafer: int,
         "idle_idx": {"start": p_idx["LP1"], "end": p_idx[sink_name]},
         "marks": marks,
         "n_wafer": n_wafer,
+        "n_wafer1": n_wafer1_i,
+        "n_wafer2": n_wafer2_i,
         "n_wafer_route1": int(c_lp.get("LP1", 0)),
         "n_wafer_route2": int(c_lp.get("LP2", 0)),
         "route_meta": route_meta,

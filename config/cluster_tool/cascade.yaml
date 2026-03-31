@@ -1,8 +1,6 @@
 MAX_TIME: 4000
-n_wafer: 6
-# 双子路径下若同时设置 n_wafer_route1 / n_wafer_route2，须与按 wafer 类型拆分后的 LP1/LP2 数量一致（如路线 4-12 与 n_wafer=13 时常为 4 与 9）。
-# n_wafer_route1: 4
-# n_wafer_route2: 9
+n_wafer1: 13
+n_wafer2: 0
 time_coef_penalty: 11
 warn_coef_penalty: 0.5
 transport_overtime_coef_penalty: 6.0
@@ -12,7 +10,8 @@ done_event_reward: 500
 scrap_event_penalty: 4000
 wait_durations:
   - 5
-max_wafers_in_system: 6
+max_wafers1_in_system: 16
+max_wafers2_in_system: 6
 cleaning_enabled: true
 single_route_config_path: cascade_routes_1_star.json
 single_route_name: "2-1"

@@ -8,7 +8,8 @@ from typing import Union
 class ClusterToolCfg:
 
     MAX_TIME: int = 2000
-    n_wafer: int = 12
+    n_wafer1: int = 12
+    n_wafer2: int = 0
     ttime: int = 5
     search_depth: int = 5
     candidate_k: int = 8
@@ -29,7 +30,8 @@ class ClusterToolCfg:
     T_transport: int = 5
     T_load: int = 5
 
-    max_wafers_in_system: int = 7
+    max_wafers1_in_system: int = 7
+    max_wafers2_in_system: int = 7
 
 
     @classmethod

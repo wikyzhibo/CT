@@ -20,7 +20,7 @@ def _clear_leaf_buffers() -> None:
 class ClusterTool:
     def __init__(self) -> None:
         cfg = ClusterToolCfg.load()
-        self.n_wafer = cfg.n_wafer
+        self.n_wafer = int(cfg.n_wafer1) + int(cfg.n_wafer2)
         self.max_time = cfg.MAX_TIME
         self.done_event_reward = cfg.done_event_reward
         self.finish_event_reward = self.done_event_reward * 6
@@ -34,7 +34,7 @@ class ClusterTool:
         self.ttime = cfg.ttime
         self.search_depth = cfg.search_depth
         self.candidate_k = cfg.candidate_k
-        info = build_pdr_net(n_wafer=cfg.n_wafer, takt_cycle=cfg.takt_cycle)
+        info = build_pdr_net(n_wafer=self.n_wafer, takt_cycle=cfg.takt_cycle)
         self.id2p_name: List[str] = list(info["id2p_name"])
         self.id2t_name: List[str] = list(info["id2t_name"])
         self.P = int(len(self.id2p_name))

@@ -67,8 +67,6 @@ def build_token_route_queue_multi(
     route_irs: Mapping[str, RouteIR],
     id2t_name: Sequence[str],
     t_target_place: Mapping[str, str],
-    wafer_type_alloc: Mapping[str, int] | None = None,
-    lp_release_pattern: Sequence[str] | None = None,
 ) -> Dict[str, object]:
     """
     多子路径版本：
@@ -134,21 +132,6 @@ def build_token_route_queue_multi(
     wafer_type_to_subpath: Dict[int, str] = {
         t: name for name, t in subpath_to_type.items()
     }
-    if wafer_type_alloc:
-        for key in wafer_type_alloc.keys():
-            if str(key) not in subpath_to_type:
-                raise ValueError(f"wafer_type_alloc contains unknown subpath: {key}")
-    if lp_release_pattern:
-        for key in lp_release_pattern:
-            if str(key) not in subpath_to_type:
-                raise ValueError(f"lp_release_pattern contains unknown subpath: {key}")
-    wafer_type_alloc_by_type: Dict[int, int] = {}
-    if wafer_type_alloc:
-        for name, val in wafer_type_alloc.items():
-            wafer_type_alloc_by_type[subpath_to_type[str(name)]] = max(0, int(val))
-    lp_release_pattern_types: Tuple[int, ...] = tuple(
-        subpath_to_type[str(name)] for name in (lp_release_pattern or ())
-    )
 
     default_subpath = subpath_names[0]
     return {
@@ -160,7 +143,5 @@ def build_token_route_queue_multi(
         "token_route_plan_templates": token_route_plan_templates,
         "subpath_to_type": subpath_to_type,
         "wafer_type_to_subpath": wafer_type_to_subpath,
-        "wafer_type_alloc_by_type": wafer_type_alloc_by_type,
-        "lp_release_pattern_types": lp_release_pattern_types,
         "default_subpath": default_subpath,
     }

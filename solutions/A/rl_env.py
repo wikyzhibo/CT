@@ -101,7 +101,7 @@ class Env_PN_Single(EnvBase):
         self.n_actions = len(self.action_catalog)
         self.wait_action_start = int(self.net.T)
         self.wait_action_indices = list(range(self.wait_action_start, self.n_actions))
-        self.n_wafer = config.n_wafer
+        self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
         self._make_spec()
         self._last_reward_detail: dict = {}
         self._out_time = torch.zeros(1, dtype=torch.int64)
@@ -264,7 +264,7 @@ class Env_PN_Concurrent(EnvBase):
         self.tm3_transition_names = [self.net.id2t_name[idx] for idx in self.tm3_transition_indices]
 
         self.detailed_reward = detailed_reward
-        self.n_wafer = config.n_wafer
+        self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
         self._make_spec()
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()

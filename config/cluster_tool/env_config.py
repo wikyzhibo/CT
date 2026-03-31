@@ -30,7 +30,8 @@ class PetriEnvConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     MAX_TIME: int = 2000
-    n_wafer: int = 12
+    n_wafer1: int = 12
+    n_wafer2: int = 0
 
     done_event_reward: int = 10
     finish_event_reward: int = 800
@@ -45,7 +46,8 @@ class PetriEnvConfig(BaseModel):
 
     D_Residual_time: int = 20
     P_Residual_time: int = 15
-    max_wafers_in_system: int = 7
+    max_wafers1_in_system: int = 7
+    max_wafers2_in_system: int = 7
 
     dual_arm: bool = False
     cleaning_enabled: bool = True
@@ -57,9 +59,6 @@ class PetriEnvConfig(BaseModel):
     chambers: Optional[Dict[str, Dict[str, Any]]] = None
     cleaning_trigger_wafers_map: Optional[Dict[str, int]] = None
     cleaning_duration_map: Optional[Dict[str, int]] = None
-
-    n_wafer_route1: Optional[int] = None
-    n_wafer_route2: Optional[int] = None
 
     routes: Optional[Union[Dict[str, List[str]], List[List[str]]]] = None
     start_place_names: Optional[List[str]] = None
@@ -127,7 +126,7 @@ class PetriEnvConfig(BaseModel):
 
     def _format_brief(self) -> str:
         lines = ["PetriEnvConfig (简略模式):"]
-        lines.append(f"  晶圆数: {self.n_wafer}")
+        lines.append(f"  晶圆数: n_wafer1={self.n_wafer1}, n_wafer2={self.n_wafer2}")
 
         if self.routes is not None:
             if isinstance(self.routes, dict):
@@ -138,8 +137,6 @@ class PetriEnvConfig(BaseModel):
         else:
             lines.append("  路线配置: 使用默认双路线")
 
-        if self.n_wafer_route1 is not None or self.n_wafer_route2 is not None:
-            lines.append(f"  路线分配: route1={self.n_wafer_route1}, route2={self.n_wafer_route2}")
         if self.single_route_config is not None:
             sel = self.single_route_name or "<auto>"
             lines.append(f"  单设备配置驱动路径: enabled (route={sel})")
@@ -161,8 +158,10 @@ class PetriEnvConfig(BaseModel):
         lines.append("=" * 60)
 
         lines.append("\n【基础配置】")
-        lines.append(f"  n_wafer: {self.n_wafer}")
-        lines.append(f"  max_wafers: {self.max_wafers_in_system}")
+        lines.append(f"  n_wafer1: {self.n_wafer1}")
+        lines.append(f"  n_wafer2: {self.n_wafer2}")
+        lines.append(f"  max_wafers1_in_system: {self.max_wafers1_in_system}")
+        lines.append(f"  max_wafers2_in_system: {self.max_wafers2_in_system}")
 
         lines.append("\n【奖励参数】")
         lines.append(f"  done_event_reward: {self.done_event_reward}")
@@ -189,11 +188,6 @@ class PetriEnvConfig(BaseModel):
             lines.append("  start_place_names: None (从 routes 自动推导)")
 
         lines.append(f"  end_place_name: {self.end_place_name}")
-
-        if self.n_wafer_route1 is not None:
-            lines.append(f"  n_wafer_route1: {self.n_wafer_route1}")
-        if self.n_wafer_route2 is not None:
-            lines.append(f"  n_wafer_route2: {self.n_wafer_route2}")
 
         if self.no_residence_place_names:
             lines.append(f"  no_residence_place_names: {sorted(self.no_residence_place_names)}")
@@ -249,6 +243,12 @@ class PetriEnvConfig(BaseModel):
             raise ValueError(f"配置文件顶层必须是映射: {path}")
         if "no_residence_place_names" in data and data["no_residence_place_names"] is not None:
             data["no_residence_place_names"] = set(data["no_residence_place_names"])
+        if "n_wafer1" not in data and "n_wafer" in data:
+            data["n_wafer1"] = int(data["n_wafer"])
+            data["n_wafer2"] = 0
+        if "n_wafer1" not in data and data.get("n_wafer_route1") is not None:
+            data["n_wafer1"] = int(data["n_wafer_route1"])
+            data["n_wafer2"] = int(data.get("n_wafer_route2") or 0)
         route_cfg_path = data.get("single_route_config_path")
         if route_cfg_path and not data.get("single_route_config"):
             route_path = Path(route_cfg_path)
