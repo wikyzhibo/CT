@@ -94,7 +94,7 @@ class Env_PN_Single(EnvBase):
                 str(chamber): int(value) for chamber, value in dict(process_time_map).items()
             }
 
-        self.net = ClusterTool(config=config)
+        self.net = ClusterTool(config=config, concurrent=False)
         # 与 pn_single 保持同一份 wait 档位来源，避免 env/net 两处规则漂移。
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
         self.action_catalog = self._build_action_catalog()
@@ -251,7 +251,7 @@ class Env_PN_Concurrent(EnvBase):
         config = PetriEnvConfig.load(dir / "cascade.yaml")
         config.wait_durations = [5]
 
-        self.net = ClusterTool(config=config)
+        self.net = ClusterTool(config=config, concurrent=True)
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
         self.tm2_transition_indices = list(getattr(self.net, "_tm2_transition_indices", []))
         self.n_actions_tm2 = len(self.tm2_transition_indices) + 1
@@ -294,29 +294,13 @@ class Env_PN_Concurrent(EnvBase):
     def _build_obs(self):
         return np.asarray(self.net.get_obs(), dtype=np.float32)
 
-    def _build_action_masks(self, full_mask: np.ndarray | None = None):
-        if full_mask is None:
-            full_mask = self.net.get_action_mask(
-                wait_action_start=int(self.net.T),
-                n_actions=int(self.net.T + len(self.wait_durations)),
-            )
-
-        mask_tm2 = np.zeros(self.n_actions_tm2, dtype=bool)
-        for i, t_idx in enumerate(self.tm2_transition_indices):
-            mask_tm2[i] = bool(full_mask[t_idx])
-        mask_tm2[self.tm2_wait_action] = True
-
-        mask_tm3 = np.zeros(self.n_actions_tm3, dtype=bool)
-        for i, t_idx in enumerate(self.tm3_transition_indices):
-            mask_tm3[i] = bool(full_mask[t_idx])
-        mask_tm3[self.tm3_wait_action] = True
-
-        return mask_tm2, mask_tm3
-
     def _reset(self, td_params):
         self.net.reset()
         obs = self._build_obs()
-        mask_tm2, mask_tm3 = self._build_action_masks()
+        mask_tm2, mask_tm3 = self.net.get_action_mask(
+            wait_action_start=int(self.net.T),
+            n_actions=int(self.net.T + len(self.wait_durations)),
+        )
         return TensorDict({
             "observation": torch.as_tensor(obs, dtype=torch.float32),
             "action_mask_tm2": torch.as_tensor(mask_tm2, dtype=torch.bool),
@@ -337,7 +321,7 @@ class Env_PN_Concurrent(EnvBase):
         )
 
         reward = reward_result.get('total', 0) if isinstance(reward_result, dict) else reward_result
-        mask_tm2, mask_tm3 = self._build_action_masks(full_mask=np.asarray(action_mask, dtype=bool))
+        mask_tm2, mask_tm3 = action_mask
         time = self.net.time
         terminated = bool(done)
         finish = done and not scrap
@@ -510,7 +494,10 @@ class FastEnvWrapper_Concurrent:
     def reset(self) -> Tuple[np.ndarray, Dict[str, Any]]:
         self.env.net.reset()
         obs = np.asarray(self.env._build_obs(), dtype=np.float32)
-        mask_tm2, mask_tm3 = self.env._build_action_masks()
+        mask_tm2, mask_tm3 = self.env.net.get_action_mask(
+            wait_action_start=int(self.env.net.T),
+            n_actions=int(self.env.net.T + len(self.env.wait_durations)),
+        )
         return obs, {
             "action_mask_tm2": mask_tm2.astype(np.bool_),
             "action_mask_tm3": mask_tm3.astype(np.bool_),
@@ -535,7 +522,7 @@ class FastEnvWrapper_Concurrent:
         finish = done and not scrap
 
         obs = np.asarray(obs, dtype=np.float32)
-        mask_tm2_arr, mask_tm3_arr = env._build_action_masks(full_mask=np.asarray(action_mask, dtype=bool))
+        mask_tm2_arr, mask_tm3_arr = action_mask
         info: Dict[str, Any] = {
             "action_mask_tm2": mask_tm2_arr.astype(np.bool_),
             "action_mask_tm3": mask_tm3_arr.astype(np.bool_),

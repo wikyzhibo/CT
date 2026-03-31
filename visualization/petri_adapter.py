@@ -472,19 +472,13 @@ class PetriAdapter(AlgorithmAdapter):
         return None
 
     def _enabled_transition_indices_by_transport(self) -> Dict[str, List[int]]:
-        if hasattr(self.net, "get_enable_t"):
-            try:
-                tm2_enabled, tm3_enabled = self.net.get_enable_t()
-                return {"TM2": list(tm2_enabled), "TM3": list(tm3_enabled)}
-            except Exception:
-                pass
-
         mask = None
         if hasattr(self.net, "get_action_mask"):
             try:
                 mask = self.net.get_action_mask(
                     wait_action_start=self.action_space_size,
                     n_actions=self.action_space_size + 1,
+                    concurrent=False,
                 )
             except TypeError:
                 try:

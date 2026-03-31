@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`ClusterTool` 并发掩码与 `get_enable_t` 移除（2026-03-31）
+
+- **What changed**：`ClusterTool(config, concurrent=False)`；`get_action_mask(..., concurrent=None)` 在并发实例上返回 `(mask_tm2, mask_tm3)`，否则返回全量 `ndarray`；`step` 第四项与之一致。删除 `get_enable_t()`。`Env_PN_Concurrent` 使用 `ClusterTool(..., concurrent=True)` 并删除 `_build_action_masks`；`visualization/petri_adapter.py` 对使能枚举显式使用 `get_action_mask(..., concurrent=False)`；`visualization/main.py` 并发推理改用 `env.net.get_action_mask(...)`。
+- **Why**：掩码形态由网构造参数决定，不经 `PetriEnvConfig`；TM 局部掩码在 `petri_net` 单点实现。
+- **Impact**：直接调用 `get_enable_t` 的外部代码需改为 `get_action_mask` 或消费 `step`/环境返回的掩码；依赖 `Env_PN_Concurrent._build_action_masks` 的调用改为 `ClusterTool.get_action_mask`。
+
 ### A 方案：`ClusterTool` 观测缓存生命周期（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_init_obs_cache`、`_obs_specs`；观测顺序、各库所 `offset`、`obs_dim` 与 `_obs_buffer` 仅在 `__init__` 中按 `load_port_names + TM2/TM3 + chambers` 构建一次；`reset()` 仅按 `_obs_place_names` 重绑 `_obs_places` 到克隆后的 `Place` 实例。

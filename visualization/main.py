@@ -351,7 +351,10 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
             """返回 (a1, a2) 双动作（Petri 网变迁索引，-1 表示 WAIT）"""
             try:
                 obs_f = torch.as_tensor(env._build_obs(), dtype=torch.float32).unsqueeze(0)
-                mask_tm2_np, mask_tm3_np = env._build_action_masks()
+                mask_tm2_np, mask_tm3_np = env.net.get_action_mask(
+                    wait_action_start=int(env.net.T),
+                    n_actions=int(env.net.T + len(env.wait_durations)),
+                )
                 mask_tm2 = torch.as_tensor(mask_tm2_np, dtype=torch.bool).unsqueeze(0)
                 mask_tm3 = torch.as_tensor(mask_tm3_np, dtype=torch.bool).unsqueeze(0)
                 

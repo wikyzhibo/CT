@@ -96,6 +96,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **`ClusterTool` 并发掩码与移除 `get_enable_t`**：`ClusterTool(config, concurrent=False|True)` 由 `Env_PN_Single` / `Env_PN_Concurrent` 传入；`get_action_mask` 在并发实例上返回 `(mask_tm2, mask_tm3)`，`step` 第四项一致；删除 `get_enable_t()`；`reset()` 使能列表仍用 `get_action_mask(..., concurrent=False)` 前 `T` 维；见 `CHANGELOG.md` 与 `docs/pn_api.md`。
 - 2026-03-31: **`n_wafer` → `n_wafer1`/`n_wafer2`；移除 `wafer_type_alloc_by_type`**：`PetriEnvConfig` 与 `build_net` 用显式片数；删除 `n_wafer_route1`/`n_wafer_route2`；`model_builder` 不再按 `wafer_type_alloc` 权重计算类型序列；`route_meta` 不再输出 `wafer_type_alloc_by_type`；行为规则 33 已同步；见 `CHANGELOG.md`。
 - 2026-03-31: **`max_wafers_in_system` → `max_wafers1_in_system`/`max_wafers2_in_system`**：`PetriEnvConfig` 与 `ClusterTool` 改用两固定上限；删除 `wafer_type_alloc` 比例交叉乘法门控与 `_wafer_type_alloc_total_weight`；行为规则 32 已同步；见 `CHANGELOG.md`。
 - 2026-03-31: **`build_takt_payload` 清洗收敛到 `chamber_blocks`**：`build_takt.py` 删除 `cleaning_duration` / `cleaning_duration_map` / `cleaning_trigger_map` 形参；`model_builder.build_net` 向 `build_takt_payload` 传入 `chamber_blocks`，节拍 q/d 与 `build_marks` 同源；`obs_config` 仅 `cleaning_enabled`。行为规则 34 已同步；见 `CHANGELOG.md`。

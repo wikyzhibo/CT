@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `pn_api.md` / `training/training-guide.md`：`ClusterTool(config, concurrent=...)`；`get_action_mask` 并发时返回 TM2/TM3 掩码；移除 `get_enable_t`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md`：`solutions/A/petri_net.py`（`ClusterTool`）移除 step 分段 profiling 与 `get_step_profile_summary`；`ppo_trainer` 不再打印 `[Step Time Profile]`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md`：`solutions/A/petri_net.py`（`ClusterTool`）移除 `_token_stats` / `calc_wafer_statistics`；可视化 `StateInfo.stats` 时长类为占位；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：移除 `lp_release_pattern` 构网链与 `route_meta.lp_release_pattern_types`；行为规则 32–33；见 `CHANGELOG.md`。

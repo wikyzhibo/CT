@@ -55,7 +55,7 @@
 4. 禁止继续在主文档中引用已移除的旧观测切换参数。
 5. `solutions.A.ppo_trainer` 默认走双动作并发训练；仅在显式传 `--no-concurrent` 时回退单动作路径。
 6. 并发模式下 WAIT 只保留单档 `5s`（TM2/TM3 各一个 WAIT 动作）。
-7. 并发模式的 TM2/TM3 动作分组以 `ClusterTool.get_enable_t()` 和当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
+7. 并发模式由训练入口选用 `Env_PN_Concurrent`，对应 `ClusterTool(..., concurrent=True)`；TM2/TM3 掩码以 `ClusterTool.get_action_mask`（并发实例返回两段局部掩码）与当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
 
 ## Examples
 - 正例:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from solutions.A.utils import _normalize_wait_durations
 import numpy as np
 from config.cluster_tool.env_config import PetriEnvConfig
@@ -13,9 +13,10 @@ SOURCE = 3
 
 
 class ClusterTool:
-    def __init__(self, config: PetriEnvConfig = None) -> None:
+    def __init__(self, config: PetriEnvConfig = None, concurrent: bool = False) -> None:
         assert config is not None, "config must be provided"
         self.config = config
+        self._concurrent = bool(concurrent)
 
         # ====== 1) 运行边界与奖励超参 ======
         self.MAX_TIME = config.MAX_TIME
@@ -218,7 +219,8 @@ class ClusterTool:
     ):
         """
         单设备 / 并发一步推进入口。
-        返回：(done, reward_result, scrap, action_mask, obs)
+        返回：(done, reward_result, scrap, action_mask, obs)。
+        action_mask：非并发为全量 ndarray；并发为 (mask_tm2, mask_tm3)。
         """
         SCRAPE = False
         self._last_deadlock = False
@@ -338,15 +340,6 @@ class ClusterTool:
         obs = self.get_obs()
         return bool(finish), reward_result, SCRAPE, action_mask, obs
 
-    def get_enable_t(self) -> Tuple[List[int], List[int]]:
-        mask = self.get_action_mask(
-            wait_action_start=int(self.T),
-            n_actions=int(self.T + len(self.wait_durations)),
-        )
-        tm2_enabled = [t_idx for t_idx in self._tm2_transition_indices if bool(mask[t_idx])]
-        tm3_enabled = [t_idx for t_idx in self._tm3_transition_indices if bool(mask[t_idx])]
-        return tm2_enabled, tm3_enabled
-
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
@@ -382,7 +375,11 @@ class ClusterTool:
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._last_state_scan = {}
         T = int(self.T)
-        mask = self.get_action_mask(wait_action_start=T, n_actions=T + len(self.wait_durations))
+        mask = self.get_action_mask(
+            wait_action_start=T,
+            n_actions=T + len(self.wait_durations),
+            concurrent=False,
+        )
         enabled_t = sorted(i for i in range(T) if bool(mask[i]))
         return None, enabled_t
 
@@ -583,7 +580,7 @@ class ClusterTool:
                 src = pre_place.name
                 tok._dst_level_targets = tuple(self._u_targets.get(src, []))
                 tok.last_u_source = str(src)
-                tok.machine = int(self._next_robot_machine())
+                tok.machine = 1
                 transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
                 tok.machine = 2 if transport == "TM3" else 1
                 self._on_processing_unload(src)
@@ -1124,9 +1121,6 @@ class ClusterTool:
             return False, None
         return True, target_name
 
-    def _next_robot_machine(self) -> int:
-        return 1
-
     def _check_scrap(self) -> tuple[bool, Optional[Dict[str, Any]]]:
         for p in self.marks:
             if p.type not in (CHAMBER, 5):
@@ -1150,15 +1144,31 @@ class ClusterTool:
 
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
 
+    def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        tm2_idx = self._tm2_transition_indices
+        tm3_idx = self._tm3_transition_indices
+        mask_tm2 = np.zeros(len(tm2_idx) + 1, dtype=bool)
+        for i, t_idx in enumerate(tm2_idx):
+            mask_tm2[i] = bool(full_mask[t_idx])
+        mask_tm2[-1] = True
+        mask_tm3 = np.zeros(len(tm3_idx) + 1, dtype=bool)
+        for i, t_idx in enumerate(tm3_idx):
+            mask_tm3[i] = bool(full_mask[t_idx])
+        mask_tm3[-1] = True
+        return mask_tm2, mask_tm3
+
     def get_action_mask(
         self,
         wait_action_start: Optional[int] = None,
         n_actions: Optional[int] = None,
-    ) -> np.ndarray:
+        concurrent: Optional[bool] = None,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        返回完整离散动作掩码（transition + wait）。
-        遍历 marks，内联 remaining_time / has_ready_chamber 检查。
+        返回离散动作掩码。concurrent 为 None 时跟随 self._concurrent。
+        concurrent=False：完整 transition + wait 向量。
+        concurrent=True：TM2/TM3 局部动作空间两段掩码（末维为各自 WAIT，恒 True）。
         """
+        use_tm = self._concurrent if concurrent is None else bool(concurrent)
         start = int(self.T if wait_action_start is None else wait_action_start)
         total_actions = int(
             n_actions if n_actions is not None else (start + len(self.wait_durations))
@@ -1285,6 +1295,8 @@ class ClusterTool:
             if 0 <= idx < total_actions:
                 mask[idx] = True
 
+        if use_tm:
+            return self._tm_masks_from_full(mask)
         return mask
 
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
