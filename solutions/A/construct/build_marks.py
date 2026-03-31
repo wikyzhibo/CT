@@ -133,14 +133,15 @@ def build_marks_for_single_net(
     token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
     lp_per_token: Optional[Sequence[str]] = None,
-    obs_config: Optional[Mapping[str, Any]],
+    p_residual_time: int = 15,
+    d_residual_time: int = 10,
+    scrap_clip_threshold: float = 20.0,
     ttime: int,
 ) -> BuildMarksResult:
     p_idx = {name: i for i, name in enumerate(id2p_name)}
-    ctx = dict(obs_config or {})
-    p_res = int(ctx.get("P_Residual_time", 15))
-    d_res = int(ctx.get("D_Residual_time", 10))
-    scrap_clip = float(ctx.get("scrap_clip_threshold", 20.0))
+    p_res = p_residual_time
+    d_res = d_residual_time
+    scrap_clip = scrap_clip_threshold
 
     load_ports = ("LP1", "LP2")
     if lp_per_token is None:
@@ -168,60 +169,59 @@ def build_marks_for_single_net(
         else:
             proc_time = int(chamber_blocks.get(name).process_time if name in chamber_blocks else 0)
 
-        if obs_config is not None:
-            if name in load_ports:
-                n_here = int(counts.get(name, 0))
-                place = SR(
-                    name=name,
-                    capacity=100,
-                    processing_time=0,
-                    type=SOURCE,
-                    n_wafer=max(1, n_here),
-                )
-            elif name == sink_name:
-                place = SR(name=name, capacity=100, processing_time=0, type=SOURCE)
-            elif name == "TM2":
-                tm_map = dict(CASCADE_TM2_TARGET_ONEHOT)
-                place = TM(
-                    name=name,
-                    capacity=place_capacity,
-                    processing_time=proc_time,
-                    type=ROBOT,
-                    D_Residual_time=d_res,
-                    target_onehot_map=tm_map,
-                    onehot_dim=CASCADE_TM2_ONEHOT_DIM,
-                )
-            elif name == "TM3":
-                tm_map = dict(CASCADE_TM3_TARGET_ONEHOT)
-                place = TM(
-                    name=name,
-                    capacity=place_capacity,
-                    processing_time=proc_time,
-                    type=ROBOT,
-                    D_Residual_time=d_res,
-                    target_onehot_map=tm_map,
-                    onehot_dim=CASCADE_TM3_ONEHOT_DIM,
-                )
-            elif ptype == 5:
-                place = LL(name=name, capacity=place_capacity, processing_time=proc_time, type=ptype)
-            elif ptype == CHAMBER:
-                block = chamber_blocks.get(name)
-                c_dur = int(block.cleaning_duration) if block is not None else 1
-                c_trig = int(block.cleaning_trigger_wafers) if block is not None else 1
-                place = PM(
-                    name=name,
-                    capacity=place_capacity,
-                    processing_time=proc_time,
-                    type=ptype,
-                    P_Residual_time=p_res,
-                    cleaning_duration=max(1, c_dur),
-                    cleaning_trigger_wafers=max(1, c_trig),
-                    scrap_clip_threshold=scrap_clip,
-                )
-            else:
-                place = Place(name=name, capacity=place_capacity, processing_time=proc_time, type=ptype)
+
+        if name in load_ports:
+            n_here = int(counts.get(name, 0))
+            place = SR(
+                name=name,
+                capacity=100,
+                processing_time=0,
+                type=SOURCE,
+                n_wafer=max(1, n_here),
+            )
+        elif name == sink_name:
+            place = SR(name=name, capacity=100, processing_time=0, type=SOURCE)
+        elif name == "TM2":
+            tm_map = dict(CASCADE_TM2_TARGET_ONEHOT)
+            place = TM(
+                name=name,
+                capacity=place_capacity,
+                processing_time=proc_time,
+                type=ROBOT,
+                D_Residual_time=d_res,
+                target_onehot_map=tm_map,
+                onehot_dim=CASCADE_TM2_ONEHOT_DIM,
+            )
+        elif name == "TM3":
+            tm_map = dict(CASCADE_TM3_TARGET_ONEHOT)
+            place = TM(
+                name=name,
+                capacity=place_capacity,
+                processing_time=proc_time,
+                type=ROBOT,
+                D_Residual_time=d_res,
+                target_onehot_map=tm_map,
+                onehot_dim=CASCADE_TM3_ONEHOT_DIM,
+            )
+        elif ptype == 5:
+            place = LL(name=name, capacity=place_capacity, processing_time=proc_time, type=ptype)
+        elif ptype == CHAMBER:
+            block = chamber_blocks.get(name)
+            c_dur = int(block.cleaning_duration) if block is not None else 1
+            c_trig = int(block.cleaning_trigger_wafers) if block is not None else 1
+            place = PM(
+                name=name,
+                capacity=place_capacity,
+                processing_time=proc_time,
+                type=ptype,
+                P_Residual_time=p_res,
+                cleaning_duration=max(1, c_dur),
+                cleaning_trigger_wafers=max(1, c_trig),
+                scrap_clip_threshold=scrap_clip,
+            )
         else:
             place = Place(name=name, capacity=place_capacity, processing_time=proc_time, type=ptype)
+
         marks.append(place)
 
     m0 = np.zeros(len(id2p_name), dtype=int)

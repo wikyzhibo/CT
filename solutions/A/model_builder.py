@@ -231,7 +231,10 @@ def parse_route(
 
 def build_net(n_wafer: int,
               ttime: int = 5,
-              obs_config: Optional[Dict[str, Any]] = None,
+              cleaning_enabled: bool = False,
+              p_residual_time: int = 15,
+              d_residual_time: int = 10,
+              scrap_clip_threshold: float = 20.0,
               route_config: Optional[Mapping[str, Any]] = None,
               route_name: Optional[str] = None,
               n_wafer_route1: Optional[int] = None,
@@ -465,7 +468,9 @@ def build_net(n_wafer: int,
         token_route_queue_by_type=token_route_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,
         lp_per_token=lp_per_token,
-        obs_config=obs_config,
+        p_residual_time = p_residual_time,
+        d_residual_time = d_residual_time,
+        scrap_clip_threshold = scrap_clip_threshold,
         ttime=ttime,
     )
     m0 = marks_result.m0
@@ -528,14 +533,11 @@ def build_net(n_wafer: int,
         key=lambda x: int(str(x)[1:]) if str(x)[1:].isdigit() else 0,
     )
     route_stages = [list(aliases[k]) for k in ordered_keys]
-    ctx = obs_config or {}
     takt_payload = build_takt_payload(
         route_stages=route_stages,
         base_proc_time_map=process_time_map_out,
-        cleaning_enabled=bool(ctx.get("cleaning_enabled", False)),
-        cleaning_duration=int(ctx.get("cleaning_duration", 150)),
-        cleaning_duration_map=dict(ctx.get("cleaning_duration_map") or {}),
-        cleaning_trigger_map=dict(ctx.get("cleaning_trigger_wafers_map") or {}),
+        cleaning_enabled=cleaning_enabled,
+        chamber_blocks=chamber_blocks,
         has_repeat_syntax_reentry=bool(has_repeat_syntax_reentry),
         multi_subpath=bool(route_meta.get("multi_subpath", False)),
         takt_policy=str(route_meta.get("takt_policy", "") or ""),

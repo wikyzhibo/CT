@@ -65,78 +65,43 @@ class ClusterTool:
         self._timeline_chambers = self.chambers
         self._u_targets = {}
         self._step_map = {}
-        self._release_station_aliases = {}
-        self._release_chain_by_u = {}
         self._system_entry_places = set()
         self._has_repeat_syntax_reentry = False
         self._ready_chambers = self.chambers
         self._single_process_chambers = self.chambers
 
         # ====== 6) 构网输入与构网结果 ======
-        obs_config = {
-            "P_Residual_time": self.P_Residual_time,
-            "D_Residual_time": self.D_Residual_time,
-            "cleaning_enabled": self._cleaning_enabled,
-            "cleaning_duration_map": self._cleaning_duration_map,
-            "cleaning_trigger_wafers_map": self._cleaning_trigger_map,
-            "scrap_clip_threshold": 20.0,
-        }
-        info = build_net(n_wafer=self.n_wafer, ttime=self.ttime, obs_config=obs_config,
+        info = build_net(n_wafer=self.n_wafer,
+                         ttime=self.ttime,
+                         p_residual_time=self.P_Residual_time,
+                         d_residual_time=self.D_Residual_time,
+                         cleaning_enabled=self._cleaning_enabled,
                          route_config=self.single_route_config, route_name=self.single_route_name,
                          n_wafer_route1=self.config.n_wafer_route1, n_wafer_route2=self.config.n_wafer_route2)
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
+
         # ====== 7) route_meta：阶段/拓扑/类型映射 ======
         route_stages = list(route_meta.get("route_stages") or [])
-        if route_stages:
-            self._route_stages = [list(stage) for stage in route_stages]
-        else:
-            aliases = route_meta.get("release_station_aliases") or {}
-            if isinstance(aliases, dict):
-                ordered_keys = sorted(
-                    [k for k in aliases.keys() if str(k).startswith("s")],
-                    key=lambda x: int(str(x)[1:]) if str(x)[1:].isdigit() else 0,
-                )
-                self._route_stages = [list(aliases[k]) for k in ordered_keys]
+        self._route_stages = [list(stage) for stage in route_stages]
         self.chambers = tuple(route_meta.get("chambers", ()))
         self._timeline_chambers = tuple(route_meta.get("timeline_chambers", ()))
         self._u_targets = dict(route_meta.get("u_targets", {}))
         self._step_map = dict(route_meta.get("step_map", {}))
-        self._release_station_aliases = dict(route_meta.get("release_station_aliases", {}))
-        self._release_chain_by_u = dict(route_meta.get("release_chain_by_u", {}))
         self._system_entry_places = set(route_meta.get("system_entry_places", set()))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
-        self._cleaning_duration_map = {
-            str(name): max(0, int(value))
-            for name, value in dict(route_meta.get("cleaning_duration_map") or {}).items()
-        }
-        self._cleaning_trigger_map = {
-            str(name): max(0, int(value))
-            for name, value in dict(route_meta.get("cleaning_trigger_wafers_map") or {}).items()
-        }
+        self._cleaning_duration_map = route_meta.get("cleaning_duration_map")
+        self._cleaning_trigger_map = route_meta.get("cleaning_trigger_wafers_map")
         self._multi_subpath = bool(route_meta.get("multi_subpath", False))
-        self._subpath_to_type: Dict[str, int] = {
-            str(k): int(v) for k, v in dict(route_meta.get("subpath_to_type") or {}).items()
-        }
-        self._wafer_type_to_subpath: Dict[int, str] = {
-            int(k): str(v) for k, v in dict(route_meta.get("wafer_type_to_subpath") or {}).items()
-        }
-        self._wafer_type_alloc_by_type: Dict[int, int] = {
-            int(k): int(v) for k, v in dict(route_meta.get("wafer_type_alloc_by_type") or {}).items()
-        }
-        self._wafer_type_alloc_by_type = {
-            int(k): max(0, int(v)) for k, v in self._wafer_type_alloc_by_type.items()
-        }
+        self._subpath_to_type: Dict[str, int] = route_meta.get("subpath_to_type")
+        self._wafer_type_to_subpath: Dict[int, str] = route_meta.get("wafer_type_to_subpath")
+        self._wafer_type_alloc_by_type: Dict[int, int] = route_meta.get("wafer_type_alloc_by_type")
         self._wafer_type_alloc_total_weight: int = int(sum(self._wafer_type_alloc_by_type.values()))
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
-        self._wafer_type_to_load_port: Dict[int, str] = {
-            int(k): str(v) for k, v in dict(route_meta.get("wafer_type_to_load_port") or {}).items()
-        }
-        self._load_port_names: Tuple[str, ...] = tuple(
-            str(x) for x in (route_meta.get("load_port_names") or ("LP1", "LP2"))
-        )
+        self._wafer_type_to_load_port: Dict[int, str] = route_meta.get("wafer_type_to_load_port")
+        self._load_port_names: Tuple[str, ...] = route_meta.get("load_port_names")
         self._mask_skip_places: frozenset[str] = frozenset(self._load_port_names) | {"LP_done"}
-        self._ready_chambers = tuple(route_meta.get("chambers", ()))
+        self._ready_chambers = route_meta.get("chambers")
         self._single_process_chambers = self.chambers
 
         # ====== 8) Petri 静态结构索引 ======

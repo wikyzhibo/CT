@@ -75,6 +75,7 @@
 31. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数）；`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
 32. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
 33. `ClusterTool.__init__` 不再执行 `normalize_route_spec` 或 stage 覆盖提取；运行时仅透传 `route_config` 与 `route_name`（及 `n_wafer_route1`/`n_wafer_route2` 等）给 `build_net`。`build_net` **不接受**独立 `process_time_map` 形参；腔室工时仅在构网内由 `preprocess_config.preprocess_chamber_runtime_blocks` 从 `route_config.chambers` 与 route stage 覆盖推导。`ClusterTool` 只消费 `build_net` 返回的 `route_meta.route_stages`、`route_meta.cleaning_*_map`、`process_time_map` 等作为唯一预处理来源。
+34. 构网期 `build_takt.build_takt_payload` 与 `build_marks` **同源**消费 `preprocess_chamber_runtime_blocks` 返回的 `chamber_blocks`：节拍分析中每腔室清洗时长与触发片数只读对应 `ChamberRuntimeBlock`；`obs_config` **仅**提供 `cleaning_enabled` 总开关（关闭时不参与节拍 q/d 计算），**不得**通过 `obs_config` 传入构网期节拍清洗数值。
 
 ## Examples
 - 正例:
@@ -95,6 +96,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **`build_takt_payload` 清洗收敛到 `chamber_blocks`**：`build_takt.py` 删除 `cleaning_duration` / `cleaning_duration_map` / `cleaning_trigger_map` 形参；`model_builder.build_net` 向 `build_takt_payload` 传入 `chamber_blocks`，节拍 q/d 与 `build_marks` 同源；`obs_config` 仅 `cleaning_enabled`。行为规则 34 已同步；见 `CHANGELOG.md`。
 - 2026-03-31: **`preprocess_chamber_runtime_blocks` 顺序与清洗严格缺省**：先收集 route stage 映射，再合并工序工时并取整，最后写入 `ChamberRuntimeBlock`；删除 `default_cleaning_duration` / `default_cleaning_trigger_wafers` 形参；每个腔室的 `cleaning_duration` 与 `cleaning_trigger_wafers` 须由 `single_route_config.chambers` 或 route stage 显式给出，否则 `ValueError`。`config/cluster_tool/cascade_routes_1_star.json` 的 `chambers` 已补全上述字段。行为规则 14–15、33 已同步。
 - 2026-03-31: **`preprocess_config` 移除 `process_time_map` 形参**：`solutions/A/construct/preprocess_config.py` 的 `preprocess_chamber_runtime_blocks` 不再接收独立 `process_time_map`；构网侧仅以 `route_config.chambers` 与 route stage 覆盖合并后再取整，避免调用方传 `None` 时 `dict(None)` 崩溃。行为规则 33 已同步：`build_net` 不接受该形参；`ClusterTool` 仍只消费 `build_net` 返回的 `process_time_map`。
 - 2026-03-30: **A 方案初始化预处理继续下沉到构网层**：`solutions/A/petri_net.py` 删除 `normalize_route_spec` 与 `_extract_route_stage_overrides` 初始化链；`ClusterTool` 不再在构网前合并 stage 覆盖 map。`solutions/A/model_builder.py` 新增 `route_meta.route_stages` 与构网期 `cleaning_duration_map/cleaning_trigger_wafers_map` 输出；运行时仅消费构网返回元数据。`config/cluster_tool/env_config.py` 增加校验：`single_route_name` 必填且必须命中 `single_route_config.routes`。

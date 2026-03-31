@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from solutions.A.construct.preprocess_config import ChamberRuntimeBlock
 from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
 
 
@@ -10,9 +11,7 @@ def _build_takt_stage(
     stage_places: Sequence[str],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
-    cleaning_duration: int,
-    cleaning_duration_map: Mapping[str, int],
-    cleaning_trigger_map: Mapping[str, int],
+    chamber_blocks: Mapping[str, ChamberRuntimeBlock],
 ) -> Optional[Dict[str, Any]]:
     valid_places = [
         str(place)
@@ -28,10 +27,11 @@ def _build_takt_stage(
     if cleaning_enabled:
         cleaning_candidates: List[Tuple[int, int, int, str]] = []
         for place in valid_places:
-            trigger = int(cleaning_trigger_map.get(place, 0))
+            block = chamber_blocks[str(place)]
+            trigger = int(block.cleaning_trigger_wafers)
             if trigger <= 0:
                 continue
-            duration = int(cleaning_duration_map.get(place, cleaning_duration))
+            duration = int(block.cleaning_duration)
             score = int(base_proc_time_map.get(place, 0)) + duration
             cleaning_candidates.append((score, trigger, duration, place))
         if cleaning_candidates:
@@ -50,9 +50,7 @@ def _compute_takt_result_from_stage_lists(
     route_stages: Sequence[Sequence[str]],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
-    cleaning_duration: int,
-    cleaning_duration_map: Mapping[str, int],
-    cleaning_trigger_map: Mapping[str, int],
+    chamber_blocks: Mapping[str, ChamberRuntimeBlock],
 ) -> Optional[Dict[str, Any]]:
     analyzer_stages: List[Dict[str, Any]] = []
     for i, stage in enumerate(route_stages):
@@ -63,9 +61,7 @@ def _compute_takt_result_from_stage_lists(
             stage_places=list(stage),
             base_proc_time_map=base_proc_time_map,
             cleaning_enabled=cleaning_enabled,
-            cleaning_duration=cleaning_duration,
-            cleaning_duration_map=cleaning_duration_map,
-            cleaning_trigger_map=cleaning_trigger_map,
+            chamber_blocks=chamber_blocks,
         )
         if stage_cfg is None:
             continue
@@ -82,9 +78,7 @@ def _compute_takt_result(
     route_stages: Sequence[Sequence[str]],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
-    cleaning_duration: int,
-    cleaning_duration_map: Mapping[str, int],
-    cleaning_trigger_map: Mapping[str, int],
+    chamber_blocks: Mapping[str, ChamberRuntimeBlock],
     has_repeat_syntax_reentry: bool,
 ) -> Optional[Dict[str, Any]]:
     if not route_stages:
@@ -101,9 +95,7 @@ def _compute_takt_result(
         route_stages=route_stages,
         base_proc_time_map=base_proc_time_map,
         cleaning_enabled=cleaning_enabled,
-        cleaning_duration=cleaning_duration,
-        cleaning_duration_map=cleaning_duration_map,
-        cleaning_trigger_map=cleaning_trigger_map,
+        chamber_blocks=chamber_blocks,
     )
 
 
@@ -112,9 +104,7 @@ def build_takt_payload(
     route_stages: Sequence[Sequence[str]],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
-    cleaning_duration: int,
-    cleaning_duration_map: Mapping[str, int],
-    cleaning_trigger_map: Mapping[str, int],
+    chamber_blocks: Mapping[str, ChamberRuntimeBlock],
     has_repeat_syntax_reentry: bool,
     multi_subpath: bool,
     takt_policy: str,
@@ -127,9 +117,7 @@ def build_takt_payload(
                 route_stages=route_stages,
                 base_proc_time_map=base_proc_time_map,
                 cleaning_enabled=cleaning_enabled,
-                cleaning_duration=cleaning_duration,
-                cleaning_duration_map=cleaning_duration_map,
-                cleaning_trigger_map=cleaning_trigger_map,
+                chamber_blocks=chamber_blocks,
                 has_repeat_syntax_reentry=has_repeat_syntax_reentry,
             )
         }
@@ -145,18 +133,14 @@ def build_takt_payload(
                     route_stages=stages,
                     base_proc_time_map=base_proc_time_map,
                     cleaning_enabled=cleaning_enabled,
-                    cleaning_duration=cleaning_duration,
-                    cleaning_duration_map=cleaning_duration_map,
-                    cleaning_trigger_map=cleaning_trigger_map,
+                    chamber_blocks=chamber_blocks,
                 )
         else:
             shared = _compute_takt_result(
                 route_stages=route_stages,
                 base_proc_time_map=base_proc_time_map,
                 cleaning_enabled=cleaning_enabled,
-                cleaning_duration=cleaning_duration,
-                cleaning_duration_map=cleaning_duration_map,
-                cleaning_trigger_map=cleaning_trigger_map,
+                chamber_blocks=chamber_blocks,
                 has_repeat_syntax_reentry=has_repeat_syntax_reentry,
             )
             takt_result_by_type = {int(t_id): shared for t_id in all_types}

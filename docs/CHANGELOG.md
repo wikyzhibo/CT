@@ -4,9 +4,15 @@
 
 ### `preprocess_chamber_runtime_blocks` 顺序调整、清洗严格缺省、移除默认清洗形参（2026-03-31）
 
-- **What changed**：`solutions/A/construct/preprocess_config.py` 先扫描 `RouteIR.stages` 收集 `route_stage_*`，再对路线腔室做工时合并与 5s 取整，最后按 `route_config.chambers` 与固定拓扑并集构造 `ChamberRuntimeBlock`。删除 `default_cleaning_duration` 与 `default_cleaning_trigger_wafers` 参数；清洗时长与触发片数仅来自 route stage 或 `route_config.chambers` 显式字段，缺一即 `ValueError`。`solutions/A/model_builder.py` 不再向预处理传入上述默认；`build_takt_payload` 前仍使用 `ctx = obs_config or {}`。`config/cluster_tool/cascade_routes_1_star.json` 为全部 `chambers` 条目补充 `cleaning_duration` / `cleaning_trigger_wafers`。
+- **What changed**：`solutions/A/construct/preprocess_config.py` 先扫描 `RouteIR.stages` 收集 `route_stage_*`，再对路线腔室做工时合并与 5s 取整，最后按 `route_config.chambers` 与固定拓扑并集构造 `ChamberRuntimeBlock`。删除 `default_cleaning_duration` 与 `default_cleaning_trigger_wafers` 参数；清洗时长与触发片数仅来自 route stage 或 `route_config.chambers` 显式字段，缺一即 `ValueError`。`solutions/A/model_builder.py` 不再向预处理传入上述默认。`config/cluster_tool/cascade_routes_1_star.json` 为全部 `chambers` 条目补充 `cleaning_duration` / `cleaning_trigger_wafers`。
 - **Why**：避免 `obs_config` 隐式兜底与构网真源不一致；配置与路线显式声明清洗参数。
 - **Impact**：自定义 `single_route_config` 必须为每个参与固定拓扑并集的腔室提供清洗字段（或由 stage 覆盖）；否则构网失败。
+
+### `build_takt_payload` 清洗口径收敛到 `chamber_blocks`（2026-03-31）
+
+- **What changed**：`solutions/A/construct/build_takt.py` 的 `build_takt_payload` 及内部 `_build_takt_stage` / `_compute_takt_result*` 删除形参 `cleaning_duration`、`cleaning_duration_map`、`cleaning_trigger_map`，改为接收 `chamber_blocks`（`preprocess_chamber_runtime_blocks` 输出）。`solutions/A/model_builder.py` 调用处传入 `chamber_blocks`；`cleaning_enabled` 仍来自 `obs_config`，构网期节拍不再从 `obs_config` 读取清洗数值。
+- **Why**：节拍与 `build_marks`、`route_meta.cleaning_*_map` 同源，避免 obs 覆盖与预处理真源分叉。
+- **Impact**：不再支持仅用 `obs_config.cleaning_duration_map` 等改变构网期节拍而保持其余构网输出不变；须改 `single_route_config` 或 route stage 使 `ChamberRuntimeBlock` 一致。
 
 ### `preprocess_chamber_runtime_blocks` 移除 `process_time_map` 形参（2026-03-31）
 

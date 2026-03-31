@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `continuous-model/pn-single.md`：`build_takt_payload` 清洗口径收敛到 `chamber_blocks`；行为规则 34；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`preprocess_chamber_runtime_blocks` 顺序与清洗严格缺省、移除默认清洗形参；`cascade_routes_1_star.json` chambers 补全；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`preprocess_chamber_runtime_blocks` 移除 `process_time_map` 形参；行为规则与 Change Notes 同步；见 `CHANGELOG.md`。
 - 2026-03-30: `continuous-model/pn-single.md`：A 方案 `ClusterTool/PetriEnvConfig` 初始化字段收敛（移除 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`、`cleaning_trigger_wafers`、`cleaning_duration` 等配置/运行时冗余口径；保留 `cleaning_enabled`；`single_route_config` 必填；清洗参数运行时统一 map 入口）。
