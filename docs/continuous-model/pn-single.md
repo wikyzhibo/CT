@@ -55,25 +55,26 @@
 11. 导出脚本的 `--out-name` 参与文件命名：`results/action_sequences/<out_name>.json`（非法字符会替换为 `_`）。
 12. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
 13. 旧观测分支（place-obs）不再作为当前实现接口。
-14. 配置驱动路径启用时，`construct_single.build_net` 通过 `preprocess_config.py` 先构建“每腔室一块”的预处理真源（包含 stage 覆盖后的 `process_time/cleaning_*`）；`build_marks.py` 仅消费该真源构造 place，返回的 `process_time_map` 只来自该预处理真源并与 `marks` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
-15. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
-16. 级联模式 `TM2` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 **9** 维（`PM7–PM10, LLC, LLD, LP_done, LP1, LP2`）；`TM3` 为 **8** 维（`PM1–PM6, LLC, LLD`），不再按 route 动态构造。
-17. 并行候选选机改为 `use_count` 最小优先：`u_*` 使能在 `source` 的候选下游中，先用 route gate 过滤，再从 `use_count` 最小的目标中选择一个（同值随机）；单臂若该目标满或清洗中则不可出片，双臂若该目标清洗中则不可出片。非并行源（单一 `u_targets`）仍只校验该单一候选。
-18. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值随机”决策，禁止同一步并行目标多放行。
-19. `_fire` 不再维护任何 round-robin 指针状态；并行目标选择完全由 `get_action_mask` / `_is_next_stage_available` 的 `use_count` 规则决定。
-20. 级联观测中 `TM2` 的目标 one-hot 采用固定 **9** 维逐目标编码；`TM3` 为 **8** 维（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
-21. 驻留 scrap 口径：普通腔室阈值为 `process_time + P_Residual_time`；`LLC/LLD` 阈值为 `process_time + 3 * P_Residual_time`。超过阈值会按 `resident` 类型计入 scrap 判定。
-22. 同一步内先推进时间再发射变迁：若 `_advance_and_compute_reward` 已对本步标 `resident` scrap，且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
-23. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
-24. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
-25. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。
-26. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍，节拍序列来自 `analyze_cycle` 或路线级 `takt_policy` / `takt_stages_override` 等现行路径）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
-27. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。机械手容量固定为 1，不因双臂改变。`swap_duration` 固定为 10s。
-28. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。并行目标筛选同样使用 `use_count` 最小优先。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
-29. 双臂模式 `_is_next_stage_available` 在并行源上沿用规则 17 的 `use_count` 选机，仅要求目标腔室非清洗；源位不做并行环扫，`u_*` 也不维护额外选机状态。
-30. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数）；`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
-31. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
-32. `ClusterTool.__init__` 不再执行 `normalize_route_spec` 或 stage 覆盖提取；运行时仅透传 `route_config/route_name/process_time_map` 给 `build_net`，并只消费 `route_meta.route_stages`、`route_meta.cleaning_*_map`、`process_time_map` 等构网输出作为唯一预处理来源。
+14. 配置驱动路径启用时，`model_builder.build_net` 通过 `preprocess_config.py` 先构建“每腔室一块”的预处理真源（包含 stage 覆盖后的 `process_time/cleaning_*`）；`build_marks.py` 仅消费该真源构造 place，返回的 `process_time_map` 只来自该预处理真源并与 `marks` 一致，`ClusterTool._base_proc_time_map` 直接取自该字段。
+15. `preprocess_chamber_runtime_blocks` 固定顺序为：先扫描 `RouteIR.stages` 收集 route stage 级 `process_time` 与 `cleaning_*` 映射；再对路线中出现的非 buffer 腔室合并工序工时并取整到 5 秒；最后按 `route_config.chambers` 与固定拓扑并集写入 `ChamberRuntimeBlock`。清洗时长与触发片数**不得**由 `obs_config` 或 `build_net` 传入默认清洗参数兜底；每个腔室必须在 `single_route_config.chambers` 中显式给出 `cleaning_duration` 与 `cleaning_trigger_wafers`，或由 route stage 覆盖二者，否则构网直接 `ValueError`。
+16. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
+17. 级联模式 `TM2` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 **9** 维（`PM7–PM10, LLC, LLD, LP_done, LP1, LP2`）；`TM3` 为 **8** 维（`PM1–PM6, LLC, LLD`），不再按 route 动态构造。
+18. 并行候选选机改为 `use_count` 最小优先：`u_*` 使能在 `source` 的候选下游中，先用 route gate 过滤，再从 `use_count` 最小的目标中选择一个（同值随机）；单臂若该目标满或清洗中则不可出片，双臂若该目标清洗中则不可出片。非并行源（单一 `u_targets`）仍只校验该单一候选。
+19. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值随机”决策，禁止同一步并行目标多放行。
+20. `_fire` 不再维护任何 round-robin 指针状态；并行目标选择完全由 `get_action_mask` / `_is_next_stage_available` 的 `use_count` 规则决定。
+21. 级联观测中 `TM2` 的目标 one-hot 采用固定 **9** 维逐目标编码；`TM3` 为 **8** 维（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
+22. 驻留 scrap 口径：普通腔室阈值为 `process_time + P_Residual_time`；`LLC/LLD` 阈值为 `process_time + 3 * P_Residual_time`。超过阈值会按 `resident` 类型计入 scrap 判定。
+23. 同一步内先推进时间再发射变迁：若 `_advance_and_compute_reward` 已对本步标 `resident` scrap，且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
+24. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
+25. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
+26. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。
+27. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍，节拍序列来自 `analyze_cycle` 或路线级 `takt_policy` / `takt_stages_override` 等现行路径）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
+28. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。机械手容量固定为 1，不因双臂改变。`swap_duration` 固定为 10s。
+29. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。并行目标筛选同样使用 `use_count` 最小优先。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
+30. 双臂模式 `_is_next_stage_available` 在并行源上沿用规则 18 的 `use_count` 选机，仅要求目标腔室非清洗；源位不做并行环扫，`u_*` 也不维护额外选机状态。
+31. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数）；`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
+32. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
+33. `ClusterTool.__init__` 不再执行 `normalize_route_spec` 或 stage 覆盖提取；运行时仅透传 `route_config` 与 `route_name`（及 `n_wafer_route1`/`n_wafer_route2` 等）给 `build_net`。`build_net` **不接受**独立 `process_time_map` 形参；腔室工时仅在构网内由 `preprocess_config.preprocess_chamber_runtime_blocks` 从 `route_config.chambers` 与 route stage 覆盖推导。`ClusterTool` 只消费 `build_net` 返回的 `route_meta.route_stages`、`route_meta.cleaning_*_map`、`process_time_map` 等作为唯一预处理来源。
 
 ## Examples
 - 正例:
@@ -94,6 +95,8 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **`preprocess_chamber_runtime_blocks` 顺序与清洗严格缺省**：先收集 route stage 映射，再合并工序工时并取整，最后写入 `ChamberRuntimeBlock`；删除 `default_cleaning_duration` / `default_cleaning_trigger_wafers` 形参；每个腔室的 `cleaning_duration` 与 `cleaning_trigger_wafers` 须由 `single_route_config.chambers` 或 route stage 显式给出，否则 `ValueError`。`config/cluster_tool/cascade_routes_1_star.json` 的 `chambers` 已补全上述字段。行为规则 14–15、33 已同步。
+- 2026-03-31: **`preprocess_config` 移除 `process_time_map` 形参**：`solutions/A/construct/preprocess_config.py` 的 `preprocess_chamber_runtime_blocks` 不再接收独立 `process_time_map`；构网侧仅以 `route_config.chambers` 与 route stage 覆盖合并后再取整，避免调用方传 `None` 时 `dict(None)` 崩溃。行为规则 33 已同步：`build_net` 不接受该形参；`ClusterTool` 仍只消费 `build_net` 返回的 `process_time_map`。
 - 2026-03-30: **A 方案初始化预处理继续下沉到构网层**：`solutions/A/petri_net.py` 删除 `normalize_route_spec` 与 `_extract_route_stage_overrides` 初始化链；`ClusterTool` 不再在构网前合并 stage 覆盖 map。`solutions/A/model_builder.py` 新增 `route_meta.route_stages` 与构网期 `cleaning_duration_map/cleaning_trigger_wafers_map` 输出；运行时仅消费构网返回元数据。`config/cluster_tool/env_config.py` 增加校验：`single_route_name` 必填且必须命中 `single_route_config.routes`。
 - 2026-03-30: **初始化字段收敛（A 方案）**：`ClusterTool` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode` 与 `_selected_single_route_name`，统一为固定级联口径：动作时长 `ttime=5`、scrap 必停、`single_route_name` 单一来源。`PetriEnvConfig` 同步下线 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`、`cleaning_trigger_wafers`、`cleaning_duration`（全局默认阈值）；`cleaning_enabled` 保留为总开关。`single_route_config` 变为必填（可通过 `single_route_config_path` 自动装载）。清洗参数运行时统一消费 `cleaning_trigger_wafers_map`/`cleaning_duration_map` 与路线 stage 覆盖。
 - 2026-03-30: **A 方案节拍计算职责迁移到构网层**：`solutions/A/construct/build_takt.py` 新增构网期节拍计算入口并在 `solutions/A/model_builder.py` 内调用；`ClusterTool` 初始化仅消费 `build_net` 返回的 `takt_payload`，`reset()` 不再重算节拍。`_compute_takt_result_from_override` 已删除，当前运行时不再消费 `takt_stages_override` 计算节拍（后续如需新口径需在构网层重建）。

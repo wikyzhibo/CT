@@ -35,6 +35,7 @@ def _route_ir_preprocess_chambers(
     source_name: str,
     sink_name: str,
 ) -> Tuple[str, ...]:
+    # 按路线中间 stage 顺序展开腔室名（跳过 buffer stage、source/sink），供后续工时缺省与取整的腔室列表。
     names = []
     for stage in route_ir.stages[1:-1]:
         if str(stage.stage_type) == "buffer":
@@ -52,6 +53,7 @@ def _preprocess_process_time_map(
     chambers: Tuple[str, ...],
     route_config: Mapping[str, Any],
 ) -> Dict[str, int]:
+    # 对 chambers 中每个腔室：优先取 process_time_map 已有值，否则用 route_config.chambers[].process_time；再按 5s 取整（见 utils）。
     raw = dict(process_time_map)
     cfg_ch = dict(route_config.get("chambers") or {})
     defaults = {
@@ -64,45 +66,18 @@ def _preprocess_process_time_map(
         raise ValueError(f"missing default process times for chambers: {missing}")
     return dict(_hf_preprocess_process_time_map(raw, chambers, defaults))
 
-
 def preprocess_chamber_runtime_blocks(
     *,
     route_ir: RouteIR,
     route_config: Mapping[str, Any],
-    process_time_map: Mapping[str, int],
     source_name: str,
     sink_name: str,
     route_name: Optional[str],
-    default_cleaning_duration: int,
-    default_cleaning_trigger_wafers: int,
 ) -> ChamberPreprocessResult:
+    # 契约：仅 route_config + route_ir；无外部默认清洗参数。供 model_builder.build_net 构网前生成唯一腔室真源。
     chambers_cfg = dict(route_config.get("chambers") or {})
-    blocks: Dict[str, ChamberRuntimeBlock] = {}
-    for name, cfg in chambers_cfg.items():
-        cfg_dict = dict(cfg or {})
-        blocks[str(name)] = ChamberRuntimeBlock(
-            name=str(name),
-            kind=str(cfg_dict.get("kind", "process")),
-            process_time=int(cfg_dict.get("process_time", 0)),
-            cleaning_duration=int(cfg_dict.get("cleaning_duration", default_cleaning_duration)),
-            cleaning_trigger_wafers=int(
-                cfg_dict.get("cleaning_trigger_wafers", default_cleaning_trigger_wafers)
-            ),
-        )
 
-    # 固定拓扑下，未在配置中声明的腔室也要占位，保持 process_time_map 键集合稳定。
-    for name in FIXED_TIMELINE_CHAMBERS:
-        if name in blocks:
-            continue
-        kind = "buffer" if name in {"LLC", "LLD"} else "process"
-        blocks[name] = ChamberRuntimeBlock(
-            name=name,
-            kind=kind,
-            process_time=int(process_time_map.get(name, 0)),
-            cleaning_duration=int(default_cleaning_duration),
-            cleaning_trigger_wafers=int(default_cleaning_trigger_wafers),
-        )
-
+    # 1) 扫描 route_ir.stages：收集 stage 级 process_time / cleaning_*，同腔室多处必须一致。
     route_stage_proc_time: Dict[str, int] = {}
     route_stage_clean_dur: Dict[str, int] = {}
     route_stage_clean_trig: Dict[str, int] = {}
@@ -129,35 +104,52 @@ def preprocess_chamber_runtime_blocks(
                         int(round(p_val)),
                         "process_time",
                     )
-            if stage.stage_cleaning_duration is not None:
-                _set_consistent_int(
-                    route_stage_clean_dur,
-                    chamber_name,
-                    int(stage.stage_cleaning_duration),
-                    "cleaning_duration",
-                )
-            if stage.stage_cleaning_trigger_wafers is not None:
-                _set_consistent_int(
-                    route_stage_clean_trig,
-                    chamber_name,
-                    int(stage.stage_cleaning_trigger_wafers),
-                    "cleaning_trigger_wafers",
-                )
 
+            clean_duration = stage.stage_cleaning_duration if stage.stage_cleaning_duration else 0
+            _set_consistent_int(
+                route_stage_clean_dur,
+                chamber_name,
+                clean_duration,
+                "cleaning_duration",
+            )
+
+            trigger = stage.stage_cleaning_trigger_wafers if stage.stage_cleaning_trigger_wafers else 0
+            _set_consistent_int(
+                route_stage_clean_trig,
+                chamber_name,
+                trigger,
+                "cleaning_trigger_wafers",
+            )
+
+
+    # 2) 路线腔室工序工时：stage 初值 + route_config.chambers 缺省 + 5s 取整。
     ch_pre = _route_ir_preprocess_chambers(route_ir, source_name, sink_name)
-    merged_for_preprocess: Dict[str, int] = dict(process_time_map)
-    merged_for_preprocess.update(route_stage_proc_time)
+    merged_for_preprocess: Dict[str, int] = dict(route_stage_proc_time)
     processed_pt = _preprocess_process_time_map(merged_for_preprocess, ch_pre, route_config)
 
-    for name, block in blocks.items():
-        if name in processed_pt:
-            block.process_time = int(processed_pt[name])
-        elif name in route_stage_proc_time:
-            block.process_time = int(route_stage_proc_time[name])
-        if name in route_stage_clean_dur:
-            block.cleaning_duration = int(route_stage_clean_dur[name])
-        if name in route_stage_clean_trig:
-            block.cleaning_trigger_wafers = int(route_stage_clean_trig[name])
+    # 3) 并集：配置声明腔室 + 固定拓扑占位（与 build_marks 键域一致）。
+    all_names: Set[str] = set(chambers_cfg.keys()) | set(FIXED_TIMELINE_CHAMBERS)
+    blocks: Dict[str, ChamberRuntimeBlock] = {}
+
+    for name in sorted(all_names):
+        spec = chambers_cfg.get(name)
+        cfg_dict = dict(spec or {})
+        if name in chambers_cfg:
+            kind = str(cfg_dict.get("kind", "process"))
+        else:
+            kind = "buffer" if name in {"LLC", "LLD"} else "process"
+
+        process_time = int(processed_pt.get(name, 0))
+        c_dur = int(route_stage_clean_dur.get(name) or 0)
+        c_trig = int(route_stage_clean_trig.get(name) or 0)
+
+        blocks[name] = ChamberRuntimeBlock(
+            name=name,
+            kind=kind,
+            process_time=process_time,
+            cleaning_duration=c_dur,
+            cleaning_trigger_wafers=c_trig,
+        )
 
     buffer_names = {name for name, blk in blocks.items() if blk.kind == "buffer"}
     return ChamberPreprocessResult(chamber_blocks=blocks, buffer_names=buffer_names)

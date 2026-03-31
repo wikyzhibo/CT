@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-03-31
+
+### `preprocess_chamber_runtime_blocks` 顺序调整、清洗严格缺省、移除默认清洗形参（2026-03-31）
+
+- **What changed**：`solutions/A/construct/preprocess_config.py` 先扫描 `RouteIR.stages` 收集 `route_stage_*`，再对路线腔室做工时合并与 5s 取整，最后按 `route_config.chambers` 与固定拓扑并集构造 `ChamberRuntimeBlock`。删除 `default_cleaning_duration` 与 `default_cleaning_trigger_wafers` 参数；清洗时长与触发片数仅来自 route stage 或 `route_config.chambers` 显式字段，缺一即 `ValueError`。`solutions/A/model_builder.py` 不再向预处理传入上述默认；`build_takt_payload` 前仍使用 `ctx = obs_config or {}`。`config/cluster_tool/cascade_routes_1_star.json` 为全部 `chambers` 条目补充 `cleaning_duration` / `cleaning_trigger_wafers`。
+- **Why**：避免 `obs_config` 隐式兜底与构网真源不一致；配置与路线显式声明清洗参数。
+- **Impact**：自定义 `single_route_config` 必须为每个参与固定拓扑并集的腔室提供清洗字段（或由 stage 覆盖）；否则构网失败。
+
+### `preprocess_chamber_runtime_blocks` 移除 `process_time_map` 形参（2026-03-31）
+
+- **What changed**：`solutions/A/construct/preprocess_config.py` 中 `preprocess_chamber_runtime_blocks` 删除参数 `process_time_map`；合并工时初值仅来自 route stage 覆盖字典，再经 `_preprocess_process_time_map` 与 `route_config.chambers` 缺省对齐并取整到 5 秒。`solutions/A/model_builder.py` 去掉 `process_time_map=None` 调用实参；固定拓扑占位腔室未声明时 `process_time` 初值为 `0`。
+- **Why**：构网路径从未向 `build_net` 传入独立 `process_time_map`，原 `None` 会在 `dict(process_time_map)` 处失败；删除形参使契约与实现一致。
+- **Impact**：若存在仓库外调用并依赖向预处理注入独立 `process_time_map`，需改为写入 `single_route_config` 的 `chambers` 或 route stage；返回的 `build_net`["process_time_map"] 仍为腔室工时真源。
+
 ## 2026-03-30
 
 ### A 方案：初始化预处理全量下沉到构网层（2026-03-30）

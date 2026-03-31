@@ -316,18 +316,12 @@ def build_net(n_wafer: int,
     default_subpath_name = next(iter(route_irs_by_name.keys()))
     route_ir = route_irs_by_name[default_subpath_name]
 
-    ctx = obs_config or {}
-    clean_dur_default = int(ctx.get("cleaning_duration", 150))
-    clean_trig_default = int(ctx.get("cleaning_trigger_wafers", 5))
     preprocess_result = preprocess_chamber_runtime_blocks(
         route_ir=route_ir,
         route_config=route_config,
-        process_time_map=None,
         source_name=source_name,
         sink_name=sink_name,
         route_name=selected_route_name,
-        default_cleaning_duration=clean_dur_default,
-        default_cleaning_trigger_wafers=clean_trig_default,
     )
     chamber_blocks = preprocess_result.chamber_blocks
     buffer_names = preprocess_result.buffer_names
@@ -534,6 +528,7 @@ def build_net(n_wafer: int,
         key=lambda x: int(str(x)[1:]) if str(x)[1:].isdigit() else 0,
     )
     route_stages = [list(aliases[k]) for k in ordered_keys]
+    ctx = obs_config or {}
     takt_payload = build_takt_payload(
         route_stages=route_stages,
         base_proc_time_map=process_time_map_out,

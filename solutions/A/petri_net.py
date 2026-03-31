@@ -77,8 +77,6 @@ class ClusterTool:
             "P_Residual_time": self.P_Residual_time,
             "D_Residual_time": self.D_Residual_time,
             "cleaning_enabled": self._cleaning_enabled,
-            "cleaning_duration": self._cleaning_default_duration,
-            "cleaning_trigger_wafers": self._cleaning_default_trigger,
             "cleaning_duration_map": self._cleaning_duration_map,
             "cleaning_trigger_wafers_map": self._cleaning_trigger_map,
             "scrap_clip_threshold": 20.0,
