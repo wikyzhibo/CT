@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`petri_net.ClusterTool` 移除晶圆时间统计链（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_token_stats`、`_track_enter`、`_track_leave`、`calc_wafer_statistics`、仅用于统计的 `route_meta.system_entry_places` 缓存与 `enable_statistics`。`_fire` 不再调用追踪方法；保留 `_chamber_timeline` / `render_gantt` / `get_next_event_delta`。
+- **Why**：不再在网内维护 per-token 驻留/系统时间聚合；降低状态与 `u_*`/`t_*` 路径耦合。
+- **Impact**：可视化 `StateInfo.stats` 中系统平均/最大、腔室与 TM 聚合时长显示为 0 或空；`completed_count`/`in_progress_count` 与违规计数仍来自 `done_count`、`n_wafer` 与网计数器。见 `docs/pn_api.md`「统计」与 `visualization/petri_adapter.py` / `petri_single_adapter.py`。
+
 ### A 方案：移除 `lp_release_pattern` / `lp_release_pattern_types` 构网链（2026-03-31）
 
 - **What changed**：`build_token_route_queue_multi` 删除参数与返回值中的 `lp_release_pattern` / `lp_release_pattern_types`；`model_builder._build_token_type_sequence` 仅保留 `n_wafer1`/`n_wafer2` → 连续类型 1 再类型 2；`route_meta` 不再含 `lp_release_pattern_types`；`config/cluster_tool/cascade_routes_1_star.json` 的 `routes.4-8` 删除 `lp_release_pattern` 字段。

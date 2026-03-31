@@ -308,7 +308,9 @@ class PetriSingleAdapter(AlgorithmAdapter):
                     else:
                         robot_wafers_tm2.append(wafer)
 
-        stats = self.net.calc_wafer_statistics() if hasattr(self.net, "calc_wafer_statistics") else {}
+        done_count = int(getattr(self.net, "done_count", 0))
+        total_wafers = int(getattr(self.net, "n_wafer", 0))
+        in_progress = max(0, total_wafers - done_count)
         return StateInfo(
             time=float(getattr(self.net, "time", 0)),
             chambers=chambers,
@@ -320,24 +322,24 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 "TM3": RobotState(name="TM3", busy=bool(robot_wafers_tm3), wafers=robot_wafers_tm3),
             },
             enabled_actions=self.get_enabled_actions(),
-            done_count=int(getattr(self.net, "done_count", 0)),
-            total_wafers=int(getattr(self.net, "n_wafer", 0)),
-            tpt_wph=(float(getattr(self.net, "done_count", 0)) / max(1e-9, float(getattr(self.net, "time", 0)))) * 3600
+            done_count=done_count,
+            total_wafers=total_wafers,
+            tpt_wph=(float(done_count) / max(1e-9, float(getattr(self.net, "time", 0)))) * 3600
             if float(getattr(self.net, "time", 0)) > 0
             else 0.0,
             stats={
                 "release_schedule": release_schedule,
-                "system_avg": stats.get("system_avg", 0.0),
-                "system_max": stats.get("system_max", 0),
-                "system_diff": stats.get("system_diff", 0.0),
-                "completed_count": stats.get("completed_count", 0),
-                "in_progress_count": stats.get("in_progress_count", 0),
-                "chambers": stats.get("chambers", {}),
-                "transports": stats.get("transports", {}),
-                "transports_detail": stats.get("transports_detail", {}),
-                "resident_violation_count": stats.get("resident_violation_count", 0),
-                "qtime_violation_count": stats.get("qtime_violation_count", 0),
-                "chamber_processed_counts": stats.get("chamber_processed_counts", {}),
+                "system_avg": 0.0,
+                "system_max": 0,
+                "system_diff": 0.0,
+                "completed_count": done_count,
+                "in_progress_count": in_progress,
+                "chambers": {},
+                "transports": {},
+                "transports_detail": {},
+                "resident_violation_count": int(getattr(self.net, "resident_violation_count", 0)),
+                "qtime_violation_count": int(getattr(self.net, "qtime_violation_count", 0)),
+                "chamber_processed_counts": {},
             },
         )
 

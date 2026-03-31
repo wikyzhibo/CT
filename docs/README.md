@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `pn_api.md`：`solutions/A/petri_net.py`（`ClusterTool`）移除 `_token_stats` / `calc_wafer_statistics`；可视化 `StateInfo.stats` 时长类为占位；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：移除 `lp_release_pattern` 构网链与 `route_meta.lp_release_pattern_types`；行为规则 32–33；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`n_wafer` 替换为 `n_wafer1`/`n_wafer2`，移除构网 `wafer_type_alloc_by_type`；行为规则 33；见 `CHANGELOG.md`。
 - 2026-03-31: `continuous-model/pn-single.md`：`max_wafers_in_system` 替换为 `max_wafers1_in_system`/`max_wafers2_in_system`；行为规则 32；见 `CHANGELOG.md`。

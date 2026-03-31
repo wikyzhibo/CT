@@ -64,8 +64,8 @@ Petri(
 - `blame_release_violations()`：按 `u_LP`/`u_LLC`/`u_LLD` 动作链式前瞻并回填惩罚（仅追责释放动作）
 
 **统计**
-- `_track_wafer_statistics(...)` 追踪统计
-- `calc_wafer_statistics() -> Dict[str, Any]` 统计汇总
+- A 方案 `solutions/A/petri_net.py`（`ClusterTool`）已移除 `_token_stats` 与 `calc_wafer_statistics`；`visualization/petri_adapter.py`、`petri_single_adapter.py` 构造 `StateInfo.stats` 时，系统/腔室/TM 聚合时长为占位（0 或空 dict），`completed_count`/`in_progress_count` 与 `resident_violation_count`/`qtime_violation_count` 来自网对象字段。
+- 若文档其他处仍指 `solutions/Continuous_model/pn.py` 的 `Petri`，是否保留 `_track_wafer_statistics` / `calc_wafer_statistics` 以该文件为准。
 
 ### BasedToken
 
@@ -138,7 +138,7 @@ class BasedToken:
   - **仅追责释放动作**：`u_LP`、`u_LLC`、`u_LLD`。`u_PM7`、`u_PM2` 等从加工腔卸载的动作不追责。
   - 追责链路由当前路线的 `release_chain_by_u` / `release_station_aliases`（来自构网 `route_meta`）决定，不再按固定 `single_route_code` 枚举。
 - 清洗事件日志会附加写入 `fire_log`（`event_type=cleaning_start|cleaning_end`），用于后续追责/复盘。
-- `calc_wafer_statistics()`：返回统计字典（供可视化左栏读取）
+- （A 方案 `ClusterTool` 已移除 `calc_wafer_statistics()`；左栏统计见上文「统计」与适配器。）
 - 训练脚本 `train_single.py` 在训练结束会打印 step profiling：总耗时（累计 ms）、step 平均耗时（ms）以及各分段的累计耗时/平均耗时/占比。
 
 **max_wafers1_in_system / max_wafers2_in_system 门控（2026-03-31）**

@@ -47,9 +47,6 @@ class PetriAdapter(AlgorithmAdapter):
         self._transition_transport_map: Dict[int, str] = {}
         self._transition_transport_map = self._build_transition_transport_map()
 
-        if hasattr(self.net, "enable_statistics"):
-            self.net.enable_statistics = True
-
     def reset(self) -> StateInfo:
         self.env.reset()
         self._last_action_history.clear()
@@ -290,7 +287,9 @@ class PetriAdapter(AlgorithmAdapter):
             "TM3": RobotState(name="TM3", busy=bool(transport_states.get("TM3", ChamberState("", -1, 0)).wafers), wafers=list(transport_states.get("TM3", ChamberState("", -1, 0)).wafers)),
         }
 
-        wafer_stats = self.net.calc_wafer_statistics() if hasattr(self.net, "calc_wafer_statistics") else {}
+        done_count = int(getattr(self.net, "done_count", 0))
+        total_wafers = int(getattr(self.net, "n_wafer", 0))
+        in_progress = max(0, total_wafers - done_count)
         self.display_chambers = [c.name for c in chambers if c.name]
 
         return StateInfo(
@@ -301,23 +300,23 @@ class PetriAdapter(AlgorithmAdapter):
             end_buffers=[end_alias],
             robot_states=robot_states,
             enabled_actions=self.get_enabled_actions(),
-            done_count=int(getattr(self.net, "done_count", 0)),
-            total_wafers=int(getattr(self.net, "n_wafer", 0)),
-            tpt_wph=(float(getattr(self.net, "done_count", 0)) / float(getattr(self.net, "time", 1e-9))) * 3600
+            done_count=done_count,
+            total_wafers=total_wafers,
+            tpt_wph=(float(done_count) / float(getattr(self.net, "time", 1e-9))) * 3600
             if float(getattr(self.net, "time", 0)) > 0
             else 0.0,
             stats={
                 "release_schedule": release_schedule,
-                "system_avg": wafer_stats.get("system_avg", 0.0),
-                "system_max": wafer_stats.get("system_max", 0),
-                "system_diff": wafer_stats.get("system_diff", 0.0),
-                "completed_count": wafer_stats.get("completed_count", 0),
-                "in_progress_count": wafer_stats.get("in_progress_count", 0),
-                "chambers": wafer_stats.get("chambers", {}),
-                "transports": wafer_stats.get("transports", {}),
-                "transports_detail": wafer_stats.get("transports_detail", {}),
-                "resident_violation_count": wafer_stats.get("resident_violation_count", 0),
-                "qtime_violation_count": wafer_stats.get("qtime_violation_count", 0),
+                "system_avg": 0.0,
+                "system_max": 0,
+                "system_diff": 0.0,
+                "completed_count": done_count,
+                "in_progress_count": in_progress,
+                "chambers": {},
+                "transports": {},
+                "transports_detail": {},
+                "resident_violation_count": int(getattr(self.net, "resident_violation_count", 0)),
+                "qtime_violation_count": int(getattr(self.net, "qtime_violation_count", 0)),
             },
         )
 

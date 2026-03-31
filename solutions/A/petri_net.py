@@ -80,7 +80,6 @@ class ClusterTool:
         self._timeline_chambers = tuple(route_meta.get("timeline_chambers", ()))
         self._u_targets = dict(route_meta.get("u_targets", {}))
         self._step_map = dict(route_meta.get("step_map", {}))
-        self._system_entry_places = set(route_meta.get("system_entry_places", set()))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
         self._cleaning_duration_map = route_meta.get("cleaning_duration_map")
         self._cleaning_trigger_map = route_meta.get("cleaning_trigger_wafers_map")
@@ -142,9 +141,7 @@ class ClusterTool:
         self.resident_violation_count = 0
         self.qtime_violation_count = 0
         self.fire_log: List[Dict[str, Any]] = []
-        self.enable_statistics = True
         self._per_wafer_reward = 0.0
-        self._token_stats: Dict[int, Dict[str, Any]] = {}
         self._qtime_violated_tokens: Set[int] = set()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
@@ -405,7 +402,6 @@ class ClusterTool:
         self.qtime_violation_count = 0
         self.fire_log.clear()
         self._per_wafer_reward = 0.0
-        self._token_stats = {}
         self._qtime_violated_tokens.clear()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
@@ -760,7 +756,6 @@ class ClusterTool:
 
             tok = pre_place.pop_head()
             wafer_id = tok.token_id
-            self._track_leave(tok, pre_place.name)
             tok.enter_time = self.time
             tok.stay_time = 0
 
@@ -784,7 +779,6 @@ class ClusterTool:
                     old_tok = pst_place.pop_head()
                     old_wafer_id = old_tok.token_id
 
-                    self._track_leave(old_tok, target)
                     if target in self._chamber_active and old_wafer_id in self._chamber_active[target]:
                         tl_idx = self._chamber_active[target].pop(old_wafer_id)
                         e, _, wid = self._chamber_timeline[target][tl_idx]
@@ -799,7 +793,6 @@ class ClusterTool:
 
                     tok._dst_level_targets = None
                     tok.step = max(tok.step, self._step_map.get(target, 0))
-                    self._track_enter(tok, target)
                     tok.route_head_idx += 1
                     pst_place.append(tok)
                     tok._place_idx = pst_place_idx
@@ -827,7 +820,6 @@ class ClusterTool:
 
                 tok._dst_level_targets = None
                 tok.step = max(tok.step, self._step_map.get(target, 0))
-                self._track_enter(tok, target)
                 if target == "LP_done":
                     done_type = int(getattr(tok, "route_type", 1) or 1)
                     self._entered_wafer_count_by_type[done_type] = max(
@@ -1159,46 +1151,6 @@ class ClusterTool:
                 self._tm2_transition_indices.append(int(t_idx))
             elif transport_name == "TM3":
                 self._tm3_transition_indices.append(int(t_idx))
-
-    def calc_wafer_statistics(self) -> Dict[str, Any]:
-        system_times: List[float] = []
-        chamber_stats: Dict[str, List[float]] = {}
-        completed = 0
-        for _, s in self._token_stats.items():
-            enter = s.get("enter_system")
-            leave = s.get("exit_system")
-            if enter is not None and leave is not None:
-                completed += 1
-                system_times.append(float(leave - enter))
-            for c_name, c_stat in s.get("chambers", {}).items():
-                c_enter = c_stat.get("enter")
-                c_leave = c_stat.get("exit")
-                if c_enter is not None and c_leave is not None:
-                    chamber_stats.setdefault(c_name, []).append(float(c_leave - c_enter))
-
-        chamber_summary: Dict[str, Dict[str, float]] = {}
-        for name, vals in chamber_stats.items():
-            if vals:
-                chamber_summary[name] = {"avg": sum(vals) / len(vals), "max": max(vals), "count": len(vals)}
-
-        return {
-            "system_avg": (sum(system_times) / len(system_times)) if system_times else 0.0,
-            "system_max": max(system_times) if system_times else 0.0,
-            "system_diff": 0.0,
-            "completed_count": completed,
-            "in_progress_count": max(0, self.n_wafer - completed),
-            "chambers": chamber_summary,
-            "transports": {},
-            "transports_detail": {},
-            "resident_violation_count": self.resident_violation_count,
-            "qtime_violation_count": self.qtime_violation_count,
-            "deadlock_count": self.deadlock_count,
-            "chamber_processed_counts": {
-                p.name: int(getattr(p, "processed_wafer_count", 0))
-                for p in self.marks
-                if p.name.startswith("PM")
-            },
-        }
 
     @staticmethod
     def _clone_marks(marks: List[Place]) -> List[Place]:
@@ -1556,22 +1508,6 @@ class ClusterTool:
                 mask[idx] = True
 
         return mask
-
-    def _track_enter(self, token: BasedToken, place_name: str) -> None:
-        if token.token_id not in self._token_stats:
-            self._token_stats[token.token_id] = {"enter_system": None, "exit_system": None, "chambers": {}}
-        if place_name in self._system_entry_places and self._token_stats[token.token_id]["enter_system"] is None:
-            self._token_stats[token.token_id]["enter_system"] = self.time
-        if place_name == "LP_done":
-            self._token_stats[token.token_id]["exit_system"] = self.time
-        if place_name.startswith("PM"):
-            self._token_stats[token.token_id]["chambers"].setdefault(place_name, {"enter": self.time, "exit": None})
-
-    def _track_leave(self, token: BasedToken, place_name: str) -> None:
-        if token.token_id not in self._token_stats:
-            return
-        if place_name.startswith("PM"):
-            self._token_stats[token.token_id]["chambers"].setdefault(place_name, {"enter": None, "exit": None})["exit"] = self.time
 
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
         timelines = getattr(self, "_chamber_timeline", None)
