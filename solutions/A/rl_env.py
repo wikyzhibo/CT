@@ -76,25 +76,13 @@ class Env_PN_Single(EnvBase):
     metadata = {"render.modes": ["human", "rgb_array"], "reder_fps": 30}
     batch_locked = False
 
-    def __init__(
-        self,
-        device: str = "cpu",
-        seed=None,
-        eval_mode: bool = False,
-        device_mode: str = "cascade",
-        robot_capacity: int = 1,
-        single_route_config: Optional[Dict[str, Any]] = None,
-        single_route_name: Optional[str] = None,
-        process_time_map: Optional[Dict[str, int]] = None,
-        detailed_reward: bool = False,  # 已弃用，保留以兼容旧调用，不再使用
-    ):
+    def __init__(self, device: str = "cpu", seed=None, eval_mode: bool = False,
+                 single_route_config: Optional[Dict[str, Any]] = None, single_route_name: Optional[str] = None,
+                 process_time_map: Optional[Dict[str, int]] = None):
         super().__init__(device=device)
         self.eval_mode = eval_mode
 
         dir = Path(__file__).parents[2] / "config" / "cluster_tool"
-        mode_name = str(device_mode).lower()
-        if mode_name != "cascade":
-            raise ValueError("Env_PN_Single now supports cascade mode only")
         path = dir / "cascade.yaml"
         config = PetriEnvConfig.load(path)
         if single_route_config is not None:
@@ -257,31 +245,11 @@ class Env_PN_Concurrent(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False
 
-    def __init__(
-        self,
-        device: str = "cpu",
-        seed=None,
-        detailed_reward: bool = False,
-        device_mode: str = "cascade",
-        single_route_config: Optional[Dict[str, Any]] = None,
-        single_route_name: Optional[str] = None,
-        process_time_map: Optional[Dict[str, int]] = None,
-    ):
+    def __init__(self, device: str = "cpu", seed=None, detailed_reward: bool = False):
         super().__init__(device=device)
         dir = Path(__file__).parents[2] / "config" / "cluster_tool"
-        mode_name = str(device_mode).lower()
-        if mode_name != "cascade":
-            raise ValueError("Env_PN_Concurrent now supports cascade mode only")
         config = PetriEnvConfig.load(dir / "cascade.yaml")
         config.wait_durations = [5]
-        if single_route_config is not None:
-            config.single_route_config = dict(single_route_config)
-        if single_route_name is not None:
-            config.single_route_name = str(single_route_name)
-        if process_time_map is not None:
-            config.process_time_map = {
-                str(chamber): int(value) for chamber, value in dict(process_time_map).items()
-            }
 
         self.net = ClusterTool(config=config)
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))

@@ -229,25 +229,19 @@ def parse_route(
     }
 
 
-def build_net(
-    n_wafer: int,
-    ttime: int = 5,
-    robot_capacity: int = 1,
-    process_time_map: Optional[Dict[str, int]] = None,
-    device_mode: str = "cascade",
-    obs_config: Optional[Dict[str, Any]] = None,
-    route_config: Optional[Mapping[str, Any]] = None,
-    route_name: Optional[str] = None,
-    n_wafer_route1: Optional[int] = None,
-    n_wafer_route2: Optional[int] = None,
-) -> Dict[str, object]:
+def build_net(n_wafer: int,
+              ttime: int = 5,
+              obs_config: Optional[Dict[str, Any]] = None,
+              route_config: Optional[Mapping[str, Any]] = None,
+              route_name: Optional[str] = None,
+              n_wafer_route1: Optional[int] = None,
+              n_wafer_route2: Optional[int] = None) -> Dict[str, object]:
     """
     构建 cascade-only 固定拓扑 Petri 网结构（route_config 驱动）。
 
     约束：
     - route_config 必填，schema 需包含 source/sink/chambers/robots/routes
     - route_name 用于选择具体路线
-    - device_mode 必须是 cascade，single 路径已下线
 
     返回 dict 除 pre/pst/m0/md/marks/id2p_name/id2t_name 等外，还包含预计算索引（供 get_enable_t/_fire 复用）：
     - pre_place_indices: List[np.ndarray]，pre_place_indices[t] 为变迁 t 的前置库所下标
@@ -255,12 +249,6 @@ def build_net(
     - transport_pre_place_idx: List[int]，transport_pre_place_idx[t] 为变迁 t 的运输位前置库所下标（无则为 -1）
     - process_time_map: Dict[str, int]，与 route_meta["chambers"] 一致的腔室工序时长（已含默认填充与取整到 5 秒）
     """
-    mode = str(device_mode).lower()
-    if mode != "cascade":
-        raise ValueError("build_net now supports cascade only")
-    if route_config is None:
-        raise ValueError("build_net requires route_config")
-    process_time_map = dict(process_time_map or {})
     source_cfg = dict(route_config.get("source") or {"name": "LP1"})
     sink_cfg = dict(route_config.get("sink") or {"name": "LP_done"})
     source_name = str(source_cfg.get("name", "LP1"))
@@ -334,7 +322,7 @@ def build_net(
     preprocess_result = preprocess_chamber_runtime_blocks(
         route_ir=route_ir,
         route_config=route_config,
-        process_time_map=process_time_map,
+        process_time_map=None,
         source_name=source_name,
         sink_name=sink_name,
         route_name=selected_route_name,
@@ -495,6 +483,7 @@ def build_net(
     ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
 
     route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
+    route_meta["route_stages"] = [list(stage.candidates) for stage in route_ir.stages[1:-1]]
     if len(route_irs_by_name) >= 2:
         for subpath_name, subpath_ir in route_irs_by_name.items():
             sub_meta = build_route_meta_from_route_ir(subpath_ir, buffer_names=buffer_names or BUFFER_NAMES)
@@ -531,6 +520,12 @@ def build_net(
     route_meta["wafer_type_to_load_port"] = {
         int(tid): first_load_port_name(route_irs_by_name[sp])
         for tid, sp in wafer_type_to_subpath.items()
+    }
+    route_meta["cleaning_duration_map"] = {
+        str(name): int(block.cleaning_duration) for name, block in chamber_blocks.items()
+    }
+    route_meta["cleaning_trigger_wafers_map"] = {
+        str(name): int(block.cleaning_trigger_wafers) for name, block in chamber_blocks.items()
     }
     route_meta["load_port_names"] = ("LP1", "LP2")
     aliases = dict(route_meta.get("release_station_aliases") or {})
@@ -579,7 +574,6 @@ def build_net(
         "n_wafer": n_wafer,
         "n_wafer_route1": int(c_lp.get("LP1", 0)),
         "n_wafer_route2": int(c_lp.get("LP2", 0)),
-        "single_device_mode": mode,
         "route_meta": route_meta,
         "t_route_code_map": t_route_code_map,
         "t_target_place_map": t_target_place,

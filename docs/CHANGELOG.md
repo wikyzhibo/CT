@@ -2,11 +2,17 @@
 
 ## 2026-03-30
 
+### A 方案：初始化预处理全量下沉到构网层（2026-03-30）
+
+- **What changed**：`solutions/A/petri_net.py` 删除初始化阶段的 `normalize_route_spec` 与 `_extract_route_stage_overrides`，不再在运行时构网前提取/合并 stage 覆盖。`solutions/A/model_builder.py` 的 `build_net` 新增输出 `route_meta.route_stages`、`route_meta.cleaning_duration_map`、`route_meta.cleaning_trigger_wafers_map`，由 `ClusterTool` 直接消费。`config/cluster_tool/env_config.py` 新增校验：`single_route_name` 必填且必须存在于 `single_route_config.routes`。
+- **Why**：预处理链路在运行时和构网层重复实现会导致口径漂移；把预处理收敛到构网层可保证路线阶段、清洗参数和工时来源唯一。
+- **Impact**：`ClusterTool.__init__` 现在只负责透传配置并接收 `build_net` 输出；若 `single_route_name` 缺失或拼写错误会在配置加载阶段直接报错，不再延迟到运行时 fallback。
+
 ### A 方案：`ClusterTool/PetriEnvConfig` 初始化字段收敛（2026-03-30）
 
-- **What changed**：`solutions/A/petri_net.py` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode`、`_selected_single_route_name`；固定 `ttime=5`，发生 scrap 即终止；路由名统一只用 `single_route_name`。`config/cluster_tool/env_config.py` 下线配置字段 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`，并将 `single_route_config` 设为必填（支持通过 `single_route_config_path` 自动装载）。`visualization/petri_single_adapter.py` 不再依赖 `cleaning_targets`。
+- **What changed**：`solutions/A/petri_net.py` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode`、`_selected_single_route_name`；固定 `ttime=5`，发生 scrap 即终止；路由名统一只用 `single_route_name`。`config/cluster_tool/env_config.py` 下线配置字段 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`、`cleaning_trigger_wafers`、`cleaning_duration`（全局默认阈值）；`cleaning_enabled` 保留为总开关。`single_route_config` 设为必填（支持通过 `single_route_config_path` 自动装载）。`visualization/petri_single_adapter.py` 不再依赖 `cleaning_targets`。
 - **Why**：这些参数在当前 A 方案级联路径已固定常量或重复表达，保留会增加配置歧义与维护成本。
-- **Impact**：`cascade.yaml` 需移除上述下线键；运行时清洗参数统一从 `cleaning_trigger_wafers_map/cleaning_duration_map` 读取；旧脚本若仍设置已下线字段将被忽略或需迁移。
+- **Impact**：`cascade.yaml` 需移除上述下线键；运行时清洗参数统一从 `cleaning_trigger_wafers_map/cleaning_duration_map` 读取；`cleaning_enabled` 仍为总开关；旧脚本若仍设置已下线字段将被忽略或需迁移。
 
 ### A 方案：并行选机从 robin 改为 `use_count` 最小优先（2026-03-30）
 

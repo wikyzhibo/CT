@@ -1,24 +1,12 @@
-
-
 from __future__ import annotations
-
-from collections import deque
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
 from solutions.A.utils import _normalize_wait_durations
-
 import numpy as np
-try:
-    from numba import njit, prange
-except Exception:  # pragma: no cover - numba 可选依赖
-    njit = None
-    prange = range
-
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.construct import BasedToken
 from solutions.A.model_builder import build_net
-from solutions.A.construct.route_compiler_single import normalize_route_spec
 from solutions.A.deprecated.pn import Place
 from visualization.plot import Op, plot_gantt_hatched_residence
 
@@ -27,132 +15,7 @@ DELIVERY_ROBOT = 2
 SOURCE = 3
 
 
-def _step_core_numpy(
-    pre: np.ndarray,
-    m: np.ndarray,
-    k: np.ndarray,
-    pst: np.ndarray,
-    t_idx: int,
-) -> bool:
-    """
-    纯 numpy 核心判定：变迁结构性可使能（不含业务路由/清洗约束）。
-    """
-    if int(t_idx) < 0 or int(t_idx) >= pre.shape[1]:
-        return False
-    p_count = pre.shape[0]
-    for p in range(p_count):
-        need = pre[p, t_idx]
-        if need > 0 and m[p] < need:
-            return False
-    for p in range(p_count):
-        if pst[p, t_idx] > 0 and m[p] >= k[p]:
-            return False
-    return True
-
-
-if njit is not None:
-    @njit(cache=True, fastmath=True, parallel=True)
-    def step_core_batch_numba(
-        pre: np.ndarray,
-        m: np.ndarray,
-        k: np.ndarray,
-        pst: np.ndarray,
-        t_indices: np.ndarray,
-        out_mask: np.ndarray,
-    ) -> None:
-        for i in prange(t_indices.shape[0]):
-            t_idx = int(t_indices[i])
-            if t_idx < 0 or t_idx >= pre.shape[1]:
-                out_mask[i] = False
-                continue
-            ok = True
-            for p in range(pre.shape[0]):
-                need = pre[p, t_idx]
-                if need > 0 and m[p] < need:
-                    ok = False
-                    break
-            if ok:
-                for p in range(pre.shape[0]):
-                    if pst[p, t_idx] > 0 and m[p] >= k[p]:
-                        ok = False
-                        break
-            out_mask[i] = ok
-else:
-    step_core_numba = _step_core_numpy
-
-    def step_core_batch_numba(
-        pre: np.ndarray,
-        m: np.ndarray,
-        k: np.ndarray,
-        pst: np.ndarray,
-        t_indices: np.ndarray,
-        out_mask: np.ndarray,
-    ) -> None:
-        for i in range(int(t_indices.shape[0])):
-            out_mask[i] = _step_core_numpy(pre, m, k, pst, int(t_indices[i]))
-
-
 class ClusterTool:
-    @staticmethod
-    def _extract_route_stage_overrides(
-        normalized: Sequence[Any],
-        route_name: str,
-        source_name: str,
-        sink_name: str,
-    ) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
-        proc_time_map: Dict[str, int] = {}
-        cleaning_duration_map: Dict[str, int] = {}
-        cleaning_trigger_map: Dict[str, int] = {}
-
-        def _set_consistent_int(
-            target: Dict[str, int],
-            chamber_name: str,
-            value: int,
-            field_name: str,
-        ) -> None:
-            old = target.get(chamber_name)
-            if old is not None and int(old) != int(value):
-                raise ValueError(
-                    f"route {route_name} has conflicting {field_name} for {chamber_name}: "
-                    f"{old} vs {value}"
-                )
-            target[chamber_name] = int(value)
-
-        for stage in normalized:
-            is_process_stage = str(stage.stage_type) == "process"
-            for chamber_name in stage.candidates:
-                if chamber_name in {source_name, sink_name}:
-                    continue
-                if stage.stage_process_time is not None:
-                    p_val = float(stage.stage_process_time)
-                    if (not is_process_stage) or p_val > 0:
-                        _set_consistent_int(
-                            proc_time_map,
-                            chamber_name,
-                            int(round(p_val)),
-                            "process_time",
-                        )
-                if stage.stage_cleaning_duration is not None:
-                    _set_consistent_int(
-                        cleaning_duration_map,
-                        chamber_name,
-                        int(stage.stage_cleaning_duration),
-                        "cleaning_duration",
-                    )
-                if stage.stage_cleaning_trigger_wafers is not None:
-                    _set_consistent_int(
-                        cleaning_trigger_map,
-                        chamber_name,
-                        int(stage.stage_cleaning_trigger_wafers),
-                        "cleaning_trigger_wafers",
-                    )
-
-        return (
-            proc_time_map,
-            cleaning_duration_map,
-            cleaning_trigger_map,
-        )
-
     def __init__(self, config: PetriEnvConfig = None) -> None:
         assert config is not None, "config must be provided"
         self.config = config
@@ -166,7 +29,6 @@ class ClusterTool:
         self.finish_event_reward = self.done_event_reward * 6
         self.scrap_event_penalty = int(config.scrap_event_penalty)
         self.idle_event_penalty = float(config.idle_event_penalty)
-        self.release_event_penalty = float(config.release_event_penalty)
         
         self.warn_coef_penalty = float(config.warn_coef_penalty)
         self.processing_coef_reward = float(config.processing_coef_reward)
@@ -179,83 +41,26 @@ class ClusterTool:
         self._dual_arm = bool(getattr(config, 'dual_arm', False))
         self.swap_duration = 10
 
-        # ====== 3) 清洗配置（统一 map 入口） ======
-        self.cleaning_enabled = bool(config.cleaning_enabled)
-        self.cleaning_trigger_wafers = config.cleaning_trigger_wafers
-        self.cleaning_duration = max(0, int(config.cleaning_duration))
-        trigger_map_cfg = getattr(config, "cleaning_trigger_wafers_map", None)
-        duration_map_cfg = getattr(config, "cleaning_duration_map", None)
-        if trigger_map_cfg is None or duration_map_cfg is None:
-            raise ValueError("cleaning_trigger_wafers_map and cleaning_duration_map must be provided")
-        self._cleaning_trigger_map: Dict[str, int] = dict(trigger_map_cfg)
-        self._cleaning_duration_map: Dict[str, int] = dict(duration_map_cfg)
+        # ====== 3) 清洗配置（map 来自配置/路线；开关由 cleaning_enabled） ======
+        self._cleaning_enabled = bool(config.cleaning_enabled)
+        self._cleaning_default_duration = 0
+        self._cleaning_default_trigger = 0
+        self._cleaning_duration_map: Dict[str, int] = {
+            str(name): max(0, int(value))
+            for name, value in dict(getattr(config, "cleaning_duration_map", {}) or {}).items()
+        }
+        self._cleaning_trigger_map: Dict[str, int] = {
+            str(name): max(0, int(value))
+            for name, value in dict(getattr(config, "cleaning_trigger_wafers_map", {}) or {}).items()
+        }
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
         
-        # ====== 4) 路由配置与 stage 覆盖缓存 ======
+        # ====== 4) 路由配置 ======
         self.ttime = 5
-        self.single_route_config = getattr(config, "single_route_config", None)
-        if self.single_route_config is None:
-            raise ValueError("single_route_config must be provided")
-        self.single_route_name = getattr(config, "single_route_name", None)
-        self._route_stage_proc_time_map: Dict[str, int] = {}
-        self._route_stage_cleaning_duration_map: Dict[str, int] = {}
-        self._route_stage_cleaning_trigger_map: Dict[str, int] = {}
-
-        # ====== 5) 路径解析（build_net 前） ======
-        _cfg = dict(self.single_route_config or {})
-        _cfg_chambers = dict(_cfg.get("chambers") or {})
-        _routes = dict(_cfg.get("routes") or {})
+        self.single_route_config = config.single_route_config
+        self.single_route_name = config.single_route_name
         self._route_stages = []
-        _route_chambers: List[str] = []
-        if self.single_route_name is not None:
-            _rn = str(self.single_route_name)
-            _source_name = str((_cfg.get("source") or {}).get("name", "LP1"))
-            if _source_name == "LP":
-                _source_name = "LP1"
-            _sink_name = str((_cfg.get("sink") or {}).get("name", "LP_done"))
-            _kind_map = {
-                name: str((spec or {}).get("kind", "process"))
-                for name, spec in _cfg_chambers.items()
-            }
-            _route_entry = dict(_routes.get(_rn) or {})
-            _subpaths = _route_entry.get("subpaths")
-            if isinstance(_subpaths, dict) and _subpaths:
-                # 多子路径路由由 build_net 返回的 route_meta 统一提供阶段信息。
-                self._route_stages = []
-            else:
-                _normalized = normalize_route_spec(
-                    route_name=_rn,
-                    route_cfg=_route_entry,
-                    source_name=_source_name,
-                    sink_name=_sink_name,
-                    chamber_kind_map=_kind_map,
-                )
-                (
-                    self._route_stage_proc_time_map,
-                    self._route_stage_cleaning_duration_map,
-                    self._route_stage_cleaning_trigger_map,
-                ) = self._extract_route_stage_overrides(
-                    _normalized,
-                    _rn,
-                    _source_name,
-                    _sink_name,
-                )
-                for stage in _normalized[1:-1]:
-                    self._route_stages.append(list(stage.candidates))
-                    if str(stage.stage_type) != "buffer":
-                        for name in stage.candidates:
-                            if name not in _route_chambers:
-                                _route_chambers.append(name)
-            self.config.single_route_name = self.single_route_name
-
-        if _route_chambers:
-            self.chambers = tuple(_route_chambers)
-        else:
-            self.chambers = tuple(
-                name
-                for name, spec in _cfg_chambers.items()
-                if str((spec or {}).get("kind", "process")) != "buffer"
-            ) or tuple(_cfg_chambers.keys())
+        self.chambers = tuple()
         # 先给出占位默认值，构网后以 route_meta 为准覆盖。
         self._timeline_chambers = self.chambers
         self._u_targets = {}
@@ -267,42 +72,27 @@ class ClusterTool:
         self._ready_chambers = self.chambers
         self._single_process_chambers = self.chambers
 
-        raw = dict(config.process_time_map or {})
-        if self._route_stage_proc_time_map:
-            raw.update(self._route_stage_proc_time_map)
-        if self._route_stage_cleaning_duration_map:
-            self._cleaning_duration_map.update(self._route_stage_cleaning_duration_map)
-        if self._route_stage_cleaning_trigger_map:
-            self._cleaning_trigger_map.update(self._route_stage_cleaning_trigger_map)
-
         # ====== 6) 构网输入与构网结果 ======
         obs_config = {
             "P_Residual_time": self.P_Residual_time,
             "D_Residual_time": self.D_Residual_time,
-            "cleaning_enabled": self.cleaning_enabled,
-            "cleaning_duration": self.cleaning_duration,
-            "cleaning_trigger_wafers": self.cleaning_trigger_wafers,
+            "cleaning_enabled": self._cleaning_enabled,
+            "cleaning_duration": self._cleaning_default_duration,
+            "cleaning_trigger_wafers": self._cleaning_default_trigger,
             "cleaning_duration_map": self._cleaning_duration_map,
             "cleaning_trigger_wafers_map": self._cleaning_trigger_map,
             "scrap_clip_threshold": 20.0,
         }
-        info = build_net(
-            n_wafer=self.n_wafer,
-            ttime=self.ttime,
-            robot_capacity=1,
-            process_time_map=raw,
-            device_mode="cascade",
-            obs_config=obs_config,
-            route_config=self.single_route_config,
-            route_name=self.single_route_name,
-            n_wafer_route1=getattr(self.config, "n_wafer_route1", None),
-            n_wafer_route2=getattr(self.config, "n_wafer_route2", None),
-        )
+        info = build_net(n_wafer=self.n_wafer, ttime=self.ttime, obs_config=obs_config,
+                         route_config=self.single_route_config, route_name=self.single_route_name,
+                         n_wafer_route1=self.config.n_wafer_route1, n_wafer_route2=self.config.n_wafer_route2)
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
         # ====== 7) route_meta：阶段/拓扑/类型映射 ======
-        if not self._route_stages:
-            # 从 route_meta 反推用于节拍分析的内部阶段（不含 LP/LP_done）
+        route_stages = list(route_meta.get("route_stages") or [])
+        if route_stages:
+            self._route_stages = [list(stage) for stage in route_stages]
+        else:
             aliases = route_meta.get("release_station_aliases") or {}
             if isinstance(aliases, dict):
                 ordered_keys = sorted(
@@ -318,6 +108,14 @@ class ClusterTool:
         self._release_chain_by_u = dict(route_meta.get("release_chain_by_u", {}))
         self._system_entry_places = set(route_meta.get("system_entry_places", set()))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
+        self._cleaning_duration_map = {
+            str(name): max(0, int(value))
+            for name, value in dict(route_meta.get("cleaning_duration_map") or {}).items()
+        }
+        self._cleaning_trigger_map = {
+            str(name): max(0, int(value))
+            for name, value in dict(route_meta.get("cleaning_trigger_wafers_map") or {}).items()
+        }
         self._multi_subpath = bool(route_meta.get("multi_subpath", False))
         self._subpath_to_type: Dict[str, int] = {
             str(k): int(v) for k, v in dict(route_meta.get("subpath_to_type") or {}).items()
@@ -1572,7 +1370,7 @@ class ClusterTool:
         return best
 
     def _on_processing_unload(self, source_name: str) -> None:
-        if not self.cleaning_enabled:
+        if not self._cleaning_enabled:
             return
         trigger = self._cleaning_trigger_map.get(source_name, 0)
         if trigger <= 0:
@@ -1584,7 +1382,7 @@ class ClusterTool:
             return
         if source_place.processed_wafer_count >= trigger:
             count = int(source_place.processed_wafer_count)
-            duration = self._cleaning_duration_map.get(source_name, self.cleaning_duration)
+            duration = int(self._cleaning_duration_map.get(source_name, 0))
             source_place.is_cleaning = True
             source_place.cleaning_remaining = int(duration)
             source_place.cleaning_reason = "processed_wafers"

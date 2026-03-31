@@ -10,7 +10,6 @@ processing_coef_reward: 5.0
 in_system_time_penalty_coef: 0.0
 done_event_reward: 500
 scrap_event_penalty: 4000
-release_event_penalty: 4
 wait_durations:
   - 5
 max_wafers_in_system: 6

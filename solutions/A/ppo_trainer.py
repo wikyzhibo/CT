@@ -1164,11 +1164,7 @@ def train_single(
         except Exception:
             scaler = torch.cuda.amp.GradScaler(enabled=True)
 
-    env = Env_PN_Single(
-        device="cpu",
-        detailed_reward=True,
-        device_mode=device_mode,
-    )
+    env = Env_PN_Single(device="cpu")
     # 仅保留 ultra 模式：rollout 固定在 CPU。
     rollout_device = "cpu"
     rollout_n_envs = max(1, int(rollout_n_envs))
@@ -1252,11 +1248,7 @@ def train_single(
         # Ultra rollout：每个环境采样 steps_per_env 步，再拉平成 frames_per_batch。
         steps_per_env = max(1, (int(config.frames_per_batch) + rollout_n_envs - 1) // rollout_n_envs)
         rollout_cpu, ultra_state = collect_rollout_ultra(
-            env_fn=lambda: Env_PN_Single(
-                device="cpu",
-                detailed_reward=True,
-                device_mode=device_mode,
-            ),
+            env_fn=lambda: Env_PN_Single(device="cpu"),
             policy=policy_for_rollout,
             n_steps=steps_per_env,
             n_envs=rollout_n_envs,
@@ -1455,7 +1447,7 @@ def train_single(
 
 
 def build_single_env() -> Env_PN_Single:
-    return Env_PN_Single(detailed_reward=True)
+    return Env_PN_Single()
 
 
 if __name__ == "__main__":

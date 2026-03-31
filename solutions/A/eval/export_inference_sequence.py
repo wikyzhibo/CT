@@ -168,12 +168,7 @@ def _rollout_single_sequence(
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Single]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Single(
-        seed=seed,
-        robot_capacity=robot_capacity,
-        device_mode=device_mode,
-        eval_mode=True,
-    )
+    env = Env_PN_Single(seed=seed, eval_mode=True)
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()

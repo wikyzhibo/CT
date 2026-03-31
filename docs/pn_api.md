@@ -111,7 +111,7 @@ class BasedToken:
 - 在初始化阶段生成：`pre/pst/net/m0/md/id2p_name/id2t_name/marks`；构网同时返回 `pre_place_indices`、`pst_place_indices`、`transport_pre_place_idx`（每变迁的 pre/pst 库所索引及运输位 pre 索引），供 `get_action_mask`、`_fire` 等复用以减少检索
 - `d_TM1` 在构网中设置 `processing_time=5s`（默认），用于约束“运输位停留后才能 `t_*` 进入腔室”
 - 机械手容量固定为 1；双臂模式仅改变 swap 规则，不改变 place 容量口径。
-- 单设备清洗参数统一为 per-chamber map：`cleaning_trigger_wafers_map`、`cleaning_duration_map`。若配置提供 `chambers`，会优先从每腔室块生成/覆盖上述 map。
+- 单设备清洗：`cleaning_enabled` 为总开关；每腔室阈值与时长统一为 per-chamber map：`cleaning_trigger_wafers_map`、`cleaning_duration_map`。若配置提供 `chambers`，会优先从每腔室块生成/覆盖上述 map。
 - ClusterTool 内部使用 `_cleaning_trigger_map`、`_cleaning_duration_map`（per-chamber）；构网时通过 `obs_config` 将上述 map 传给 `build_net`，每个 PM 实例获得对应腔室的清洁参数。
 
 **工艺路线**

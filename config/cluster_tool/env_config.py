@@ -14,40 +14,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-def _default_single_process_time_map() -> Dict[str, int]:
-    return {
-        "PM1": 100,
-        "PM3": 300,
-        "PM4": 300,
-        "PM6": 300,
-    }
-
-
 def _default_wait_durations() -> List[int]:
     return [5, 10, 20, 50, 100]
-
-
-def _apply_legacy_aliases(data: dict) -> None:
-    """旧 JSON 键名迁移到当前字段名（新键优先）。"""
-    if "time_coef_penalty" not in data:
-        if "time_coef" in data:
-            data["time_coef_penalty"] = data["time_coef"]
-        elif "c_time" in data:
-            data["time_coef_penalty"] = data["c_time"]
-    if "release_event_penalty" not in data:
-        if "release_penalty_coef" in data:
-            data["release_event_penalty"] = data["release_penalty_coef"]
-        elif "c_release_violation" in data:
-            data["release_event_penalty"] = data["c_release_violation"]
-    if "done_event_reward" not in data and "R_done" in data:
-        data["done_event_reward"] = data["R_done"]
-    if "finish_event_reward" not in data and "R_finish" in data:
-        data["finish_event_reward"] = data["R_finish"]
-    if "scrap_event_penalty" not in data and "R_scrap" in data:
-        data["scrap_event_penalty"] = data["R_scrap"]
-    if "idle_event_penalty" not in data and "idle_penalty" in data:
-        data["idle_event_penalty"] = data["idle_penalty"]
-    data.pop("reward_config", None)
 
 
 class PetriEnvConfig(BaseModel):
@@ -74,7 +42,6 @@ class PetriEnvConfig(BaseModel):
     processing_coef_reward: float = 3.0
     in_system_time_penalty_coef: float = 0.0
     time_coef_penalty: float = 1.0
-    release_event_penalty: float = 0.1
 
     D_Residual_time: int = 20
     P_Residual_time: int = 15
@@ -82,9 +49,6 @@ class PetriEnvConfig(BaseModel):
 
     dual_arm: bool = False
     cleaning_enabled: bool = True
-    cleaning_trigger_wafers: int = 5
-    cleaning_duration: int = 150
-    process_time_map: Dict[str, int] = Field(default_factory=_default_single_process_time_map)
     single_route_config: Optional[Dict[str, Any]] = None
     single_route_config_path: Optional[str] = None
     single_route_name: Optional[str] = None
@@ -107,6 +71,13 @@ class PetriEnvConfig(BaseModel):
     def _normalize_chamber_config(self) -> PetriEnvConfig:
         if self.single_route_config is None:
             raise ValueError("single_route_config must be provided")
+        route_name = str(self.single_route_name or "").strip()
+        if not route_name:
+            raise ValueError("single_route_name must be provided")
+        routes_cfg = dict((self.single_route_config or {}).get("routes") or {})
+        if route_name not in routes_cfg:
+            raise ValueError(f"single_route_name not found in single_route_config.routes: {route_name}")
+        self.single_route_name = route_name
         if self.chambers is not None:
             pt_map = dict(self.process_time_map)
             for name, spec in self.chambers.items():
@@ -130,9 +101,15 @@ class PetriEnvConfig(BaseModel):
             trig_map = dict(self.cleaning_trigger_wafers_map or {})
             dur_map = dict(self.cleaning_duration_map or {})
             if not trig_map and not dur_map:
-                default_targets = ("PM3", "PM4")
-                trig_map = {c: self.cleaning_trigger_wafers for c in default_targets}
-                dur_map = {c: self.cleaning_duration for c in default_targets}
+                route_chambers = dict((self.single_route_config or {}).get("chambers") or {})
+                trig_map = {
+                    str(name): max(0, int((spec or {}).get("cleaning_trigger_wafers", 0)))
+                    for name, spec in route_chambers.items()
+                }
+                dur_map = {
+                    str(name): max(0, int((spec or {}).get("cleaning_duration", 0)))
+                    for name, spec in route_chambers.items()
+                }
             elif not trig_map or not dur_map:
                 raise ValueError("cleaning_trigger_wafers_map and cleaning_duration_map must be provided together")
             self.cleaning_trigger_wafers_map = {
@@ -192,9 +169,6 @@ class PetriEnvConfig(BaseModel):
         lines.append(f"  finish_event_reward: {self.finish_event_reward}")
         lines.append(f"  scrap_event_penalty: {self.scrap_event_penalty}")
         lines.append(f"  time_coef: {self.time_coef_penalty}")
-
-        lines.append("\n【其他参数】")
-        lines.append(f"  release_penalty_coef: {self.release_event_penalty}")
 
         lines.append("\n【路线配置】")
         if self.routes is not None:
@@ -273,7 +247,6 @@ class PetriEnvConfig(BaseModel):
                 data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError(f"配置文件顶层必须是映射: {path}")
-        _apply_legacy_aliases(data)
         if "no_residence_place_names" in data and data["no_residence_place_names"] is not None:
             data["no_residence_place_names"] = set(data["no_residence_place_names"])
         route_cfg_path = data.get("single_route_config_path")

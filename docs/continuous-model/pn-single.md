@@ -50,7 +50,7 @@
 6. `compile_route_stages` 相邻 stage 的机械手由 `build_topology.infer_cascade_transport_by_scope` 判定：左、右 stage 的 candidates 须同时落在 `_TM2_SCOPE` 或 `_TM3_SCOPE` 之一；若两套 scope 同时满足则取 **TM3**。
 7. 不再兼容旧命名（`d_TM*`、`t_PM*` 等）；运行时仅消费新命名。
 8. 固定动作空间下，未被当前 route 使用的变迁必须在 `get_action_mask` 中恒为 0。
-9. 当通过 `PetriEnvConfig.load(json)` 加载且 json 中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`。
+9. 当通过 `PetriEnvConfig.load(json/yaml)` 加载且配置中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`；`single_route_name` 必须显式提供且必须命中 `single_route_config.routes`。
 10. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
 11. 导出脚本的 `--out-name` 参与文件命名：`results/action_sequences/<out_name>.json`（非法字符会替换为 `_`）。
 12. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
@@ -73,6 +73,7 @@
 29. 双臂模式 `_is_next_stage_available` 在并行源上沿用规则 17 的 `use_count` 选机，仅要求目标腔室非清洗；源位不做并行环扫，`u_*` 也不维护额外选机状态。
 30. 双臂模式 `_fire` 对 `t_*` 变迁：在执行时调用 `_is_swap_eligible(pst_place)` 判定是否 swap。条件：`_dual_arm=True`、目标 `is_pm`、满载、head wafer 加工完成、非清洗中。swap 时原子交换 TM 与 PM 的 token（`m` 不变），触发 `_on_processing_unload`（清洗计数）；`step` 在 `_advance_and_compute_reward` 之前计算 swap 决策，确保时长（10s）与 `_fire` 行为一致。
 31. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、全局在制未达上限、`_allow_start_for_route_type(route_type)`、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。`route_meta.lp_release_pattern` / `lp_release_pattern_types` 仍可由构网写入，**当前** `ClusterTool` **不**据此约束 LP 使能或 `get_next_event_delta` 的装载口节拍分支。
+32. `ClusterTool.__init__` 不再执行 `normalize_route_spec` 或 stage 覆盖提取；运行时仅透传 `route_config/route_name/process_time_map` 给 `build_net`，并只消费 `route_meta.route_stages`、`route_meta.cleaning_*_map`、`process_time_map` 等构网输出作为唯一预处理来源。
 
 ## Examples
 - 正例:
@@ -93,7 +94,8 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
-- 2026-03-30: **初始化字段收敛（A 方案）**：`ClusterTool` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode` 与 `_selected_single_route_name`，统一为固定级联口径：动作时长 `ttime=5`、scrap 必停、`single_route_name` 单一来源。`PetriEnvConfig` 同步下线 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`。`single_route_config` 变为必填（可通过 `single_route_config_path` 自动装载）。清洗参数运行时统一消费 `cleaning_trigger_wafers_map`/`cleaning_duration_map`，不再依赖 `cleaning_targets`。
+- 2026-03-30: **A 方案初始化预处理继续下沉到构网层**：`solutions/A/petri_net.py` 删除 `normalize_route_spec` 与 `_extract_route_stage_overrides` 初始化链；`ClusterTool` 不再在构网前合并 stage 覆盖 map。`solutions/A/model_builder.py` 新增 `route_meta.route_stages` 与构网期 `cleaning_duration_map/cleaning_trigger_wafers_map` 输出；运行时仅消费构网返回元数据。`config/cluster_tool/env_config.py` 增加校验：`single_route_name` 必填且必须命中 `single_route_config.routes`。
+- 2026-03-30: **初始化字段收敛（A 方案）**：`ClusterTool` 删除运行时字段 `stop_on_scrap`、`T_transport`、`T_load`、`robot_capacity`、`single_device_mode` 与 `_selected_single_route_name`，统一为固定级联口径：动作时长 `ttime=5`、scrap 必停、`single_route_name` 单一来源。`PetriEnvConfig` 同步下线 `stop_on_scrap`、`T_transport`、`T_load`、`single_robot_capacity`、`device_mode`、`cleaning_trigger_wafers`、`cleaning_duration`（全局默认阈值）；`cleaning_enabled` 保留为总开关。`single_route_config` 变为必填（可通过 `single_route_config_path` 自动装载）。清洗参数运行时统一消费 `cleaning_trigger_wafers_map`/`cleaning_duration_map` 与路线 stage 覆盖。
 - 2026-03-30: **A 方案节拍计算职责迁移到构网层**：`solutions/A/construct/build_takt.py` 新增构网期节拍计算入口并在 `solutions/A/model_builder.py` 内调用；`ClusterTool` 初始化仅消费 `build_net` 返回的 `takt_payload`，`reset()` 不再重算节拍。`_compute_takt_result_from_override` 已删除，当前运行时不再消费 `takt_stages_override` 计算节拍（后续如需新口径需在构网层重建）。
 - 2026-03-30: **移除 `route_code` / `route4_takt_interval`**：`PetriEnvConfig` 与 `ClusterTool` 不再接受配置项 `route_code`、`route4_takt_interval`；`model_builder.build_net` 不再接收/回传 `route_code`；删除 `takt_analysis.build_fixed_takt_result` 及 `_compute_takt_result` 中依赖旧 route4 固定节拍的特例；回放与可视化仅以 `single_route_name` / `single_route_config` 重建路线。变迁级 `t_route_code_map`（子路径编码）保留，与已删除的配置字段无关。
 - 2026-03-30: **并行腔室轮转（级联）**：删除 `_first_receivable_parallel_target` 与 `_first_parallel_target_dual_arm`。`_is_next_stage_available` 对并行源仅校验 `_expected_target_for_source_stage` 所指单一腔室：单臂满或清洗则屏蔽 `u_*`，双臂清洗则屏蔽；**不再**环扫其它并行腔室。`_fire` 的 u_* 路径移除对 `_current_stage_targets_for_source` / `_rr_set_next` 的调用；指针仅在 `t_*` 落入并行候选腔室时推进。行为规则 17/18/24/29 已同步重写。
