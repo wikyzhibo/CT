@@ -65,6 +65,7 @@ Petri(
 
 **统计**
 - A 方案 `solutions/A/petri_net.py`（`ClusterTool`）已移除 `_token_stats` 与 `calc_wafer_statistics`；`visualization/petri_adapter.py`、`petri_single_adapter.py` 构造 `StateInfo.stats` 时，系统/腔室/TM 聚合时长为占位（0 或空 dict），`completed_count`/`in_progress_count` 与 `resident_violation_count`/`qtime_violation_count` 来自网对象字段。
+- **A 方案 `ClusterTool` 甘特（2026-03-31）**：`render_gantt(out_path, title_suffix=None)` **Does**：方法存在，调用不报错。**Does NOT**：当前方法体为空，不生成 PNG；网内不再维护 `_chamber_timeline` / `_chamber_active`。构网仍可输出 `route_meta.timeline_chambers`，供后续重写复用。
 - 若文档其他处仍指 `solutions/Continuous_model/pn.py` 的 `Petri`，是否保留 `_track_wafer_statistics` / `calc_wafer_statistics` 以该文件为准。
 
 ### BasedToken

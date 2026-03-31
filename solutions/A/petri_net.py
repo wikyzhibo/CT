@@ -1,13 +1,11 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
-from pathlib import Path
 from solutions.A.utils import _normalize_wait_durations
 import numpy as np
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.construct import BasedToken
 from solutions.A.model_builder import build_net
 from solutions.A.deprecated.pn import Place
-from visualization.plot import Op, plot_gantt_hatched_residence
 
 CHAMBER = 1
 DELIVERY_ROBOT = 2
@@ -76,7 +74,6 @@ class ClusterTool:
         route_stages = list(route_meta.get("route_stages") or [])
         self._route_stages = [list(stage) for stage in route_stages]
         self.chambers = tuple(route_meta.get("chambers", ()))
-        self._timeline_chambers = tuple(route_meta.get("timeline_chambers", ()))
         self._u_targets = dict(route_meta.get("u_targets", {}))
         self._step_map = dict(route_meta.get("step_map", {}))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
@@ -153,10 +150,8 @@ class ClusterTool:
         self._tm2_transition_indices: List[int] = []
         self._tm3_transition_indices: List[int] = []
 
-        # ====== 10) 甘特/清洗状态与节拍缓存 ======
+        # ====== 10) 清洗状态与节拍缓存 ======
         self._last_deadlock = False
-        self._chamber_timeline: Dict[str, list] = {name: [] for name in self._timeline_chambers}
-        self._chamber_active: Dict[str, Dict[int, int]] = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
         takt_payload = dict(info.get("takt_payload") or {})
         self._takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = {
@@ -178,11 +173,6 @@ class ClusterTool:
         # ====== 11) 训练/性能与奖励开关 ======
         self._training = True
         self._last_state_scan: Dict[str, Any] = {}
-        self._is_cascade: bool = True
-        self._do_time_cost: bool = True
-        self._do_proc_reward: bool = True
-        self._do_transport_penalty: bool = True
-        self._do_warn_penalty: bool = True
         # ====== 12) 观测缓存与索引重建 ======
         self._ready_chambers_set: frozenset = frozenset(self._ready_chambers)
         self._place_by_name: Dict[str, Place] = {}
@@ -194,7 +184,6 @@ class ClusterTool:
         self._obs_buffer: np.ndarray = np.zeros(0, dtype=np.float32)
         self._obs_return_copy: bool = True
         self._rebuild_place_cache()
-        # m0 恒为 0；真实 token 在 marks.deque，须与 reset 一致从 marks 同步，否则 LP u_* 的 struct 判定恒失败。
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._init_obs_cache()
         self._build_transition_index()
@@ -366,8 +355,6 @@ class ClusterTool:
         self._consecutive_wait_time = 0
         self._place_use_count = {str(place.name): 0 for place in self.marks}
         self._last_deadlock = False
-        self._chamber_timeline = {name: [] for name in self._timeline_chambers}
-        self._chamber_active = {name: {} for name in self._timeline_chambers}
         self._init_cleaning_state()
         self._last_u_LP_fire_time = 0
         self._u_LP_release_count = 0
@@ -481,16 +468,10 @@ class ClusterTool:
                 "finish_bonus": 0.0, "scrap_penalty": 0.0,
             }
 
-        do_time_cost = self._do_time_cost
-        do_proc_reward = self._do_proc_reward
-        do_transport_penalty = self._do_transport_penalty
-        do_warn_penalty = self._do_warn_penalty
-
-        if do_time_cost:
-            tc = -float(safe_dt * self.time_coef_penalty)
-            total_reward += tc
-            if detailed:
-                parts["time_cost"] = tc
+        tc = -float(safe_dt * self.time_coef_penalty)
+        total_reward += tc
+        if detailed:
+            parts["time_cost"] = tc
 
         is_scrap = False
         scrap_info: Optional[Dict[str, Any]] = None
@@ -512,7 +493,7 @@ class ClusterTool:
                 head = tokens[0]
                 head_stay = head.stay_time
                 proc_time = p.processing_time
-                if do_proc_reward and proc_time > 0:
+                if proc_time > 0:
                     remain = proc_time - head_stay
                     if remain < 0:
                         remain = 0
@@ -521,14 +502,14 @@ class ClusterTool:
                     total_reward += r
                     if detailed:
                         parts["proc_reward"] += r
-                if do_warn_penalty:
-                    left = proc_time + p_residual - head_stay
-                    if left <= p_residual:
-                        r = -(warn_coef * safe_dt)
-                        total_reward += r
-                        if detailed:
-                            parts["warn_penalty"] += r
-            elif has_tok and p_type == DELIVERY_ROBOT and do_transport_penalty:
+
+                left = proc_time + p_residual - head_stay
+                if left <= p_residual:
+                    r = -(warn_coef * safe_dt)
+                    total_reward += r
+                    if detailed:
+                        parts["warn_penalty"] += r
+            elif has_tok and p_type == DELIVERY_ROBOT:
                 for tok in tokens:
                     deadline = tok.enter_time + qtime_limit
                     over_start = t1 if t1 > deadline else deadline
@@ -669,13 +650,8 @@ class ClusterTool:
                 tok._dst_level_targets = tuple(self._u_targets.get(src, []))
                 tok.last_u_source = str(src)
                 tok.machine = int(self._next_robot_machine())
-                if self._is_cascade:
-                    transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
-                    tok.machine = 2 if transport == "TM3" else 1
-                if src in self._chamber_active and wafer_id in self._chamber_active[src]:
-                    idx = self._chamber_active[src].pop(wafer_id)
-                    e, _, wid = self._chamber_timeline[src][idx]
-                    self._chamber_timeline[src][idx] = (e, start_time, wid)
+                transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
+                tok.machine = 2 if transport == "TM3" else 1
                 self._on_processing_unload(src)
             elif t_name.startswith("t_"):
                 target = pst_place.name
@@ -684,10 +660,6 @@ class ClusterTool:
                     old_tok = pst_place.pop_head()
                     old_wafer_id = old_tok.token_id
 
-                    if target in self._chamber_active and old_wafer_id in self._chamber_active[target]:
-                        tl_idx = self._chamber_active[target].pop(old_wafer_id)
-                        e, _, wid = self._chamber_timeline[target][tl_idx]
-                        self._chamber_timeline[target][tl_idx] = (e, start_time, wid)
                     self._on_processing_unload(target)
 
                     old_tok.enter_time = self.time
@@ -702,10 +674,6 @@ class ClusterTool:
                     pst_place.append(tok)
                     tok._place_idx = pst_place_idx
                     self._place_use_count[target] = int(self._place_use_count.get(target, 0)) + 1
-                    if target in self._chamber_timeline and wafer_id >= 0:
-                        tl_idx2 = len(self._chamber_timeline[target])
-                        self._chamber_timeline[target].append((end_time, None, wafer_id))
-                        self._chamber_active[target][wafer_id] = tl_idx2
 
                     pre_place.append(old_tok)
                     old_tok._place_idx = pre_place_idx
@@ -733,10 +701,6 @@ class ClusterTool:
                     self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
                     self.done_count += 1
                     self._per_wafer_reward += float(self.done_event_reward)
-                elif target in self._chamber_timeline and wafer_id >= 0:
-                    idx = len(self._chamber_timeline[target])
-                    self._chamber_timeline[target].append((end_time, None, wafer_id))
-                    self._chamber_active[target][wafer_id] = idx
 
             tok.route_head_idx += 1
             pst_place.append(tok)
@@ -1415,131 +1379,4 @@ class ClusterTool:
         return mask
 
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
-        timelines = getattr(self, "_chamber_timeline", None)
-        if not isinstance(timelines, dict) or not timelines:
-            print("警告: _chamber_timeline 为空，跳过甘特图绘制")
-            return
-
-        # 以 _route_stages 定义 stage 与并行 machine（stage=1..S, machine=0..M-1）
-        stage_map: Dict[str, Tuple[int, int]] = {}
-        stage_module_names: Dict[int, List[str]] = {}
-        proc_time: Dict[int, float] = {}
-        capacity: Dict[int, int] = {}
-
-        route_stages: List[List[str]] = list(getattr(self, "_route_stages", []) or [])
-        flat_names = [str(name) for stage in route_stages for name in (stage or [])]
-        seen_chambers: Set[str] = set()
-        lane_stage_idx = 1
-        for stage_places in route_stages:
-            names = [str(x) for x in (stage_places or [])]
-            if not names:
-                continue
-            lane_names = [name for name in names if name not in seen_chambers]
-            if not lane_names:
-                continue
-            stage_module_names[int(lane_stage_idx)] = lane_names
-            capacity[int(lane_stage_idx)] = int(len(lane_names))
-            max_p = 0
-            for machine_idx, name in enumerate(lane_names):
-                seen_chambers.add(name)
-                stage_map[name] = (int(lane_stage_idx), int(machine_idx))
-                place = getattr(self, "_place_by_name", {}).get(name)
-                ptime = int(getattr(place, "processing_time", 0)) if place is not None else 0
-                if ptime > max_p:
-                    max_p = ptime
-            proc_time[int(lane_stage_idx)] = float(max_p)
-            lane_stage_idx += 1
-
-        if not stage_map:
-            print("警告: _route_stages 为空，无法构建 stage 映射，跳过甘特图绘制")
-            return
-
-        now_t = float(getattr(self, "time", 0))
-        ops: List[Op] = []
-        jobs: Set[int] = set()
-
-        for chamber_name, items in timelines.items():
-            if chamber_name not in stage_map:
-                continue
-            if not isinstance(items, list):
-                continue
-            stage, machine = stage_map[chamber_name]
-            place = getattr(self, "_place_by_name", {}).get(chamber_name)
-            ptime = float(getattr(place, "processing_time", 0)) if place is not None else 0.0
-
-            for entry in items:
-                try:
-                    enter, leave, wid = entry
-                except Exception:
-                    continue
-                try:
-                    wid_int = int(wid)
-                except Exception:
-                    continue
-                if wid_int < 0:
-                    continue
-                try:
-                    start = float(enter)
-                except Exception:
-                    continue
-                end = now_t
-                if leave is not None:
-                    try:
-                        end = float(leave)
-                    except Exception:
-                        end = now_t
-                if end < start:
-                    continue
-
-                proc_end = start + max(0.0, float(ptime))
-                if proc_end > end:
-                    proc_end = end
-
-                ops.append(
-                    Op(
-                        job=wid_int,
-                        stage=int(stage),
-                        machine=int(machine),
-                        start=float(start),
-                        proc_end=float(proc_end),
-                        end=float(end),
-                    )
-                )
-                jobs.add(wid_int)
-
-        if not ops:
-            print("警告: 没有可绘制的腔室 Op 数据（可能尚未进入任何腔室），跳过甘特图绘制")
-            return
-
-        out = Path(out_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        final_path = out if out.suffix.lower() == ".png" else out.with_suffix(".png")
-        base_path = out.with_suffix("")
-
-        n_jobs = max(1, len(jobs))
-        arm_info = {"ARM1": [], "ARM2": [], "STAGE2ACT": {}}
-        policy = 2  # plot.py 映射为 RL1
-
-        plot_gantt_hatched_residence(
-            ops=ops,
-            proc_time=proc_time,
-            capacity=capacity,
-            n_jobs=int(n_jobs),
-            out_path=str(base_path),
-            arm_info=arm_info,
-            with_label=True,
-            no_arm=True,
-            policy=int(policy),
-            stage_module_names=stage_module_names,
-            title_suffix=title_suffix,
-        )
-
-        generated_path = Path(f"{base_path}RL1_job{int(n_jobs)}.png")
-        if generated_path.exists():
-            try:
-                final_path.write_bytes(generated_path.read_bytes())
-            except Exception:
-                import shutil
-                shutil.copyfile(str(generated_path), str(final_path))
-        else:
-            print(f"警告: 未找到绘图输出文件: {generated_path}")
+        pass

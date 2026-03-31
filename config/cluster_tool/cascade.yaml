@@ -14,5 +14,5 @@ max_wafers1_in_system: 16
 max_wafers2_in_system: 6
 cleaning_enabled: true
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "2-1"
+single_route_name: "2-2"
 dual_arm: true

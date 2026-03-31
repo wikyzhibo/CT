@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`ClusterTool.render_gantt` 占位；移除 `_chamber_timeline` / `_chamber_active`（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 删除 `_timeline_chambers`、`_chamber_timeline`、`_chamber_active` 及 `_fire` 中仅服务于时间线的分支；`render_gantt(out_path, title_suffix=None)` **保留方法签名**，方法体为空（不生成 PNG、不写文件）。删除 `Op` / `plot_gantt_hatched_residence` 与仅甘特使用的 `pathlib.Path` 导入。
+- **Why**：甘特绘制待重写；网内不再维护腔室占用时间线。
+- **Impact**：`export_inference_sequence`、`visualization` 适配器仍可调用 `render_gantt`，**当前不会**产出 `gantt.png`。`route_meta.timeline_chambers` 仍可由构网生成，供后续实现复用。
+
 ### A 方案：`petri_net.ClusterTool` 移除 step 分段 Profiling（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `_profiling_enabled`、`_step_profile`、`_record_step_profile`、`get_step_profile_summary()`；`step()` 内不再使用 `perf_counter` 分段计时。`solutions/A/ppo_trainer.py` 训练结束不再打印 `[Step Time Profile]` 及各分段耗时。
@@ -10,7 +16,7 @@
 
 ### A 方案：`petri_net.ClusterTool` 移除晶圆时间统计链（2026-03-31）
 
-- **What changed**：`solutions/A/petri_net.py` 删除 `_token_stats`、`_track_enter`、`_track_leave`、`calc_wafer_statistics`、仅用于统计的 `route_meta.system_entry_places` 缓存与 `enable_statistics`。`_fire` 不再调用追踪方法；保留 `_chamber_timeline` / `render_gantt` / `get_next_event_delta`。
+- **What changed**：`solutions/A/petri_net.py` 删除 `_token_stats`、`_track_enter`、`_track_leave`、`calc_wafer_statistics`、仅用于统计的 `route_meta.system_entry_places` 缓存与 `enable_statistics`。`_fire` 不再调用追踪方法；保留 `get_next_event_delta`（后续 `render_gantt` / `_chamber_timeline` 变更见同日期条目）。
 - **Why**：不再在网内维护 per-token 驻留/系统时间聚合；降低状态与 `u_*`/`t_*` 路径耦合。
 - **Impact**：可视化 `StateInfo.stats` 中系统平均/最大、腔室与 TM 聚合时长显示为 0 或空；`completed_count`/`in_progress_count` 与违规计数仍来自 `done_count`、`n_wafer` 与网计数器。见 `docs/pn_api.md`「统计」与 `visualization/petri_adapter.py` / `petri_single_adapter.py`。
 
