@@ -2,6 +2,18 @@
 
 ## 2026-03-31
 
+### A 方案：token 级阶段工时队列 + 4-13 变工时路线（2026-03-31）
+
+- **What changed**：
+  - `solutions/A/construct/build_route_queue.py` / `build_route_queue_multi` 新增 `token_proc_time_queue`（与 `route_queue` 对齐；`u_*=-1`，`t_*` 写 stage `process_time`）。
+  - `solutions/A/construct/build_marks.py` 的 `BasedToken` 新增 `route_proc_time_queue`；构网注入 token 时按子路径模板赋值。
+  - `solutions/A/petri_net.py` 的 `_fire` 在 `t_*` 入目标库所时按 token 当前 `route_head_idx` 读取 `route_proc_time_queue`，并写入目标库所 `processing_time`。
+  - `solutions/A/construct/preprocess_config.py` 与 `solutions/A/model_builder.py` 放开“同 chamber 多 stage 不同工时”冲突，`chamber_blocks.process_time` 仅保留基础值。
+  - `solutions/A/construct/build_takt.py` 与 `solutions/A/model_builder.py` 新增 stage 工时口径透传，节拍计算优先使用 stage `process_time`。
+  - `config/cluster_tool/cascade_routes_1_star.json` 新增双子路径 `routes.4-13`。
+- **Why**：同一腔室重复访问且工时变化（如 `425 -> 800`）需要按“每片 wafer 的访问序号”生效，不能由全局 place 单值工时表达。
+- **Impact**：`use_count` 仍只用于并行选机；重复访问工时由 token 指针驱动。旧路线行为保持不变，新路线可表达变工时重入。
+
 ### A 方案：删除 `ClusterTool._check_scrap`，驻留 scrap 内联至 `_advance_and_compute_reward`（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 删除 `ClusterTool._check_scrap`；原循环与 `LLC`/`LLD` 阈值逻辑并入 `_advance_and_compute_reward` stay 推进循环之后。`docs/pn_api.md`、`docs/continuous-model/pn-single.md` 规则 22–23 同步（规则 22 明确 `LLC`/`LLD` 为 `3 * P_Residual_time`）。

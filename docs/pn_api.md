@@ -125,6 +125,7 @@ class BasedToken:
   - 仅 `t_*` 使用路由门控码（如 `t_PM7=1, t_PM8=2, t_LLC=3 ...`）。
   - `u_*` 不做路由门控；但 token 每次 fire 都会推进一次队头，用 `-1` 作为 `u_*` 占位通配符。
   - 示例：`[-1, (1,2), -1, 3, ...]` 表示 `u_*` 后到达并行 `t_PM7/t_PM8` 阶段，再进入 `t_LLC` 阶段。
+  - `build_route_queue` 同步生成 `route_proc_time_queue`（与 `route_queue` 对齐：`u_*` 位固定为 `-1`，`t_*` 位为当前 stage `process_time`）。`ClusterTool._fire` 在 `t_*` 入库时按 token 当前 `route_head_idx` 读取该队列并更新目标库所 `processing_time`。
 
 **主要接口**
 - `ClusterTool(config, concurrent=False)`：`concurrent` 不经 `PetriEnvConfig`；`Env_PN_Concurrent` 构造时传 `concurrent=True`，`Env_PN_Single` 使用默认 `False`。
@@ -215,3 +216,8 @@ class BasedToken:
 - 发生死锁时，episode 终止，增加 `deadlock_count`。
 - 死锁惩罚量级与 `scrap_event_penalty` 等价（`deadlock_penalty = -abs(scrap_event_penalty)`）。
 - 死锁不计入 `scrap`。
+
+## Change Notes
+- 2026-03-31：新增 token 级阶段工时队列。`build_route_queue` / `build_route_queue_multi` 输出 `token_proc_time_queue`（`u_*=-1`，`t_*`=stage `process_time`）；`BasedToken` 新增 `route_proc_time_queue`，`ClusterTool._fire` 在 `t_*` 入库时按 token 指针应用阶段工时。
+- 2026-03-31：构网允许同 chamber 在不同 stage 使用不同工时；`preprocess_chamber_runtime_blocks` 与 `model_builder` 不再对该场景报冲突，`build_takt` 优先按 stage 工时计算节拍。
+- 2026-03-31：路线配置新增 `config/cluster_tool/cascade_routes_1_star.json` 的 `routes.4-13`（双子路径，支持重复访问同 chamber 的变工时）。

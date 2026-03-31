@@ -76,6 +76,9 @@
 32. `get_action_mask` 对 `LP1`/`LP2` 的 `u_LP*`：**对每个**装载口独立判定；若该口队首 `route_type` 与 `wafer_type_to_load_port` 一致、在制上限满足（单路线：`entered_wafer_count < max_wafers1_in_system`；双子路径：不再使用单一全局在制数，仅 `_allow_start_for_route_type(route_type)` 按类型比较 `_entered_wafer_count_by_type` 与 `max_wafers1_in_system`/`max_wafers2_in_system`）、队首 `stay_time>=0`（节拍倒计时结束）、且对应 `u_LP*→TM2/TM3` 结构性可使能，则置位该变迁。**不再**使用全局「下一次发片类型」状态在掩码中排他地只放行一条 LP；`_fire` 从装载口取 token 一律为 `pre_place.pop_head()`。构网**不**输出 `lp_release_pattern` / `lp_release_pattern_types`。
 33. `ClusterTool.__init__` 不再执行 `normalize_route_spec` 或 stage 覆盖提取；运行时透传 `route_config` 与 `route_name`，晶圆数由 `PetriEnvConfig` 的 `n_wafer1`/`n_wafer2` 显式给定并传入 `build_net`（单条子路径须 `n_wafer2==0`；总片数 `n_wafer1+n_wafer2`）。`build_net` **不接受**独立 `process_time_map` 形参；腔室工时仅在构网内由 `preprocess_config.preprocess_chamber_runtime_blocks` 从 `route_config.chambers` 与 route stage 覆盖推导。`ClusterTool` 只消费 `build_net` 返回的 `route_meta.route_stages`、`route_meta.cleaning_*_map`、`process_time_map` 等作为唯一预处理来源。`route_meta` **不**包含 `wafer_type_alloc_by_type`；双子路径下 `token_route_type_sequence` 仅由 `n_wafer1`/`n_wafer2` 决定（先全部类型 1 再全部类型 2）。
 34. 构网期 `build_takt.build_takt_payload` 与 `build_marks` **同源**消费 `preprocess_chamber_runtime_blocks` 返回的 `chamber_blocks`：节拍分析中每腔室清洗时长与触发片数只读对应 `ChamberRuntimeBlock`；`obs_config` **仅**提供 `cleaning_enabled` 总开关（关闭时不参与节拍 q/d 计算），**不得**通过 `obs_config` 传入构网期节拍清洗数值。
+35. `build_route_queue` 为每个 token 生成两条同索引队列：`route_queue` 与 `route_proc_time_queue`。其中 `u_*` 占位步固定写 `-1`，`t_*` 步写当前目标 stage 的 `process_time`。
+36. `ClusterTool._fire` 在 `t_*` 入目标库所时，按 token 当前 `route_head_idx` 读取 `route_proc_time_queue`，并将该值写入目标库所 `processing_time`；工时按“每片 wafer 的访问序号”生效，`use_count` 仅用于并行选机。
+37. `preprocess_chamber_runtime_blocks` 与 `model_builder` 允许同一 chamber 在不同 stage 使用不同 `process_time`；`chamber_blocks.process_time` 仅作为基础值，不再作为重复访问时的唯一工时。
 
 ## Examples
 - 正例:
@@ -96,6 +99,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **token 级阶段工时队列与 4-13 变工时路线**：`build_route_queue` 新增 `token_proc_time_queue`（`u_*=-1`，`t_*`=stage `process_time`）；`BasedToken` 新增 `route_proc_time_queue`；`ClusterTool._fire` 在 `t_*` 入库时按 token 指针应用当前阶段工时。`preprocess_config/model_builder` 放开同 chamber 多 stage 工时冲突，`build_takt` 改为优先使用 stage 工时口径；`cascade_routes_1_star.json` 新增双子路径 `4-13`。
 - 2026-03-31: **`ClusterTool` 并发掩码与移除 `get_enable_t`**：`ClusterTool(config, concurrent=False|True)` 由 `Env_PN_Single` / `Env_PN_Concurrent` 传入；`get_action_mask` 在并发实例上返回 `(mask_tm2, mask_tm3)`，`step` 第四项一致；删除 `get_enable_t()`；`reset()` 使能列表仍用 `get_action_mask(..., concurrent=False)` 前 `T` 维；见 `CHANGELOG.md` 与 `docs/pn_api.md`。
 - 2026-03-31: **`n_wafer` → `n_wafer1`/`n_wafer2`；移除 `wafer_type_alloc_by_type`**：`PetriEnvConfig` 与 `build_net` 用显式片数；删除 `n_wafer_route1`/`n_wafer_route2`；`model_builder` 不再按 `wafer_type_alloc` 权重计算类型序列；`route_meta` 不再输出 `wafer_type_alloc_by_type`；行为规则 33 已同步；见 `CHANGELOG.md`。
 - 2026-03-31: **`max_wafers_in_system` → `max_wafers1_in_system`/`max_wafers2_in_system`**：`PetriEnvConfig` 与 `ClusterTool` 改用两固定上限；删除 `wafer_type_alloc` 比例交叉乘法门控与 `_wafer_type_alloc_total_weight`；行为规则 32 已同步；见 `CHANGELOG.md`。

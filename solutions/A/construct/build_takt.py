@@ -9,6 +9,7 @@ from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
 def _build_takt_stage(
     stage_idx: int,
     stage_places: Sequence[str],
+    stage_process_time: Optional[int],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
@@ -21,7 +22,10 @@ def _build_takt_stage(
     if not valid_places:
         return None
 
-    base_p = max(int(base_proc_time_map[place]) for place in valid_places)
+    if stage_process_time is not None and int(stage_process_time) > 0:
+        base_p = int(stage_process_time)
+    else:
+        base_p = max(int(base_proc_time_map[place]) for place in valid_places)
     q: Optional[int] = None
     d = 0
     if cleaning_enabled:
@@ -32,7 +36,7 @@ def _build_takt_stage(
             if trigger <= 0:
                 continue
             duration = int(block.cleaning_duration)
-            score = int(base_proc_time_map.get(place, 0)) + duration
+            score = int(base_p) + duration
             cleaning_candidates.append((score, trigger, duration, place))
         if cleaning_candidates:
             _, q, d, _ = max(cleaning_candidates, key=lambda item: (item[0], item[3]))
@@ -48,6 +52,7 @@ def _build_takt_stage(
 
 def _compute_takt_result_from_stage_lists(
     route_stages: Sequence[Sequence[str]],
+    route_stage_process_times: Optional[Sequence[int]],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
@@ -56,9 +61,13 @@ def _compute_takt_result_from_stage_lists(
     for i, stage in enumerate(route_stages):
         if not stage:
             continue
+        stage_ptime: Optional[int] = None
+        if route_stage_process_times is not None and i < len(route_stage_process_times):
+            stage_ptime = int(route_stage_process_times[i])
         stage_cfg = _build_takt_stage(
             stage_idx=i,
             stage_places=list(stage),
+            stage_process_time=stage_ptime,
             base_proc_time_map=base_proc_time_map,
             cleaning_enabled=cleaning_enabled,
             chamber_blocks=chamber_blocks,
@@ -76,6 +85,7 @@ def _compute_takt_result_from_stage_lists(
 
 def _compute_takt_result(
     route_stages: Sequence[Sequence[str]],
+    route_stage_process_times: Optional[Sequence[int]],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
@@ -93,6 +103,7 @@ def _compute_takt_result(
         }
     return _compute_takt_result_from_stage_lists(
         route_stages=route_stages,
+        route_stage_process_times=route_stage_process_times,
         base_proc_time_map=base_proc_time_map,
         cleaning_enabled=cleaning_enabled,
         chamber_blocks=chamber_blocks,
@@ -102,6 +113,7 @@ def _compute_takt_result(
 def build_takt_payload(
     *,
     route_stages: Sequence[Sequence[str]],
+    route_stage_process_times: Sequence[int],
     base_proc_time_map: Mapping[str, int],
     cleaning_enabled: bool,
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
@@ -110,11 +122,13 @@ def build_takt_payload(
     takt_policy: str,
     wafer_type_to_subpath: Mapping[int, str],
     subpath_route_stages: Mapping[str, Sequence[Sequence[str]]],
+    subpath_route_stage_process_times: Mapping[str, Sequence[int]],
 ) -> Dict[str, Any]:
     if not multi_subpath:
         takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = {
             1: _compute_takt_result(
                 route_stages=route_stages,
+                route_stage_process_times=route_stage_process_times,
                 base_proc_time_map=base_proc_time_map,
                 cleaning_enabled=cleaning_enabled,
                 chamber_blocks=chamber_blocks,
@@ -129,8 +143,10 @@ def build_takt_payload(
             for t_id in all_types:
                 subpath = str(wafer_type_to_subpath.get(int(t_id), "") or "")
                 stages = list(subpath_route_stages.get(subpath) or [])
+                stage_ptimes = list(subpath_route_stage_process_times.get(subpath) or [])
                 takt_result_by_type[int(t_id)] = _compute_takt_result_from_stage_lists(
                     route_stages=stages,
+                    route_stage_process_times=stage_ptimes,
                     base_proc_time_map=base_proc_time_map,
                     cleaning_enabled=cleaning_enabled,
                     chamber_blocks=chamber_blocks,
@@ -138,6 +154,7 @@ def build_takt_payload(
         else:
             shared = _compute_takt_result(
                 route_stages=route_stages,
+                route_stage_process_times=route_stage_process_times,
                 base_proc_time_map=base_proc_time_map,
                 cleaning_enabled=cleaning_enabled,
                 chamber_blocks=chamber_blocks,

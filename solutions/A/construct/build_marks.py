@@ -57,6 +57,7 @@ class BasedToken:
     step: int = 0
     where: int = 0
     route_queue: Tuple[Any, ...] = ()
+    route_proc_time_queue: Tuple[int, ...] = ()
     route_head_idx: int = 0
     _target_place: Optional[str] = None
     _dst_level_targets: Optional[Tuple[str, ...]] = None
@@ -74,6 +75,7 @@ class BasedToken:
             step=self.step,
             where=self.where,
             route_queue=tuple(self.route_queue),
+            route_proc_time_queue=tuple(self.route_proc_time_queue),
             route_head_idx=int(self.route_head_idx),
             last_u_source=str(self.last_u_source),
         )
@@ -95,7 +97,9 @@ def _add_tokens_to_load_ports(
     p_idx: Mapping[str, int],
     lp_per_token: Sequence[str],
     token_route_queue: Tuple[object, ...],
+    token_proc_time_queue: Tuple[int, ...],
     token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
+    token_proc_time_queue_by_type: Optional[Mapping[int, Tuple[int, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
 ) -> None:
     if len(lp_per_token) != int(n_wafer):
@@ -105,8 +109,11 @@ def _add_tokens_to_load_ports(
     for tok_id in range(n_wafer):
         route_type = int(token_route_type_sequence[tok_id]) if token_route_type_sequence is not None else 1
         route_queue = token_route_queue
+        proc_time_queue = token_proc_time_queue
         if token_route_queue_by_type is not None:
             route_queue = tuple(token_route_queue_by_type.get(route_type) or token_route_queue)
+        if token_proc_time_queue_by_type is not None:
+            proc_time_queue = tuple(token_proc_time_queue_by_type.get(route_type) or token_proc_time_queue)
         lp_name = str(lp_per_token[tok_id])
         place = marks[p_idx[lp_name]]
         place.append(
@@ -117,6 +124,7 @@ def _add_tokens_to_load_ports(
                 step=0,
                 where=0,
                 route_queue=route_queue,
+                route_proc_time_queue=proc_time_queue,
                 route_head_idx=0,
             )
         )
@@ -130,7 +138,9 @@ def build_marks_for_single_net(
     chamber_blocks: Mapping[str, ChamberRuntimeBlock],
     n_wafer: int,
     token_route_queue: Tuple[object, ...],
+    token_proc_time_queue: Tuple[int, ...],
     token_route_queue_by_type: Optional[Mapping[int, Tuple[object, ...]]] = None,
+    token_proc_time_queue_by_type: Optional[Mapping[int, Tuple[int, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
     lp_per_token: Optional[Sequence[str]] = None,
     p_residual_time: int = 15,
@@ -239,7 +249,9 @@ def build_marks_for_single_net(
         p_idx=p_idx,
         lp_per_token=lp_per_token,
         token_route_queue=token_route_queue,
+        token_proc_time_queue=token_proc_time_queue,
         token_route_queue_by_type=token_route_queue_by_type,
+        token_proc_time_queue_by_type=token_proc_time_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,
     )
 

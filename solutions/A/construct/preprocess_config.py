@@ -98,12 +98,8 @@ def preprocess_chamber_runtime_blocks(
             if stage.stage_process_time is not None:
                 p_val = float(stage.stage_process_time)
                 if (not is_process_stage) or p_val > 0:
-                    _set_consistent_int(
-                        route_stage_proc_time,
-                        chamber_name,
-                        int(round(p_val)),
-                        "process_time",
-                    )
+                    # 同腔室允许在不同 stage 使用不同工时；此处仅记录首次出现值作为基础值。
+                    route_stage_proc_time.setdefault(chamber_name, int(round(p_val)))
 
             clean_duration = stage.stage_cleaning_duration if stage.stage_cleaning_duration else 0
             _set_consistent_int(

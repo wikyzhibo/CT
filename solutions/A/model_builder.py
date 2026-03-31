@@ -299,12 +299,8 @@ def build_net(n_wafer1: int,
                         p_val = float(stage.stage_process_time)
                         if (not is_process_stage) or p_val > 0:
                             new_ptime = int(round(p_val))
-                            if block.process_time > 0 and new_ptime > 0 and block.process_time != new_ptime:
-                                raise ValueError(
-                                    f"route {selected_route_name} subpath {subpath_name} has conflicting process_time "
-                                    f"for {chamber_name}: {block.process_time} vs {new_ptime}"
-                                )
-                            block.process_time = int(new_ptime)
+                            if block.process_time <= 0 and new_ptime > 0:
+                                block.process_time = int(new_ptime)
                     if stage.stage_cleaning_duration is not None:
                         block.cleaning_duration = int(stage.stage_cleaning_duration)
                     if stage.stage_cleaning_trigger_wafers is not None:
@@ -352,8 +348,10 @@ def build_net(n_wafer1: int,
 
     # ======= 构造晶圆路由队列 ===========
     token_route_queue_templates: Dict[str, Tuple[object, ...]] = {}
+    token_proc_time_queue_templates: Dict[str, Tuple[int, ...]] = {}
     token_route_plan_templates: Dict[str, Any] = {}
     token_route_queue_by_type: Dict[int, Tuple[object, ...]] = {}
+    token_proc_time_queue_by_type: Dict[int, Tuple[int, ...]] = {}
     token_route_type_sequence: List[int] = [1 for _ in range(int(n_wafer))]
     subpath_to_type: Dict[str, int] = {default_subpath_name: 1}
     wafer_type_to_subpath: Dict[int, str] = {1: default_subpath_name}
@@ -365,8 +363,10 @@ def build_net(n_wafer1: int,
         )
         t_route_code_map = dict(multi_payload["t_route_code_map"])
         token_route_queue = tuple(multi_payload["token_route_queue_template"])
+        token_proc_time_queue = tuple(multi_payload["token_proc_time_queue_template"])
         token_plan = multi_payload["token_route_plan_template"]
         token_route_queue_templates = dict(multi_payload["token_route_queue_templates"])
+        token_proc_time_queue_templates = dict(multi_payload["token_proc_time_queue_templates"])
         token_route_plan_templates = dict(multi_payload["token_route_plan_templates"])
         subpath_to_type = dict(multi_payload["subpath_to_type"])
         wafer_type_to_subpath = dict(multi_payload["wafer_type_to_subpath"])
@@ -374,19 +374,25 @@ def build_net(n_wafer1: int,
             int(type_id): tuple(token_route_queue_templates[subpath_name])
             for type_id, subpath_name in wafer_type_to_subpath.items()
         }
+        token_proc_time_queue_by_type = {
+            int(type_id): tuple(token_proc_time_queue_templates[subpath_name])
+            for type_id, subpath_name in wafer_type_to_subpath.items()
+        }
         token_route_type_sequence = _build_token_type_sequence(
             n_wafer1=n_wafer1_i,
             n_wafer2=n_wafer2_i,
         )
     else:
-        _, t_route_code_map, token_route_queue, token_plan = build_token_route_queue(
+        _, t_route_code_map, token_route_queue, token_proc_time_queue, token_plan = build_token_route_queue(
             route_ir=route_ir,
             id2t_name=id2t_name,
             t_target_place=t_target_place,
         )
         token_route_queue_templates = {default_subpath_name: tuple(token_route_queue)}
+        token_proc_time_queue_templates = {default_subpath_name: tuple(token_proc_time_queue)}
         token_route_plan_templates = {default_subpath_name: token_plan}
         token_route_queue_by_type = {1: tuple(token_route_queue)}
+        token_proc_time_queue_by_type = {1: tuple(token_proc_time_queue)}
 
     lp_per_token = _lp_per_token_for_route(
         token_route_type_sequence=token_route_type_sequence,
@@ -409,7 +415,9 @@ def build_net(n_wafer1: int,
         chamber_blocks=chamber_blocks,
         n_wafer=n_wafer,
         token_route_queue=token_route_queue,
+        token_proc_time_queue=token_proc_time_queue,
         token_route_queue_by_type=token_route_queue_by_type,
+        token_proc_time_queue_by_type=token_proc_time_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,
         lp_per_token=lp_per_token,
         p_residual_time = p_residual_time,
@@ -427,6 +435,12 @@ def build_net(n_wafer1: int,
 
     route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
     route_meta["route_stages"] = [list(stage.candidates) for stage in route_ir.stages[1:-1]]
+    route_meta["route_stage_process_times"] = [
+        int(round(float(stage.stage_process_time)))
+        if stage.stage_process_time is not None
+        else 0
+        for stage in route_ir.stages[1:-1]
+    ]
     if len(route_irs_by_name) >= 2:
         for subpath_name, subpath_ir in route_irs_by_name.items():
             sub_meta = build_route_meta_from_route_ir(subpath_ir, buffer_names=buffer_names or BUFFER_NAMES)
@@ -450,6 +464,15 @@ def build_net(n_wafer1: int,
     route_meta["default_subpath"] = str(default_subpath_name)
     route_meta["subpath_route_stages"] = {
         str(name): [list(stage.candidates) for stage in ir.stages[1:-1]]
+        for name, ir in route_irs_by_name.items()
+    }
+    route_meta["subpath_route_stage_process_times"] = {
+        str(name): [
+            int(round(float(stage.stage_process_time)))
+            if stage.stage_process_time is not None
+            else 0
+            for stage in ir.stages[1:-1]
+        ]
         for name, ir in route_irs_by_name.items()
     }
     full_timeline_chambers = tuple(
@@ -477,6 +500,7 @@ def build_net(n_wafer1: int,
     route_stages = [list(aliases[k]) for k in ordered_keys]
     takt_payload = build_takt_payload(
         route_stages=route_stages,
+        route_stage_process_times=list(route_meta.get("route_stage_process_times") or []),
         base_proc_time_map=process_time_map_out,
         cleaning_enabled=cleaning_enabled,
         chamber_blocks=chamber_blocks,
@@ -485,6 +509,7 @@ def build_net(n_wafer1: int,
         takt_policy=str(route_meta.get("takt_policy", "") or ""),
         wafer_type_to_subpath=wafer_type_to_subpath,
         subpath_route_stages=dict(route_meta.get("subpath_route_stages") or {}),
+        subpath_route_stage_process_times=dict(route_meta.get("subpath_route_stage_process_times") or {}),
     )
 
     pre_place_indices: List[np.ndarray] = [np.flatnonzero(pre[:, t] > 0) for t in range(t_count)]
@@ -520,10 +545,13 @@ def build_net(n_wafer1: int,
         "t_target_place_map": t_target_place,
         "route_source_target_transport": route_source_target_transport,
         "token_route_queue_template": token_route_queue,
+        "token_proc_time_queue_template": token_proc_time_queue,
         "token_route_plan_template": token_plan,
         "token_route_queue_templates": token_route_queue_templates,
+        "token_proc_time_queue_templates": token_proc_time_queue_templates,
         "token_route_plan_templates": token_route_plan_templates,
         "token_route_queue_templates_by_type": token_route_queue_by_type,
+        "token_proc_time_queue_templates_by_type": token_proc_time_queue_by_type,
         "token_route_type_sequence": token_route_type_sequence,
         "route_ir": route_ir,
         "process_time_map": process_time_map_out,

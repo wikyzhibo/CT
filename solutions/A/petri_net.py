@@ -538,6 +538,9 @@ class ClusterTool:
                 self._on_processing_unload(src)
             elif t_name.startswith("t_"):
                 target = pst_place.name
+                stage_proc_time = self._token_current_stage_process_time(tok)
+                if stage_proc_time is not None:
+                    pst_place.processing_time = int(stage_proc_time)
 
                 if current_t_idx in swap_set and self._is_swap_eligible(pst_place):
                     old_tok = pst_place.pop_head()
@@ -674,6 +677,19 @@ class ClusterTool:
                 return self._t_code_to_place.get(int(first))
             idx += 1
         return None
+
+    @staticmethod
+    def _token_current_stage_process_time(tok: BasedToken) -> Optional[int]:
+        proc_queue = tuple(getattr(tok, "route_proc_time_queue", ()) or ())
+        if not proc_queue:
+            return None
+        idx = int(getattr(tok, "route_head_idx", 0))
+        if idx < 0 or idx >= len(proc_queue):
+            return None
+        value = int(proc_queue[idx])
+        if value < 0:
+            return None
+        return value
 
     def _gate_targets_from_tok_gate(self, tok_gate: object) -> Tuple[str, ...]:
         if tok_gate == -1:

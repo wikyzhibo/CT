@@ -12,12 +12,39 @@ from solutions.A.construct.route_compiler_single import (
     build_token_route_plan,
 )
 
+def _stage_proc_time_to_int(stage_process_time: object) -> int:
+    if stage_process_time is None:
+        return 0
+    return int(round(float(stage_process_time)))
+
+
+def _build_route_and_proc_time_queue(route_ir: RouteIR, target_code_map: Mapping[str, int]) -> Tuple[Tuple[object, ...], Tuple[int, ...]]:
+    route_queue: List[object] = []
+    proc_time_queue: List[int] = []
+    for idx in range(len(route_ir.stages) - 1):
+        route_queue.append(-1)
+        proc_time_queue.append(-1)
+
+        next_stage = route_ir.stages[idx + 1]
+        gate_codes: List[int] = []
+        for dst in next_stage.candidates:
+            code = int(target_code_map.get(str(dst), -1))
+            if code > 0:
+                gate_codes.append(code)
+
+        if len(gate_codes) == 1:
+            route_queue.append(gate_codes[0])
+        else:
+            route_queue.append(tuple(gate_codes))
+        proc_time_queue.append(_stage_proc_time_to_int(next_stage.stage_process_time))
+    return tuple(route_queue), tuple(proc_time_queue)
+
 
 def build_token_route_queue(
     route_ir: RouteIR,
     id2t_name: List[str],
     t_target_place: Dict[str, str],
-) -> Tuple[Dict[str, int], Dict[str, int], Tuple[object, ...], TokenRoutePlan]:
+) -> Tuple[Dict[str, int], Dict[str, int], Tuple[object, ...], Tuple[int, ...], TokenRoutePlan]:
     stage_target_order: List[str] = []
     stage_target_seen: Set[str] = set()
     for stage in route_ir.stages[1:]:
@@ -41,26 +68,16 @@ def build_token_route_queue(
         if code > 0:
             t_route_code_map[t_name] = code
 
-    route_queue: List[object] = []
-    for idx in range(len(route_ir.stages) - 1):
-        route_queue.append(-1)
-        next_stage = route_ir.stages[idx + 1]
-        gate_codes: List[int] = []
-        for dst in next_stage.candidates:
-            code = int(target_code_map.get(str(dst), -1))
-            if code > 0:
-                gate_codes.append(code)
-        if len(gate_codes) == 1:
-            route_queue.append(gate_codes[0])
-        else:
-            route_queue.append(tuple(gate_codes))
-    token_route_queue = tuple(route_queue)
+    token_route_queue, token_proc_time_queue = _build_route_and_proc_time_queue(
+        route_ir=route_ir,
+        target_code_map=target_code_map,
+    )
 
     token_plan = build_token_route_plan(
         route_ir=route_ir,
         transition_names=[f"t_{name}" for name in stage_target_order],
     )
-    return target_code_map, t_route_code_map, token_route_queue, token_plan
+    return target_code_map, t_route_code_map, token_route_queue, token_proc_time_queue, token_plan
 
 
 def build_token_route_queue_multi(
@@ -104,22 +121,15 @@ def build_token_route_queue_multi(
             t_route_code_map[str(t_name)] = code
 
     token_route_queue_templates: Dict[str, Tuple[object, ...]] = {}
+    token_proc_time_queue_templates: Dict[str, Tuple[int, ...]] = {}
     token_route_plan_templates: Dict[str, TokenRoutePlan] = {}
     for subpath_name, route_ir in route_items:
-        route_queue: List[object] = []
-        for idx in range(len(route_ir.stages) - 1):
-            route_queue.append(-1)
-            next_stage = route_ir.stages[idx + 1]
-            gate_codes: List[int] = []
-            for dst in next_stage.candidates:
-                code = int(target_code_map.get(str(dst), -1))
-                if code > 0:
-                    gate_codes.append(code)
-            if len(gate_codes) == 1:
-                route_queue.append(gate_codes[0])
-            else:
-                route_queue.append(tuple(gate_codes))
-        token_route_queue_templates[str(subpath_name)] = tuple(route_queue)
+        token_route_queue, token_proc_time_queue = _build_route_and_proc_time_queue(
+            route_ir=route_ir,
+            target_code_map=target_code_map,
+        )
+        token_route_queue_templates[str(subpath_name)] = token_route_queue
+        token_proc_time_queue_templates[str(subpath_name)] = token_proc_time_queue
         token_route_plan_templates[str(subpath_name)] = build_token_route_plan(
             route_ir=route_ir,
             transition_names=[f"t_{name}" for name in stage_target_order],
@@ -138,8 +148,10 @@ def build_token_route_queue_multi(
         "target_code_map": target_code_map,
         "t_route_code_map": t_route_code_map,
         "token_route_queue_template": token_route_queue_templates[default_subpath],
+        "token_proc_time_queue_template": token_proc_time_queue_templates[default_subpath],
         "token_route_plan_template": token_route_plan_templates[default_subpath],
         "token_route_queue_templates": token_route_queue_templates,
+        "token_proc_time_queue_templates": token_proc_time_queue_templates,
         "token_route_plan_templates": token_route_plan_templates,
         "subpath_to_type": subpath_to_type,
         "wafer_type_to_subpath": wafer_type_to_subpath,
