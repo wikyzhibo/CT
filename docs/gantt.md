@@ -393,6 +393,33 @@ plot_gantt_hatched_residence(
 )
 ```
 
+## ClusterTool.render_gantt（A 方案）
+
+### Abstract
+
+- **What**：`solutions/A/petri_net.py` 中 `ClusterTool.render_gantt(out_path, title_suffix=None)` 在仿真已产生 `fire_log` 后，将腔室占用重建为 `Op` 并调用本页所述 `plot_gantt_hatched_residence`。
+- **When**：训练 `rollout_and_export` 传入 `gantt_png_path`、或可视化 `render_gantt` 按钮/导出工具调用之后调用；须在 **`reset()` 后已执行 `step` 产生变迁日志**。
+- **Not**：不在 `_fire` 内写入专用甘特字段；不维护 `_chamber_timeline`；当前固定 `no_arm=True`（不在图中画机械手专用泳道）。
+- **Key rules**：只解析 `self.chambers` 所列库所的进出；`cleaning_start`/`cleaning_end` 等带 `event_type` 的条目被忽略；`out_path` 若以 `.png` 结尾会先剥除再交给绘图函数；若没有任何腔室 `Op`，**必须**抛出 `ValueError`。
+
+### Behavior / Rules
+
+1. **入腔**：`t_name` 以 `t_` 开头，且该变迁后置库所名在 `self.chambers` 中，占用开始时刻为 `t2`（变迁结束时刻）。
+2. **出腔**：`t_name` 以 `u_` 开头，`source_place` 在 `self.chambers` 中，占用结束时刻为 `t1`（变迁开始时刻）。
+3. **swap**：按 `fire_log` 中 `swap`、`swap_source_place`、`swapped_token_id`、`token_id` 对同一腔室先闭合旧片再开新片。
+4. **`proc_end`**：`start + _base_proc_time_map[chamber]`（与构网 `process_time_map` 对齐）；阶段泳道与 `route_meta.route_stages`（`ClusterTool._route_stages`）一致。
+
+### 输出文件名
+
+- **Does**：与 `plot_gantt_hatched_residence(..., no_arm=True)` 相同：`out_path` 为不含 `.png` 的基路径时，落盘 `{base}RL1_job{n_jobs}.png`（详见该函数实现）。
+- **`title_suffix`**：传入绘图函数的 `title_suffix`，拼在标题时间信息后；可为 `None`（`plot.py` 不显示字面 `None`）。
+
+### Related Docs
+
+- `docs/pn_api.md`（ClusterTool / 统计与甘特小节）
+- `docs/training/training-guide.md`（训练结束 `rollout_and_export`：`device_mode=single|cascade|concurrent`）
+- `solutions/A/eval/export_inference_sequence.py`（`rollout_and_export`）
+
 ## 实现文件
 
 - **主文件**：`visualization/plot.py`

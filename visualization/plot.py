@@ -318,7 +318,7 @@ def plot_gantt_hatched_residence(
         
         A = [1, 2, 3, 4, 5]
         B = [1, 4, 5]
-        ax.set_title(f"{len(proc_time)}-Stage|makespan={t_max:.1f}s|{title_suffix}",
+        ax.set_title(f"{len(proc_time)}-Stage|makespan={t_max:.1f}s|{title_suffix or ''}",
                     fontsize=17, color='#0F172A', weight='normal', pad=15)
 
         # 添加 ARM 路径的图例
@@ -343,7 +343,8 @@ def plot_gantt_hatched_residence(
         plt.tight_layout()
 
         policy_dict = {0: 'pdr', 1: 'random', 2: 'RL1', 3: 'RL2'}
-        out_path = out_path + f"{policy_dict[policy]}_job{n_jobs}.png"
+        policy_key = 2 if policy is None else int(policy)
+        out_path = out_path + f"{policy_dict[policy_key]}_job{n_jobs}.png"
         print("save img in:", out_path)
         # 提高分辨率到 300 dpi
         fig.savefig(out_path, dpi=300, bbox_inches='tight')
@@ -473,7 +474,8 @@ def plot_gantt_hatched_residence(
     plt.tight_layout()
 
     policy_dict = {0:'pdr',1:'random',2:'rl'}
-    out_path = out_path + f"{policy_dict[policy]}_job{n_jobs}.png"
+    policy_key = 2 if policy is None else int(policy)
+    out_path = out_path + f"{policy_dict[policy_key]}_job{n_jobs}.png"
     print("save img in:",out_path)
     # 提高分辨率到 300 dpi
     fig.savefig(out_path, dpi=400, bbox_inches='tight')

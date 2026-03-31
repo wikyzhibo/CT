@@ -2,6 +2,24 @@
 
 ## 2026-03-31
 
+### A 方案：buffer 阶段腔室非零工时进入 `process_time_map`（2026-03-31）
+
+- **What changed**：`solutions/A/construct/preprocess_config.py` 在 `_preprocess_process_time_map` 之后，对 `route_stage_proc_time` 中**有正工时**、但因 `_route_ir_preprocess_chambers` 跳过 buffer 阶段而未写入 `processed_pt` 的腔室（典型为 **LLD**）再合并一次预处理结果，使 `build_marks`/`ClusterTool._base_proc_time_map` 与库所 `processing_time` 一致。
+- **Why**：路线 stage 已写 `LLD(70s)` 时，原逻辑仅对非 buffer 阶段展开 `ch_pre`，LLD 的工时从未进入 `processed_pt`，甘特 `proc_end=start`、整段显示为驻留斜线。
+- **Impact**：仅影响「buffer/loadlock 阶段且 stage 工时为正」的腔室；**不**把 `LLC(0)` 等零工时送入取整（避免 `0→5`）。见 `docs/continuous-model/pn-single.md` Change Notes。
+
+### `ppo_trainer` 并发训练结束导出动作序列与甘特（2026-03-31）
+
+- **What changed**：`solutions/A/eval/export_inference_sequence.py` 新增 `device_mode=concurrent`：`Env_PN_Concurrent` + `DualHeadPolicyNet` 推理 rollout，序列 JSON 含每步 `actions: [TM2名, TM3名]`。`solutions/A/ppo_trainer.py` 中 `_train_concurrent` 训练结束后若存在 `CT_concurrent_best.pt`，调用 `_postprocess_training_artifacts(..., concurrent=True)`，与单动作路径一致写出 `results/action_sequences/` 与 `results/gantt/`。`_artifact_route_label` 支持 `Env_PN_Concurrent`。
+- **Why**：并发训练此前仅写指标图与权重，无与单动作对齐的序列/甘特产物。
+- **Impact**：依赖 `ClusterTool.render_gantt` 与 rollout 含腔室事件；无 best 时仍跳过导出。
+
+### A 方案：`ClusterTool.render_gantt` 基于 `fire_log` 输出腔室甘特 PNG（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 实现 `render_gantt`：遍历 `fire_log`（跳过 `event_type` 清洗事件），按变迁名与 `_pst_place_indices`/`source_place` 配对腔室进出与双臂 `swap`，调用 `visualization.plot.plot_gantt_hatched_residence`。`visualization/plot.py`：`title_suffix` 为空时不显示字面 `None`；`policy is None` 时按 `2`（RL1/rl）拼输出文件名。
+- **Why**：恢复训练导出与 UI 的无头甘特产物；不复用已删除的网内 `_chamber_timeline` 状态。
+- **Impact**：`export_inference_sequence.rollout_and_export` 与可视化适配器在存在腔室事件时将写出 PNG；`fire_log` 无腔室占用时 `render_gantt` 报错。见 `docs/pn_api.md`、`docs/gantt.md`、`docs/training/training-guide.md`。
+
 ### A 方案：路线级 `takt_cycle` 直通覆盖（2026-03-31）
 
 - **What changed**：

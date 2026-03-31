@@ -99,6 +99,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **buffer 阶段正工时腔室写入 `process_time_map`**：`preprocess_chamber_runtime_blocks` 在合并工序工时时，对 `_route_ir_preprocess_chambers` 未覆盖、但 `route_stage_proc_time` 中为正工时的腔室（如 `kind: buffer` 的 **LLD**）补一次 `_preprocess_process_time_map`，使 `ClusterTool._base_proc_time_map` / `render_gantt` 与库所工时一致；零工时 buffer（如 LLC `0s`）不补，避免取整把 0 抬成 5。
 - 2026-03-31: **新增路线级 `takt_cycle` 直通覆盖**：`model_builder.build_net` 透传 `route_entry.takt_cycle` 到 `build_takt_payload`。当路线配置写入 `takt_cycle` 时，构网节拍直接使用配置循环并跳过 `analyze_cycle`；single/shared 可写数组，双子路径可写 `takt_cycle.by_subpath`。`cascade_routes_1_star.json` 的 `routes.4-13` 已新增 shared 循环 `[0,150,...]`（14 拍）。
 - 2026-03-31: **token 级阶段工时队列与 4-13 变工时路线**：`build_route_queue` 新增 `token_proc_time_queue`（`u_*=-1`，`t_*`=stage `process_time`）；`BasedToken` 新增 `route_proc_time_queue`；`ClusterTool._fire` 在 `t_*` 入库时按 token 指针应用当前阶段工时。`preprocess_config/model_builder` 放开同 chamber 多 stage 工时冲突，`build_takt` 改为优先使用 stage 工时口径；`cascade_routes_1_star.json` 新增双子路径 `4-13`。
 - 2026-03-31: **`ClusterTool` 并发掩码与移除 `get_enable_t`**：`ClusterTool(config, concurrent=False|True)` 由 `Env_PN_Single` / `Env_PN_Concurrent` 传入；`get_action_mask` 在并发实例上返回 `(mask_tm2, mask_tm3)`，`step` 第四项一致；删除 `get_enable_t()`；`reset()` 使能列表仍用 `get_action_mask(..., concurrent=False)` 前 `T` 维；见 `CHANGELOG.md` 与 `docs/pn_api.md`。

@@ -123,6 +123,18 @@ def preprocess_chamber_runtime_blocks(
     merged_for_preprocess: Dict[str, int] = dict(route_stage_proc_time)
     processed_pt = _preprocess_process_time_map(merged_for_preprocess, ch_pre, route_config)
 
+    # buffer/loadlock 阶段腔室被 _route_ir_preprocess_chambers 排除，但 route_stage_proc_time 可能含非零工时（如 LLD）。
+    # 仅合并 merged 中 >0 的腔室：若把 LLC(0) 一并送入 utils._preprocess_process_time_map，会被 _round_to_nearest_five 抬成 5。
+    extra_ch = tuple(
+        n
+        for n in merged_for_preprocess
+        if int(merged_for_preprocess[n]) > 0 and n not in processed_pt
+    )
+    if extra_ch:
+        processed_pt.update(
+            _preprocess_process_time_map(merged_for_preprocess, extra_ch, route_config)
+        )
+
     # 3) 并集：配置声明腔室 + 固定拓扑占位（与 build_marks 键域一致）。
     all_names: Set[str] = set(chambers_cfg.keys()) | set(FIXED_TIMELINE_CHAMBERS)
     blocks: Dict[str, ChamberRuntimeBlock] = {}

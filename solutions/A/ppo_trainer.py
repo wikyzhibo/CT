@@ -480,6 +480,15 @@ def _train_concurrent(
     if log.get("reward"):
         plot_metrics(training_metrics_path, metrics_png, route_label="路径 concurrent")
         print(f"[artifact] metrics_plot={metrics_png}", flush=True)
+    route_label = _artifact_route_label(Env_PN_Concurrent(device="cpu"))
+    _postprocess_training_artifacts(
+        best_model_path,
+        run_name,
+        "cascade",
+        config,
+        route_label,
+        concurrent=True,
+    )
     return log, policy_module
 
 
@@ -1074,8 +1083,9 @@ def _save_training_log_json(log: defaultdict[str, list], path: Path) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _artifact_route_label(env: Env_PN_Single) -> str | None:
-    rn = getattr(env.net, "single_route_name", None)
+def _artifact_route_label(env: Any) -> str | None:
+    net = getattr(env, "net", env)
+    rn = getattr(net, "single_route_name", None)
     if rn is None or str(rn).strip() == "":
         return None
     return f"路径 {rn}"
@@ -1098,11 +1108,16 @@ def _postprocess_training_artifacts(
     device_mode: str,
     config: PPOTrainingConfig,
     route_label: str | None,
+    concurrent: bool = False,
 ) -> None:
     if not best_model_path.is_file():
         print("[artifact] 无 best 模型，跳过序列导出", flush=True)
         return
-    safe_run_name = safe_name(run_name, "train_single_run")
+    export_mode = "concurrent" if concurrent else str(device_mode).lower()
+    safe_run_name = safe_name(
+        run_name,
+        "train_concurrent_run" if concurrent else "train_single_run",
+    )
     seq_name = Path(action_sequence_path(safe_run_name)).stem
     gantt_png = gantt_output_path(f"{safe_run_name}_gantt.png")
     out = rollout_and_export(
@@ -1111,7 +1126,7 @@ def _postprocess_training_artifacts(
         seed=int(config.seed),
         out_name=seq_name,
         force_overwrite_planb=False,
-        device_mode=str(device_mode).lower(),
+        device_mode=export_mode,
         robot_capacity=1,
         single_retries=10,
         gantt_png_path=gantt_png,

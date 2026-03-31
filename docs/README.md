@@ -47,6 +47,8 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-03-31: `training/training-guide.md` / `CHANGELOG.md`：`ppo_trainer` 并发训练结束导出动作序列与甘特（`device_mode=concurrent`）；见 `CHANGELOG.md`。
+- 2026-03-31: `pn_api.md` / `gantt.md` / `training/training-guide.md` / `CHANGELOG.md`：`ClusterTool.render_gantt` 基于 `fire_log` 输出腔室甘特 PNG；`visualization/plot.py` 修正 `title_suffix`/`policy` 空值；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md` / `continuous-model/pn-single.md` / `CHANGELOG.md`：删除 `ClusterTool._check_scrap`，驻留 scrap 判定内联至 `_advance_and_compute_reward`；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md` / `continuous-model/pn-single.md` / `CHANGELOG.md`：`ClusterTool.step` 仅消费 `_advance_and_compute_reward` 的 `scan_info`，不再对 scrap 做外层 `_check_scrap` 兜底；见 `CHANGELOG.md`。
 - 2026-03-31: `pn_api.md` / `CHANGELOG.md`：A 方案 `ClusterTool.step` 第二返回值仅为标量 `float`；移除 `detailed_reward` 与奖励分项 `dict`；见 `CHANGELOG.md`。

@@ -457,7 +457,7 @@ class ClusterTool:
             if p.type == CHAMBER:
                 resident_limit = self.P_Residual_time
             elif p.type == 5:
-                resident_limit = self.P_Residual_time * 3
+                resident_limit = self.P_Residual_time * 1
             else:
                 continue
             tok = p.tokens[0]
@@ -1238,4 +1238,127 @@ class ClusterTool:
         return mask
 
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
-        pass
+        from visualization.plot import Op, plot_gantt_hatched_residence
+
+        chambers_set = frozenset(str(x) for x in self.chambers)
+        route_stages = self._route_stages
+        if not route_stages:
+            raise ValueError("render_gantt: empty _route_stages")
+        place_to_sm: Dict[str, Tuple[int, int]] = {}
+        for si, stage in enumerate(route_stages):
+            s = si + 1
+            for mi, pname in enumerate(stage):
+                place_to_sm[str(pname)] = (s, int(mi))
+
+        S = len(route_stages)
+        proc_time: Dict[int, float] = {}
+        capacity: Dict[int, int] = {}
+        stage_module_names: Dict[int, List[str]] = {}
+        for s in range(1, S + 1):
+            names = route_stages[s - 1]
+            proc_time[s] = float(
+                max(int(self._base_proc_time_map.get(str(n), 0)) for n in names),
+            )
+            capacity[s] = len(names)
+            stage_module_names[s] = [str(x) for x in names]
+
+        t_to_idx = {str(n): i for i, n in enumerate(self.id2t_name)}
+
+        def pst_name(t_name: str) -> str:
+            ti = t_to_idx[t_name]
+            return str(self.id2p_name[int(self._pst_place_indices[ti][0])])
+
+        chamber_slots: Dict[str, Dict[int, Tuple[float, int]]] = {c: {} for c in chambers_set}
+        ops: List[Op] = []
+
+        def close_chamber_op(chamber: str, token_id: int, end_t: float) -> None:
+            slot = chamber_slots[chamber].pop(token_id)
+            start_time, machine_idx = slot
+            proc_dur = int(self._base_proc_time_map.get(chamber, 0))
+            stage, _ = place_to_sm[chamber]
+            ops.append(
+                Op(
+                    job=token_id,
+                    stage=stage,
+                    machine=machine_idx,
+                    start=float(start_time),
+                    proc_end=float(start_time + proc_dur),
+                    end=float(end_t),
+                )
+            )
+
+        for entry in self.fire_log:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event_type"):
+                continue
+            t_name = str(entry.get("t_name", ""))
+            t1 = float(entry["t1"])
+            t2 = float(entry["t2"])
+            if entry.get("swap"):
+                ch = str(entry["swap_source_place"])
+                if ch not in chambers_set:
+                    continue
+                old_id = int(entry["swapped_token_id"])
+                new_id = int(entry["token_id"])
+                close_chamber_op(ch, old_id, t1)
+                stage_m = place_to_sm[ch]
+                chamber_slots[ch][new_id] = (t2, stage_m[1])
+                continue
+            if t_name.startswith("t_"):
+                dest = pst_name(t_name)
+                if dest not in chambers_set:
+                    continue
+                tid = int(entry["token_id"])
+                sm = place_to_sm[dest]
+                chamber_slots[dest][tid] = (t2, sm[1])
+            elif t_name.startswith("u_"):
+                src = entry.get("source_place")
+                if src is None:
+                    continue
+                src = str(src)
+                if src not in chambers_set:
+                    continue
+                tid = int(entry["token_id"])
+                close_chamber_op(src, tid, t1)
+
+        current_time = float(self.time)
+        for chamber_name, slots_dict in chamber_slots.items():
+            for tid, (start_time, machine_idx) in list(slots_dict.items()):
+                proc_dur = int(self._base_proc_time_map.get(chamber_name, 0))
+                stage, _ = place_to_sm[chamber_name]
+                ops.append(
+                    Op(
+                        job=tid,
+                        stage=stage,
+                        machine=machine_idx,
+                        start=float(start_time),
+                        proc_end=float(start_time + proc_dur),
+                        end=current_time,
+                    )
+                )
+
+        if not ops:
+            raise ValueError("render_gantt: no chamber operations from fire_log")
+
+        job_ids = {int(op.job) for op in ops if int(op.job) >= 0}
+        n_jobs = max(1, len(job_ids))
+
+        base = str(out_path)
+        if base.lower().endswith(".png"):
+            base = base[:-4]
+
+        arm_info = {"ARM1": [], "ARM2": [], "STAGE2ACT": {}}
+        plot_gantt_hatched_residence(
+            ops=ops,
+            proc_time=proc_time,
+            capacity=capacity,
+            n_jobs=n_jobs,
+            out_path=base,
+            arm_info=arm_info,
+            with_label=True,
+            no_arm=True,
+            policy=2,
+            stage_module_names=stage_module_names,
+            title_suffix=title_suffix,
+        )

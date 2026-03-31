@@ -65,7 +65,7 @@ Petri(
 
 **统计**
 - A 方案 `solutions/A/petri_net.py`（`ClusterTool`）已移除 `_token_stats` 与 `calc_wafer_statistics`；`visualization/petri_adapter.py`、`petri_single_adapter.py` 构造 `StateInfo.stats` 时，系统/腔室/TM 聚合时长为占位（0 或空 dict），`completed_count`/`in_progress_count` 与 `resident_violation_count`/`qtime_violation_count` 来自网对象字段。
-- **A 方案 `ClusterTool` 甘特（2026-03-31）**：`render_gantt(out_path, title_suffix=None)` **Does**：方法存在，调用不报错。**Does NOT**：当前方法体为空，不生成 PNG；网内不再维护 `_chamber_timeline` / `_chamber_active`。构网仍可输出 `route_meta.timeline_chambers`，供后续重写复用。
+- **A 方案 `ClusterTool` 甘特**：`render_gantt(out_path, title_suffix=None)` **Does**：在 rollout 后读取 `fire_log`，对 `self.chambers` 中库所解析 `t_*` 入腔与 `u_*` 出腔（含 `swap` 条），结合 `_route_stages` 与 `_base_proc_time_map` 构造 `Op` 列表，懒加载调用 `visualization.plot.plot_gantt_hatched_residence`（`no_arm=True`、`policy=2`）。若 `out_path` 以 `.png` 结尾，会先去掉扩展名再交给绘图函数；最终文件名与该函数约定一致（`{base}{policy}_job{n}.png`）。若 `fire_log` 中无腔室占用条，**抛出** `ValueError`。**Does NOT**：不恢复 `_chamber_timeline` / `_chamber_active`；不入 `fire_log` 追加专用甘特字段；不绘制机械手泳道（`no_arm=True`）。清洗类 `event_type` 日志条目被跳过。
 - 若文档其他处仍指 `solutions/Continuous_model/pn.py` 的 `Petri`，是否保留 `_track_wafer_statistics` / `calc_wafer_statistics` 以该文件为准。
 
 ### BasedToken
