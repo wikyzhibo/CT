@@ -68,7 +68,7 @@
 24. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
 25. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
 26. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。
-27. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍，节拍序列来自 `analyze_cycle` 或路线级 `takt_policy` / `takt_stages_override` 等现行路径）；**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
+27. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍）。构网期节拍来源优先级固定为：`routes.<route>.takt_cycle` 覆盖 > `analyze_cycle` 自动计算；其中 `takt_cycle` 支持 shared 单循环数组，双子路径场景另支持 `takt_cycle.by_subpath` 映射到各子路径类型。**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
 28. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。机械手容量固定为 1，不因双臂改变。`swap_duration` 固定为 10s。
 29. 双臂模式 `get_action_mask` 对 `t_*` 变迁的 PM 目标：**仅检查**（a）腔室内晶圆是否加工完成（空腔室直接通过）、（b）机械手晶圆路由匹配（`route_gate_allows`）、（c）运输完成（TM 上 token 的 `stay_time >= proc_time`）。**不检查** `_is_struct_enabled` 容量约束。并行目标筛选同样使用 `use_count` 最小优先。对非 PM 目标（LLC/LLD/LP_done 等）沿用单臂逻辑（含 `_is_struct_enabled`）。
 30. 双臂模式 `_is_next_stage_available` 在并行源上沿用规则 18 的 `use_count` 选机，仅要求目标腔室非清洗；源位不做并行环扫，`u_*` 也不维护额外选机状态。
@@ -99,6 +99,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **新增路线级 `takt_cycle` 直通覆盖**：`model_builder.build_net` 透传 `route_entry.takt_cycle` 到 `build_takt_payload`。当路线配置写入 `takt_cycle` 时，构网节拍直接使用配置循环并跳过 `analyze_cycle`；single/shared 可写数组，双子路径可写 `takt_cycle.by_subpath`。`cascade_routes_1_star.json` 的 `routes.4-13` 已新增 shared 循环 `[0,150,...]`（14 拍）。
 - 2026-03-31: **token 级阶段工时队列与 4-13 变工时路线**：`build_route_queue` 新增 `token_proc_time_queue`（`u_*=-1`，`t_*`=stage `process_time`）；`BasedToken` 新增 `route_proc_time_queue`；`ClusterTool._fire` 在 `t_*` 入库时按 token 指针应用当前阶段工时。`preprocess_config/model_builder` 放开同 chamber 多 stage 工时冲突，`build_takt` 改为优先使用 stage 工时口径；`cascade_routes_1_star.json` 新增双子路径 `4-13`。
 - 2026-03-31: **`ClusterTool` 并发掩码与移除 `get_enable_t`**：`ClusterTool(config, concurrent=False|True)` 由 `Env_PN_Single` / `Env_PN_Concurrent` 传入；`get_action_mask` 在并发实例上返回 `(mask_tm2, mask_tm3)`，`step` 第四项一致；删除 `get_enable_t()`；`reset()` 使能列表仍用 `get_action_mask(..., concurrent=False)` 前 `T` 维；见 `CHANGELOG.md` 与 `docs/pn_api.md`。
 - 2026-03-31: **`n_wafer` → `n_wafer1`/`n_wafer2`；移除 `wafer_type_alloc_by_type`**：`PetriEnvConfig` 与 `build_net` 用显式片数；删除 `n_wafer_route1`/`n_wafer_route2`；`model_builder` 不再按 `wafer_type_alloc` 权重计算类型序列；`route_meta` 不再输出 `wafer_type_alloc_by_type`；行为规则 33 已同步；见 `CHANGELOG.md`。

@@ -2,6 +2,16 @@
 
 ## 2026-03-31
 
+### A 方案：路线级 `takt_cycle` 直通覆盖（2026-03-31）
+
+- **What changed**：
+  - `solutions/A/model_builder.py` 新增 `route_entry.takt_cycle` 透传，并写入 `build_takt_payload`。
+  - `solutions/A/construct/build_takt.py` 新增 `takt_cycle` 覆盖分支：命中配置后直接构建 `takt_result_by_type/takt_result_default`，不再调用 `analyze_cycle`。
+  - `takt_cycle` 支持 shared 数组；双子路径支持 `takt_cycle.by_subpath` 按 `wafer_type_to_subpath` 映射到各 type。
+  - `config/cluster_tool/cascade_routes_1_star.json` 的 `routes.4-13` 新增 shared 循环 `[0,150,150,150,150,150,150,150,150,150,150,150,150,150]`。
+- **Why**：已知固定节拍循环时无需重复计算，配置直通可消除分析链路开销并确保实验口径可复现。
+- **Impact**：配置存在 `takt_cycle` 的路线会覆盖默认节拍计算路径；未配置 `takt_cycle` 的路线保持原行为不变。
+
 ### A 方案：token 级阶段工时队列 + 4-13 变工时路线（2026-03-31）
 
 - **What changed**：

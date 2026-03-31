@@ -461,6 +461,7 @@ def build_net(n_wafer1: int,
     route_meta["wafer_type_to_subpath"] = wafer_type_to_subpath
     route_meta["takt_policy"] = str(route_entry.get("takt_policy", "") or "")
     route_meta["takt_stages_override"] = list(route_entry.get("takt_stages_override") or [])
+    route_meta["takt_cycle"] = route_entry.get("takt_cycle")
     route_meta["default_subpath"] = str(default_subpath_name)
     route_meta["subpath_route_stages"] = {
         str(name): [list(stage.candidates) for stage in ir.stages[1:-1]]
@@ -507,6 +508,7 @@ def build_net(n_wafer1: int,
         has_repeat_syntax_reentry=bool(has_repeat_syntax_reentry),
         multi_subpath=bool(route_meta.get("multi_subpath", False)),
         takt_policy=str(route_meta.get("takt_policy", "") or ""),
+        takt_cycle=route_meta.get("takt_cycle"),
         wafer_type_to_subpath=wafer_type_to_subpath,
         subpath_route_stages=dict(route_meta.get("subpath_route_stages") or {}),
         subpath_route_stage_process_times=dict(route_meta.get("subpath_route_stage_process_times") or {}),

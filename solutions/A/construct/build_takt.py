@@ -6,6 +6,71 @@ from solutions.A.construct.preprocess_config import ChamberRuntimeBlock
 from solutions.A.takt_analysis import TAKT_HORIZON, analyze_cycle
 
 
+def _normalize_cycle_values(raw_cycle: Sequence[Any]) -> Optional[List[float]]:
+    values: List[float] = []
+    for item in list(raw_cycle):
+        value = float(item)
+        if value < 0:
+            raise ValueError("takt_cycle value must be >= 0")
+        values.append(value)
+    if not values:
+        return None
+    return values
+
+
+def _build_takt_result_from_cycle(raw_cycle: Sequence[Any]) -> Optional[Dict[str, Any]]:
+    cycle_values = _normalize_cycle_values(raw_cycle)
+    if not cycle_values:
+        return None
+    return {
+        "fast_takt": 0.0,
+        "peak_slow_takts": [],
+        "cycle_length": len(cycle_values),
+        "cycle_takts": cycle_values,
+    }
+
+
+def _resolve_takt_cycle_override_by_type(
+    *,
+    takt_cycle: Any,
+    multi_subpath: bool,
+    all_types: Sequence[int],
+    wafer_type_to_subpath: Mapping[int, str],
+) -> Optional[Dict[int, Optional[Dict[str, Any]]]]:
+    if takt_cycle is None:
+        return None
+
+    if isinstance(takt_cycle, Mapping):
+        by_subpath_raw = takt_cycle.get("by_subpath")
+        if isinstance(by_subpath_raw, Mapping):
+            by_subpath = {str(k): v for k, v in dict(by_subpath_raw).items()}
+            if not multi_subpath:
+                return None
+            result: Dict[int, Optional[Dict[str, Any]]] = {}
+            for t_id in all_types:
+                subpath = str(wafer_type_to_subpath.get(int(t_id), "") or "")
+                if subpath not in by_subpath:
+                    raise ValueError(f"missing takt_cycle.by_subpath entry for subpath: {subpath}")
+                result[int(t_id)] = _build_takt_result_from_cycle(by_subpath[subpath])
+            return result
+
+        shared_raw = takt_cycle.get("shared")
+        if isinstance(shared_raw, Sequence) and not isinstance(shared_raw, (str, bytes, bytearray)):
+            shared_result = _build_takt_result_from_cycle(shared_raw)
+            if multi_subpath:
+                return {int(t_id): shared_result for t_id in all_types}
+            return {1: shared_result}
+        return None
+
+    if isinstance(takt_cycle, Sequence) and not isinstance(takt_cycle, (str, bytes, bytearray)):
+        shared_result = _build_takt_result_from_cycle(takt_cycle)
+        if multi_subpath:
+            return {int(t_id): shared_result for t_id in all_types}
+        return {1: shared_result}
+
+    raise ValueError("takt_cycle must be a sequence or mapping")
+
+
 def _build_takt_stage(
     stage_idx: int,
     stage_places: Sequence[str],
@@ -120,10 +185,27 @@ def build_takt_payload(
     has_repeat_syntax_reentry: bool,
     multi_subpath: bool,
     takt_policy: str,
+    takt_cycle: Any,
     wafer_type_to_subpath: Mapping[int, str],
     subpath_route_stages: Mapping[str, Sequence[Sequence[str]]],
     subpath_route_stage_process_times: Mapping[str, Sequence[int]],
 ) -> Dict[str, Any]:
+    all_types = sorted(set(int(k) for k in wafer_type_to_subpath.keys()) or {1})
+    takt_override_by_type = _resolve_takt_cycle_override_by_type(
+        takt_cycle=takt_cycle,
+        multi_subpath=multi_subpath,
+        all_types=all_types,
+        wafer_type_to_subpath=wafer_type_to_subpath,
+    )
+    if takt_override_by_type is not None:
+        takt_result_default = takt_override_by_type.get(1)
+        if takt_result_default is None and takt_override_by_type:
+            takt_result_default = next(iter(takt_override_by_type.values()))
+        return {
+            "takt_result_by_type": takt_override_by_type,
+            "takt_result_default": takt_result_default,
+        }
+
     if not multi_subpath:
         takt_result_by_type: Dict[int, Optional[Dict[str, Any]]] = {
             1: _compute_takt_result(
@@ -136,7 +218,6 @@ def build_takt_payload(
             )
         }
     else:
-        all_types = sorted(set(int(k) for k in wafer_type_to_subpath.keys()) or {1})
         policy = str(takt_policy or "").strip().lower()
         if policy == "split_by_subpath":
             takt_result_by_type = {}
