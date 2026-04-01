@@ -2,6 +2,18 @@
 
 ## 2026-04-01
 
+### A 方案：stride 单档 WAIT_5s 关键事件步进（2026-04-01）
+
+- **What changed**：`solutions/A/petri_net.py` 新增 `stride_single_wait_mode`（`stride=True` 且 `wait_durations=[5]`）。该模式下 `step(do_wait)` 收到 `WAIT_5s` 时不再固定推进 5 秒，而是按 `get_next_event_delta()` 推进（无关键事件时退回 5 秒）。
+- **Why**：可视化 stride 调试常用单档 `WAIT_5s`；固定 5 秒会导致“LP 下一次发片还需数百秒”时需要重复点按，无法按关键事件步进。
+- **Impact**：仅影响 stride + 单档 WAIT 配置；多档 WAIT 配置与并发 WAIT 行为保持不变。
+
+### A 方案：WAIT 关键节点截断与单次扫描（2026-04-01）
+
+- **What changed**：`config/cluster_tool/env_config.py` 新增 `wait_key_event_truncation_enabled`（默认 `True`）。`solutions/A/petri_net.py` 的 `get_next_event_delta()` 改为只保留“加工完成 + LP 允许发片（节拍到点）”关键事件，并在**一次** `marks` 扫描中同时记录“加工完成待取片 / TM2-TM3 持片”标记。`step(do_wait)` 在该开关开启且两类标记任一为真时，将 `WAIT>5s` 强制截断为 `5s`。新增 `tests/test_use_count_tie_breaker.py` 覆盖新截断分支与 TM 事件排除。
+- **Why**：统一 WAIT 截断口径到关键调度节点，避免长 WAIT 跨过取片/发片决策点；同时按实现约束收敛为单函数、单次扫描逻辑。
+- **Impact**：默认配置下，存在“加工完成待取片”或“TM2/TM3 持片”时，长 WAIT 将更积极地被截断到 5s；若需回退旧行为可将 `wait_key_event_truncation_enabled` 设为 `false`。
+
 ### A 方案：shared+ratio 严格比例发片门控（2026-04-01）
 
 - **What changed**：`solutions/A/petri_net.py` 新增 shared 比例循环状态（`_shared_ratio_cycle_*`）；当路线 `takt_policy=shared` 且配置存在 `ratio` 时，`get_action_mask` 在 LP 发片段仅放行“当前轮次 route_type”的 `u_LP*`。`_fire` 在 `u_LP*` 成功发片后推进比例轮次，`reset` 重置轮次到起点。新增 `tests/test_use_count_tie_breaker.py` 用例覆盖比例循环构建、轮次读取与推进回绕。

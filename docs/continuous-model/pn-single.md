@@ -52,6 +52,7 @@
 8. 固定动作空间下，未被当前 route 使用的变迁必须在 `get_action_mask` 中恒为 0。
 9. 当通过 `PetriEnvConfig.load(json/yaml)` 加载且配置中提供 `single_route_config_path` 时，会自动读取该文件并填充 `single_route_config`；`single_route_name` 必须显式提供且必须命中 `single_route_config.routes`。
 10. WAIT 掩码规则：存在加工完成待取片晶圆时，仅允许短 WAIT（5s）。
+10a. WAIT 时间截断规则：`get_next_event_delta` 在单次 `marks` 扫描中同时计算关键事件 delta 与重要任务标记；关键事件仅包含“加工完成”和“允许发片（LP 节拍到点）”。`step(do_wait)` 在 `wait_key_event_truncation_enabled=True` 时，若“加工完成待取片”或“TM2/TM3 持片”任一为真，则 `WAIT>5s` 强制截断为 `5s`。补充：当运行在 `stride=True` 且 `wait_durations` 仅有单档 `5s` 时，该 `WAIT_5s` 作为“关键事件步进”语义，推进量取 `get_next_event_delta()`（若无关键事件则退回 5s）。
 11. 导出脚本的 `--out-name` 参与文件命名：`results/action_sequences/<out_name>.json`（非法字符会替换为 `_`）。
 12. `check_release_penalty.py` 未设置 `--sequence` 时不能执行。
 13. 旧观测分支（place-obs）不再作为当前实现接口。
@@ -99,6 +100,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-04-01: **WAIT 关键节点截断收敛**：`config/cluster_tool/env_config.py` 新增 `wait_key_event_truncation_enabled`（默认 `True`）。`solutions/A/petri_net.py` 的 `get_next_event_delta` 改为只保留“加工完成 + LP 节拍到点”关键事件，并在单次 `marks` 扫描中同步记录“加工完成待取片 / TM2-TM3 持片”标记；`step(do_wait)` 在上述标记任一为真时将 `WAIT>5s` 截断为 `5s`。
 - 2026-04-01: **shared+ratio 严格比例发片门控**：`solutions/A/petri_net.py` 在 `takt_policy=shared` 且路线配置含 `ratio` 时，新增 LP 发片比例循环状态；`get_action_mask` 的 `u_LP*` 只放行当前轮次 `route_type`，`_fire` 中 `u_LP*` 成功后推进轮次，`reset` 重置轮次。非 `shared+ratio` 路线保持原掩码行为。
 - 2026-03-31: **并行并列目标 tie-break 改为“候选顺序首个最小项”**：`ClusterTool._select_min_use_count_target` 在并列最小 `use_count` 时不再随机，也不使用可变游标；同一状态下重复计算返回同一目标，且按 `stage_targets` 顺序稳定打破并列。`get_action_mask` 与 `_is_next_stage_available` 同步生效；`use_count` 仍只在 `t_*` 入目标库所时递增。
 - 2026-03-31: **buffer 阶段正工时腔室写入 `process_time_map`**：`preprocess_chamber_runtime_blocks` 在合并工序工时时，对 `_route_ir_preprocess_chambers` 未覆盖、但 `route_stage_proc_time` 中为正工时的腔室（如 `kind: buffer` 的 **LLD**）补一次 `_preprocess_process_time_map`，使 `ClusterTool._base_proc_time_map` / `render_gantt` 与库所工时一致；零工时 buffer（如 LLC `0s`）不补，避免取整把 0 抬成 5。

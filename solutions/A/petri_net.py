@@ -51,6 +51,12 @@ class ClusterTool:
             for name, value in dict(getattr(config, "cleaning_trigger_wafers_map", {}) or {}).items()
         }
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
+        self.stride = config.stride
+        self._stride_single_wait_mode = (
+            bool(self.stride)
+            and len(self.wait_durations) == 1
+            and int(self.wait_durations[0]) == 5
+        )
         
         # ====== 6) 构网输入与构网结果 ======
         self.ttime = 5
@@ -268,11 +274,20 @@ class ClusterTool:
                 if wait_duration is not None
                 else int(self.wait_durations[0] if self.wait_durations else 5)
             )
+            next_event_delta: Optional[int] = None
             episode_finished = len(_lp_done.tokens) >= self.n_wafer
             if episode_finished and requested_wait > 5:
                 actual_dt = 5
-            elif requested_wait == 5:
+            elif requested_wait == 5 and not self._stride_single_wait_mode:
                 actual_dt = requested_wait
+            elif requested_wait == 5 and self._stride_single_wait_mode:
+                next_event_delta = self.get_next_event_delta()
+                if next_event_delta is None:
+                    actual_dt = requested_wait
+                elif next_event_delta <= 0:
+                    actual_dt = requested_wait
+                else:
+                    actual_dt = int(next_event_delta)
             else:
                 next_event_delta = self.get_next_event_delta()
                 if next_event_delta is None:
@@ -1033,22 +1048,17 @@ class ClusterTool:
     def get_next_event_delta(self) -> Optional[int]:
         """
         计算当前时刻到下一个关键事件的时间差（秒）。
-        遍历 marks 中运输位与加工腔室的 token。
+        仅在一次 marks 扫描中完成关键事件距离计算。
         """
         best = None
-        t_transport = self.ttime
         _CHAMBER_TYPES = (CHAMBER, 5)
+        has_important_task = False
         for place in self.marks:
             tokens = place.tokens
             if len(tokens) == 0:
                 continue
             if place.is_dtm or place.name in {"TM2", "TM3"}:
-                for tok in tokens:
-                    delta = t_transport - tok.stay_time
-                    if delta < 0:
-                        delta = 0
-                    if best is None or delta < best:
-                        best = delta
+                has_important_task = True
             elif place.type in _CHAMBER_TYPES:
                 ptime = place.processing_time
                 if ptime > 0:
@@ -1058,6 +1068,8 @@ class ClusterTool:
                         delta = 0
                     if best is None or delta < best:
                         best = delta
+                    if head.stay_time >= ptime:
+                        has_important_task = True
         lp_heads = self._lp_type_head_tokens()
         if lp_heads:
             deltas: List[int] = []
@@ -1070,7 +1082,7 @@ class ClusterTool:
                 delta_takt = min(deltas)
                 if best is None or delta_takt < best:
                     best = delta_takt
-        return best
+        return 5 if (self.stride and has_important_task) else best
 
     def _on_processing_unload(self, source_name: str) -> None:
         if not self._cleaning_enabled:
