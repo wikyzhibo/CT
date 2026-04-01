@@ -252,7 +252,7 @@ class Env_PN_Concurrent(EnvBase):
         self.tm2_transition_names = [self.net.id2t_name[idx] for idx in self.tm2_transition_indices]
         self.tm3_transition_names = [self.net.id2t_name[idx] for idx in self.tm3_transition_indices]
 
-        self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
+        self.n_wafer = int(config.n_wafer)
         self._make_spec()
         if seed is None:
             seed = torch.empty((), dtype=torch.int64).random_().item()

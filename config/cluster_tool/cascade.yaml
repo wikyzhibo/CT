@@ -1,6 +1,5 @@
 MAX_TIME: 5000
-n_wafer1: 13
-n_wafer2: 0
+n_wafer: 13
 time_coef_penalty: 10
 warn_coef_penalty: 4
 transport_overtime_coef_penalty: 6.0
@@ -10,9 +9,7 @@ done_event_reward: 500
 scrap_event_penalty: 4000
 wait_durations:
   - 5
-max_wafers1_in_system: 12
-max_wafers2_in_system: 13
 cleaning_enabled: false
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "1-4"
+single_route_name: "4-9"
 dual_arm: true

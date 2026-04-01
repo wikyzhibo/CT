@@ -20,11 +20,7 @@ class ClusterTool:
 
         # ====== 1) 运行边界与奖励超参 ======
         self.MAX_TIME = config.MAX_TIME
-        self.n_wafer1 = int(config.n_wafer1)
-        self.n_wafer2 = int(config.n_wafer2)
-        self.n_wafer = int(self.n_wafer1) + int(self.n_wafer2)
-        self.max_wafers1_in_system = int(config.max_wafers1_in_system)
-        self.max_wafers2_in_system = int(config.max_wafers2_in_system)
+        self.n_wafer = config.n_wafer
         
         self.done_event_reward = int(config.done_event_reward)
         self.finish_event_reward = self.done_event_reward * 6
@@ -60,6 +56,11 @@ class ClusterTool:
         self.ttime = 5
         self.single_route_config = config.single_route_config
         self.single_route_name = config.single_route_name
+        self.max_wafers1_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer1_in_system",12)
+        self.max_wafers2_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer2_in_system",0)
+        ratio = self.max_wafers1_in_system / (self.max_wafers1_in_system + self.max_wafers2_in_system)
+        self.n_wafer1 = int(self.n_wafer * ratio)
+        self.n_wafer2 = int(self.n_wafer - self.n_wafer1)
 
         info = build_net(n_wafer1=self.n_wafer1,
                          n_wafer2=self.n_wafer2,

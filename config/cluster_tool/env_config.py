@@ -30,8 +30,7 @@ class PetriEnvConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     MAX_TIME: int = 2000
-    n_wafer1: int = 12
-    n_wafer2: int = 0
+    n_wafer: int = 13
 
     done_event_reward: int = 10
     finish_event_reward: int = 800
@@ -243,12 +242,6 @@ class PetriEnvConfig(BaseModel):
             raise ValueError(f"配置文件顶层必须是映射: {path}")
         if "no_residence_place_names" in data and data["no_residence_place_names"] is not None:
             data["no_residence_place_names"] = set(data["no_residence_place_names"])
-        if "n_wafer1" not in data and "n_wafer" in data:
-            data["n_wafer1"] = int(data["n_wafer"])
-            data["n_wafer2"] = 0
-        if "n_wafer1" not in data and data.get("n_wafer_route1") is not None:
-            data["n_wafer1"] = int(data["n_wafer_route1"])
-            data["n_wafer2"] = int(data.get("n_wafer_route2") or 0)
         route_cfg_path = data.get("single_route_config_path")
         if route_cfg_path and not data.get("single_route_config"):
             route_path = Path(route_cfg_path)
