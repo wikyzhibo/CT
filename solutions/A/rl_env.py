@@ -101,7 +101,7 @@ class Env_PN_Single(EnvBase):
         self.n_actions = len(self.action_catalog)
         self.wait_action_start = int(self.net.T)
         self.wait_action_indices = list(range(self.wait_action_start, self.n_actions))
-        self.n_wafer = int(config.n_wafer1) + int(config.n_wafer2)
+        self.n_wafer = config.n_wafer
         self._make_spec()
         self._out_time = torch.zeros(1, dtype=torch.int64)
         self._out_reward = torch.zeros(1, dtype=torch.float32)

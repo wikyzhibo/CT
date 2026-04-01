@@ -58,8 +58,8 @@ class ClusterTool:
         self.single_route_name = config.single_route_name
         self.max_wafers1_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer1_in_system",12)
         self.max_wafers2_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer2_in_system",0)
-        ratio = self.max_wafers1_in_system / (self.max_wafers1_in_system + self.max_wafers2_in_system)
-        self.n_wafer1 = int(self.n_wafer * ratio)
+        ratio = self.single_route_config["routes"][self.single_route_name].get("ratio",[1,0])
+        self.n_wafer1 = int(self.n_wafer * ratio[0] / sum(ratio))
         self.n_wafer2 = int(self.n_wafer - self.n_wafer1)
 
         info = build_net(n_wafer1=self.n_wafer1,
