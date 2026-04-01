@@ -84,6 +84,14 @@ class ClusterTool:
         self._multi_subpath = bool(route_meta.get("multi_subpath", False))
         self._subpath_to_type: Dict[str, int] = route_meta.get("subpath_to_type")
         self._wafer_type_to_subpath: Dict[int, str] = route_meta.get("wafer_type_to_subpath")
+        subpath_route_stages_raw = dict(route_meta.get("subpath_route_stages") or {})
+        self._subpath_route_stages: Dict[str, List[List[str]]] = {
+            str(subpath_name): [
+                [str(place_name) for place_name in list(stage or [])]
+                for stage in list(stages or [])
+            ]
+            for subpath_name, stages in subpath_route_stages_raw.items()
+        }
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
         self._wafer_type_to_load_port: Dict[int, str] = route_meta.get("wafer_type_to_load_port")
         self._load_port_names: Tuple[str, ...] = route_meta.get("load_port_names")
@@ -1247,14 +1255,34 @@ class ClusterTool:
         from visualization.plot import Op, plot_gantt_hatched_residence
 
         chambers_set = frozenset(str(x) for x in self.chambers)
-        route_stages = self._route_stages
+        route_stages = [list(stage) for stage in self._route_stages]
+        if self._multi_subpath and self._subpath_route_stages:
+            max_stage_count = max(len(list(stages or [])) for stages in self._subpath_route_stages.values())
+            merged_route_stages: List[List[str]] = [[] for _ in range(max_stage_count)]
+            seen_by_stage: List[set[str]] = [set() for _ in range(max_stage_count)]
+            for stages in self._subpath_route_stages.values():
+                for idx, stage in enumerate(list(stages or [])):
+                    merged_stage = merged_route_stages[idx]
+                    stage_seen = seen_by_stage[idx]
+                    for place_name in list(stage or []):
+                        p_name = str(place_name)
+                        if p_name in stage_seen:
+                            continue
+                        merged_stage.append(p_name)
+                        stage_seen.add(p_name)
+            merged_route_stages = [stage for stage in merged_route_stages if stage]
+            if merged_route_stages:
+                route_stages = merged_route_stages
         if not route_stages:
             raise ValueError("render_gantt: empty _route_stages")
         place_to_sm: Dict[str, Tuple[int, int]] = {}
         for si, stage in enumerate(route_stages):
             s = si + 1
             for mi, pname in enumerate(stage):
-                place_to_sm[str(pname)] = (s, int(mi))
+                pname_s = str(pname)
+                if pname_s in place_to_sm:
+                    continue
+                place_to_sm[pname_s] = (s, int(mi))
 
         S = len(route_stages)
         proc_time: Dict[int, float] = {}

@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：`render_gantt` 适配多子路线 stage 合并（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 的 `ClusterTool.__init__` 新增缓存 `route_meta.subpath_route_stages`；`render_gantt` 在 `multi_subpath` 下不再只用 `_route_stages`，改为按 stage 序号合并所有 subpath 的 stage 列表，再构建 `place->(stage,machine)`、`capacity` 与 `stage_module_names`。同一 chamber 若跨 subpath 重复出现，保留最早 stage 映射。
+- **Why**：多子路线时 `route_meta.route_stages` 仅对应默认子路径，直接用于甘特会导致泳道不全且 stage 难解析。
+- **Impact**：双子路径/多子路径配方的甘特泳道覆盖完整子路径并集；单路径行为保持不变。见 `docs/pn_api.md`、`docs/gantt.md`。
+
 ### A 方案：并行并列目标从随机改为确定性顺序打破（2026-03-31）
 
 - **What changed**：`solutions/A/petri_net.py` 的 `_select_min_use_count_target` 在并列最小 `use_count` 时不再 `np.random.randint`，也不再依赖可变游标，改为在最小目标集合中按候选顺序取首个目标；`get_action_mask` 与 `_is_next_stage_available` 共享该规则。新增 `tests/test_use_count_tie_breaker.py` 覆盖“同一状态稳定 + 双目标交替 + 三目标按顺序循环”。
