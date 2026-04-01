@@ -46,5 +46,34 @@ class TestUseCountTieBreaker(unittest.TestCase):
         self.assertEqual(picks, ["PM2", "PM3", "PM5", "PM2", "PM3", "PM5"])
 
 
+class TestSharedRatioReleaseCycle(unittest.TestCase):
+    def test_build_release_ratio_cycle(self) -> None:
+        cycle = ClusterTool._build_release_ratio_cycle([1, 2, 1])
+        self.assertEqual(cycle, (1, 2, 2, 3))
+
+    def test_required_release_type_uses_cycle_index(self) -> None:
+        tool = ClusterTool.__new__(ClusterTool)
+        tool._shared_ratio_cycle_enabled = True
+        tool._shared_ratio_cycle_types = (1, 2, 2)
+        tool._shared_ratio_cycle_idx = 1
+        self.assertEqual(tool._required_release_type(), 2)
+
+    def test_advance_release_ratio_cycle_wraps(self) -> None:
+        tool = ClusterTool.__new__(ClusterTool)
+        tool._shared_ratio_cycle_enabled = True
+        tool._shared_ratio_cycle_types = (1, 2, 2)
+        tool._shared_ratio_cycle_idx = 2
+        tool._advance_release_ratio_cycle()
+        self.assertEqual(tool._shared_ratio_cycle_idx, 0)
+
+    def test_advance_release_ratio_cycle_noop_when_disabled(self) -> None:
+        tool = ClusterTool.__new__(ClusterTool)
+        tool._shared_ratio_cycle_enabled = False
+        tool._shared_ratio_cycle_types = ()
+        tool._shared_ratio_cycle_idx = 0
+        tool._advance_release_ratio_cycle()
+        self.assertEqual(tool._shared_ratio_cycle_idx, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

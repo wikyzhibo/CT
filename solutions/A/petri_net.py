@@ -56,9 +56,10 @@ class ClusterTool:
         self.ttime = 5
         self.single_route_config = config.single_route_config
         self.single_route_name = config.single_route_name
-        self.max_wafers1_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer1_in_system",12)
-        self.max_wafers2_in_system = self.single_route_config["routes"][self.single_route_name].get("max_wafer2_in_system",0)
-        ratio = self.single_route_config["routes"][self.single_route_name].get("ratio",[1,0])
+        route_entry = self.single_route_config["routes"][self.single_route_name]
+        self.max_wafers1_in_system = route_entry.get("max_wafer1_in_system",12)
+        self.max_wafers2_in_system = route_entry.get("max_wafer2_in_system",0)
+        ratio = route_entry.get("ratio",[1,0])
         self.n_wafer1 = int(self.n_wafer * ratio[0] / sum(ratio))
         self.n_wafer2 = int(self.n_wafer - self.n_wafer1)
 
@@ -98,6 +99,10 @@ class ClusterTool:
         self._mask_skip_places: frozenset[str] = frozenset(self._load_port_names) | {"LP_done"}
         self._ready_chambers = route_meta.get("chambers")
         self._single_process_chambers = self.chambers
+        self._shared_ratio_cycle_enabled: bool = False
+        self._shared_ratio_cycle_types: Tuple[int, ...] = ()
+        self._shared_ratio_cycle_idx: int = 0
+        self._init_shared_ratio_release_cycle(route_entry)
 
         # ====== 8) Petri 静态结构索引 ======
         self.m0: np.ndarray = info["m0"]
@@ -371,6 +376,7 @@ class ClusterTool:
             all_types = {1}
         self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
+        self._shared_ratio_cycle_idx = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in self._mask_skip_places:
@@ -616,6 +622,7 @@ class ClusterTool:
                 self._u_LP_release_count_by_type[released_type] = (
                     int(self._u_LP_release_count_by_type.get(released_type, 0)) + 1
                 )
+                self._advance_release_ratio_cycle()
                 self._arm_lp_head_with_takt_delay(released_type)
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
@@ -825,6 +832,55 @@ class ClusterTool:
             raise RuntimeError(f"unsupported route_type for WIP cap: {type_id}")
         current = int(self._entered_wafer_count_by_type.get(type_id, 0))
         return int(current + 1) <= cap
+
+    @staticmethod
+    def _build_release_ratio_cycle(raw_ratio: Sequence[int]) -> Tuple[int, ...]:
+        cycle: List[int] = []
+        for type_id, raw_count in enumerate(list(raw_ratio), start=1):
+            count = int(raw_count)
+            if count <= 0:
+                continue
+            cycle.extend([int(type_id)] * count)
+        return tuple(cycle)
+
+    def _init_shared_ratio_release_cycle(self, route_entry: Dict[str, Any]) -> None:
+        self._shared_ratio_cycle_enabled = False
+        self._shared_ratio_cycle_types = ()
+        self._shared_ratio_cycle_idx = 0
+        if str(self._takt_policy or "").strip().lower() != "shared":
+            return
+        raw_ratio = route_entry.get("ratio")
+        if raw_ratio is None:
+            return
+        ratio_cycle = self._build_release_ratio_cycle(raw_ratio)
+        if not ratio_cycle:
+            return
+        valid_types = set(int(t) for t in self._wafer_type_to_subpath.keys())
+        if not valid_types:
+            return
+        filtered_cycle = tuple(int(t) for t in ratio_cycle if int(t) in valid_types)
+        if not filtered_cycle:
+            return
+        self._shared_ratio_cycle_enabled = True
+        self._shared_ratio_cycle_types = filtered_cycle
+        self._shared_ratio_cycle_idx = 0
+
+    def _required_release_type(self) -> Optional[int]:
+        if not self._shared_ratio_cycle_enabled:
+            return None
+        cycle = self._shared_ratio_cycle_types
+        if not cycle:
+            return None
+        idx = int(self._shared_ratio_cycle_idx) % len(cycle)
+        return int(cycle[idx])
+
+    def _advance_release_ratio_cycle(self) -> None:
+        if not self._shared_ratio_cycle_enabled:
+            return
+        cycle = self._shared_ratio_cycle_types
+        if not cycle:
+            return
+        self._shared_ratio_cycle_idx = (int(self._shared_ratio_cycle_idx) + 1) % len(cycle)
 
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
@@ -1149,6 +1205,9 @@ class ClusterTool:
                 if int(head.stay_time) < 0:
                     continue
                 route_type = int(getattr(head, "route_type", 1) or 1)
+                required_release_type = self._required_release_type()
+                if required_release_type is not None and route_type != required_release_type:
+                    continue
                 expected_lp = self._wafer_type_to_load_port.get(route_type, "LP1")
                 if expected_lp != lp_name:
                     raise RuntimeError(

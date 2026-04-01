@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-04-01
+
+### A 方案：shared+ratio 严格比例发片门控（2026-04-01）
+
+- **What changed**：`solutions/A/petri_net.py` 新增 shared 比例循环状态（`_shared_ratio_cycle_*`）；当路线 `takt_policy=shared` 且配置存在 `ratio` 时，`get_action_mask` 在 LP 发片段仅放行“当前轮次 route_type”的 `u_LP*`。`_fire` 在 `u_LP*` 成功发片后推进比例轮次，`reset` 重置轮次到起点。新增 `tests/test_use_count_tie_breaker.py` 用例覆盖比例循环构建、轮次读取与推进回绕。
+- **Why**：shared 节拍原实现只控制发片时间间隔，不控制多子路径类型发片顺序；当需要固定比例顺序时无法保证 release 序列。
+- **Impact**：仅 `shared+ratio` 路线启用硬门控；其他路线（含无 `ratio` 的 shared、`split_by_subpath`）行为不变。该改动不影响现有节拍倒计时机制（`stay_time<0`）与 `step`/`action_mask` 接口形态。
+
 ## 2026-03-31
 
 ### A 方案：`render_gantt` 适配多子路线 stage 合并（2026-03-31）
