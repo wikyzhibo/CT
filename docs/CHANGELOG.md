@@ -2,6 +2,12 @@
 
 ## 2026-04-01
 
+### A 方案：`render_gantt` 改为直读路线 `route_stage`（2026-04-01）
+
+- **What changed**：`solutions/A/petri_net.py` 中 `ClusterTool.__init__` 新增缓存 `routes.<single_route_name>.route_stage`；`render_gantt` 的 stage 映射改为**仅**使用该配置字段，不再回退 `_route_stages` 或 `subpath_route_stages` 合并逻辑。
+- **Why**：甘特泳道命名与顺序需要由路线配置直接控制（例如 `4-8` 模板的自定义 stage 分组），避免运行时按子路径合并导致显示口径偏差。
+- **Impact**：路线未配置或空配置 `route_stage` 时，`render_gantt` 直接报错；已配置 `route_stage` 的路线按配置顺序生成泳道，且 `fire_log` 中未出现在 `route_stage` 的腔室事件会被忽略（不会生成额外泳道）。
+
 ### A 方案：stride 单档 WAIT_5s 关键事件步进（2026-04-01）
 
 - **What changed**：`solutions/A/petri_net.py` 新增 `stride_single_wait_mode`（`stride=True` 且 `wait_durations=[5]`）。该模式下 `step(do_wait)` 收到 `WAIT_5s` 时不再固定推进 5 秒，而是按 `get_next_event_delta()` 推进（无关键事件时退回 5 秒）。

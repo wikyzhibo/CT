@@ -63,6 +63,11 @@ class ClusterTool:
         self.single_route_config = config.single_route_config
         self.single_route_name = config.single_route_name
         route_entry = self.single_route_config["routes"][self.single_route_name]
+        route_stage_raw = route_entry.get("route_stage")
+        self._gantt_route_stages: List[List[str]] = [
+            [str(place_name) for place_name in list(stage or [])]
+            for stage in list(route_stage_raw or [])
+        ]
         self.max_wafers1_in_system = route_entry.get("max_wafer1_in_system",12)
         self.max_wafers2_in_system = route_entry.get("max_wafer2_in_system",0)
         ratio = route_entry.get("ratio",[1,0])
@@ -1325,27 +1330,11 @@ class ClusterTool:
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
         from visualization.plot import Op, plot_gantt_hatched_residence
 
-        chambers_set = frozenset(str(x) for x in self.chambers)
-        route_stages = [list(stage) for stage in self._route_stages]
-        if self._multi_subpath and self._subpath_route_stages:
-            max_stage_count = max(len(list(stages or [])) for stages in self._subpath_route_stages.values())
-            merged_route_stages: List[List[str]] = [[] for _ in range(max_stage_count)]
-            seen_by_stage: List[set[str]] = [set() for _ in range(max_stage_count)]
-            for stages in self._subpath_route_stages.values():
-                for idx, stage in enumerate(list(stages or [])):
-                    merged_stage = merged_route_stages[idx]
-                    stage_seen = seen_by_stage[idx]
-                    for place_name in list(stage or []):
-                        p_name = str(place_name)
-                        if p_name in stage_seen:
-                            continue
-                        merged_stage.append(p_name)
-                        stage_seen.add(p_name)
-            merged_route_stages = [stage for stage in merged_route_stages if stage]
-            if merged_route_stages:
-                route_stages = merged_route_stages
+        route_stages = [list(stage) for stage in self._gantt_route_stages]
         if not route_stages:
-            raise ValueError("render_gantt: empty _route_stages")
+            raise ValueError(
+                f"render_gantt: route '{self.single_route_name}' missing non-empty route_stage in single_route_config"
+            )
         place_to_sm: Dict[str, Tuple[int, int]] = {}
         for si, stage in enumerate(route_stages):
             s = si + 1
@@ -1354,6 +1343,7 @@ class ClusterTool:
                 if pname_s in place_to_sm:
                     continue
                 place_to_sm[pname_s] = (s, int(mi))
+        lane_places = frozenset(str(name) for name in place_to_sm.keys())
 
         S = len(route_stages)
         proc_time: Dict[int, float] = {}
@@ -1373,7 +1363,7 @@ class ClusterTool:
             ti = t_to_idx[t_name]
             return str(self.id2p_name[int(self._pst_place_indices[ti][0])])
 
-        chamber_slots: Dict[str, Dict[int, Tuple[float, int]]] = {c: {} for c in chambers_set}
+        chamber_slots: Dict[str, Dict[int, Tuple[float, int]]] = {c: {} for c in lane_places}
         ops: List[Op] = []
 
         def close_chamber_op(chamber: str, token_id: int, end_t: float) -> None:
@@ -1402,7 +1392,9 @@ class ClusterTool:
             t2 = float(entry["t2"])
             if entry.get("swap"):
                 ch = str(entry["swap_source_place"])
-                if ch not in chambers_set:
+                if ch not in lane_places:
+                    continue
+                if ch not in place_to_sm:
                     continue
                 old_id = int(entry["swapped_token_id"])
                 new_id = int(entry["token_id"])
@@ -1412,9 +1404,11 @@ class ClusterTool:
                 continue
             if t_name.startswith("t_"):
                 dest = pst_name(t_name)
-                if dest not in chambers_set:
+                if dest not in lane_places:
                     continue
                 tid = int(entry["token_id"])
+                if dest not in place_to_sm:
+                    continue
                 sm = place_to_sm[dest]
                 chamber_slots[dest][tid] = (t2, sm[1])
             elif t_name.startswith("u_"):
@@ -1422,9 +1416,11 @@ class ClusterTool:
                 if src is None:
                     continue
                 src = str(src)
-                if src not in chambers_set:
+                if src not in lane_places:
                     continue
                 tid = int(entry["token_id"])
+                if src not in place_to_sm:
+                    continue
                 close_chamber_op(src, tid, t1)
 
         current_time = float(self.time)
