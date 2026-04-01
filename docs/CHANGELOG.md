@@ -2,6 +2,12 @@
 
 ## 2026-03-31
 
+### A 方案：并行并列目标从随机改为确定性顺序打破（2026-03-31）
+
+- **What changed**：`solutions/A/petri_net.py` 的 `_select_min_use_count_target` 在并列最小 `use_count` 时不再 `np.random.randint`，也不再依赖可变游标，改为在最小目标集合中按候选顺序取首个目标；`get_action_mask` 与 `_is_next_stage_available` 共享该规则。新增 `tests/test_use_count_tie_breaker.py` 覆盖“同一状态稳定 + 双目标交替 + 三目标按顺序循环”。
+- **Why**：修复同一状态下多次 `get_action_mask` 查询会推进 tie-break 状态、导致并列目标抖动的问题。
+- **Impact**：并列目标在状态不变时保持稳定；并列打破受候选顺序约束（例如 `PM2/PM3/PM5` 会按 `PM2 -> PM3 -> PM5` 循环）。非并列场景与 `use_count` 更新时机不变（仍在 `t_*` 入目标库所时递增）。
+
 ### A 方案：buffer 阶段腔室非零工时进入 `process_time_map`（2026-03-31）
 
 - **What changed**：`solutions/A/construct/preprocess_config.py` 在 `_preprocess_process_time_map` 之后，对 `route_stage_proc_time` 中**有正工时**、但因 `_route_ir_preprocess_chambers` 跳过 buffer 阶段而未写入 `processed_pt` 的腔室（典型为 **LLD**）再合并一次预处理结果，使 `build_marks`/`ClusterTool._base_proc_time_map` 与库所 `processing_time` 一致。

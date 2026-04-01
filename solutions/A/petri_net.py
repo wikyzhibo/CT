@@ -412,6 +412,7 @@ class ClusterTool:
                     remain = proc_time - head_stay
                     if remain < 0:
                         remain = 0
+                        total_reward -= safe_dt * self.warn_coef_penalty
                     progress = safe_dt if safe_dt < remain else remain
                     total_reward += self.processing_coef_reward * float(progress)
             elif has_tok and p_type == DELIVERY_ROBOT:
@@ -457,7 +458,7 @@ class ClusterTool:
             if p.type == CHAMBER:
                 resident_limit = self.P_Residual_time
             elif p.type == 5:
-                resident_limit = self.P_Residual_time * 1
+                resident_limit = self.P_Residual_time * 3
             else:
                 continue
             tok = p.tokens[0]
@@ -741,8 +742,12 @@ class ClusterTool:
         counts = [int(self._place_use_count.get(str(name), 0)) for name in stage_targets]
         min_count = min(counts)
         min_targets = [str(name) for name, cnt in zip(stage_targets, counts) if cnt == min_count]
-        pick_idx = int(np.random.randint(0, len(min_targets)))
-        picked = str(min_targets[pick_idx])
+        if len(min_targets) == 1:
+            picked = str(min_targets[0])
+        else:
+            # 并列时按 stage_targets 固定顺序选择首个最小 use_count 目标。
+            # 该策略在同一状态下稳定，不会因重复 mask 查询改变结果。
+            picked = str(min_targets[0])
         if cache is not None and cache_key is not None:
             cache[cache_key] = picked
         return picked
@@ -1062,7 +1067,7 @@ class ClusterTool:
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
         按 route gate 过滤后的候选集中，优先选择 use_count 最小的目标；
-        若并列，随机选择其中一个。单臂满或清洗则不可出片，双臂仅清洗阻塞。
+        若并列，按当前 use_count 快照做确定性打破。单臂满或清洗则不可出片，双臂仅清洗阻塞。
         """
         candidates = tuple(self._u_targets.get(source, ()))
         if not candidates:

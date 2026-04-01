@@ -59,14 +59,14 @@
 15. `preprocess_chamber_runtime_blocks` 固定顺序为：先扫描 `RouteIR.stages` 收集 route stage 级 `process_time` 与 `cleaning_*` 映射；再对路线中出现的非 buffer 腔室合并工序工时并取整到 5 秒；最后按 `route_config.chambers` 与固定拓扑并集写入 `ChamberRuntimeBlock`。清洗时长与触发片数**不得**由 `obs_config` 或 `build_net` 传入默认清洗参数兜底；每个腔室必须在 `single_route_config.chambers` 中显式给出 `cleaning_duration` 与 `cleaning_trigger_wafers`，或由 route stage 覆盖二者，否则构网直接 `ValueError`。
 16. 构网容量口径固定：`source/sink` 容量恒为 `100`，其余库所容量恒为 `1`；`m0` 恒为全 0，token 仅在构网末尾注入 source place。
 17. 级联模式 `TM2` 的目标 one-hot 映射在 `build_marks.py` 中固定硬编码为 **9** 维（`PM7–PM10, LLC, LLD, LP_done, LP1, LP2`）；`TM3` 为 **8** 维（`PM1–PM6, LLC, LLD`），不再按 route 动态构造。
-18. 并行候选选机改为 `use_count` 最小优先：`u_*` 使能在 `source` 的候选下游中，先用 route gate 过滤，再从 `use_count` 最小的目标中选择一个（同值随机）；单臂若该目标满或清洗中则不可出片，双臂若该目标清洗中则不可出片。非并行源（单一 `u_targets`）仍只校验该单一候选。
-19. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值随机”决策，禁止同一步并行目标多放行。
+18. 并行候选选机改为 `use_count` 最小优先：`u_*` 使能在 `source` 的候选下游中，先用 route gate 过滤，再从 `use_count` 最小的目标中选择一个（同值按候选顺序取首个最小项）；单臂若该目标满或清洗中则不可出片，双臂若该目标清洗中则不可出片。非并行源（单一 `u_targets`）仍只校验该单一候选。
+19. `get_action_mask` 的 TM 分支在并行 gate（`tuple/frozenset`）下必须仅放行 1 个 `t_*` 目标：按“最小 `use_count` + 同值按候选顺序打破”决策，禁止同一步并行目标多放行。
 20. `_fire` 不再维护任何 round-robin 指针状态；并行目标选择完全由 `get_action_mask` / `_is_next_stage_available` 的 `use_count` 规则决定。
 21. 级联观测中 `TM2` 的目标 one-hot 采用固定 **9** 维逐目标编码；`TM3` 为 **8** 维（不再按目标组压缩）；`LLC/LLD` 观测由 4 维扩展为 6 维，新增 `in/out` 两维方向 one-hot。当前版本将 `LLC/LLD` 的 `in/out` 方向位临时固定为全 0。
 22. 驻留 scrap 口径：在 `ClusterTool._advance_and_compute_reward` 内 stay 推进后内联扫描；对 `type` 为加工腔室或类型 5 的库所遍历 token，令 `remaining = processing_time - stay_time`，`resident_limit` 为普通腔室 `P_Residual_time`，`LLC`/`LLD` 为 `3 * P_Residual_time`；当 `remaining < -resident_limit` 时按 `resident` 计入（实现见 `solutions/A/petri_net.py`）。`step` 只读取该步 `scan_info`，**不会**再单独扫描或按缺键兜底。
 23. 同一步内先推进时间再发射变迁：若本步 `scan_info` 已标 `resident` scrap（来源为 `_advance_and_compute_reward` 内联判定），且本步随后发射的 `u_*` 从**同一腔室**取走**同一 `token_id`** 的晶圆，则 `step` 会撤销该 scrap（不计入 `scrap_count`/惩罚）。库所匹配以 `_fire` 写入 `fire_log` 的 `source_place` 为准，**禁止**用 `t_name` 去掉前缀 `u_` 后的整段作为腔室名（级联命名为 `u_PM7_TM2` 等时该段含运输后缀，与 `p.name` 不一致）。
 24. `get_action_mask` 在 d_TM 分支中，当 `tok_gate` 为并行集合时，使用 token 当前并行候选（`_dst_level_targets`）与 route gate 交集做筛选，仅放行本步被选中的单一最小 `use_count` 目标对应 `t_*`。
-25. 并行候选出现 `use_count` 并列最小时，必须随机选择其中一个目标；该随机仅用于并列打破，同一步 mask 内对同一 token 的筛选结果保持一致。
+25. 并行候选出现 `use_count` 并列最小时，必须按候选顺序选择首个最小项（稳定、无随机）；同一状态下重复计算不得改变选择结果。
 26. `use_count` 更新时机固定：仅当 `t_*` 变迁将晶圆放入目标库所时对该目标 `use_count += 1`；`u_*` 发射、round-robin 指针推进等历史语义不再存在。
 27. 节拍门控**仅**作用于自装载口出发的 `u_*`（物理变迁名为 `u_LP1_TM2`/`u_LP1_TM3`/`u_LP2_TM2`/`u_LP2_TM3` 等；逻辑上对应原 `u_LP` 发片节拍）。构网期节拍来源优先级固定为：`routes.<route>.takt_cycle` 覆盖 > `analyze_cycle` 自动计算；其中 `takt_cycle` 支持 shared 单循环数组，双子路径场景另支持 `takt_cycle.by_subpath` 映射到各子路径类型。**不对** LLC→TM3（`u_LLC*`）施加时间间隔门控。`get_action_mask` 与 `get_next_event_delta` **不会**因 LLC 出片间隔而屏蔽或推迟；`PetriEnvConfig` **不包含** `llc_tm3_takt_interval`。
 28. 双臂模式（`PetriEnvConfig.dual_arm=True`）启用 swap 操作。机械手容量固定为 1，不因双臂改变。`swap_duration` 固定为 10s。
@@ -99,6 +99,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-03-31: **并行并列目标 tie-break 改为“候选顺序首个最小项”**：`ClusterTool._select_min_use_count_target` 在并列最小 `use_count` 时不再随机，也不使用可变游标；同一状态下重复计算返回同一目标，且按 `stage_targets` 顺序稳定打破并列。`get_action_mask` 与 `_is_next_stage_available` 同步生效；`use_count` 仍只在 `t_*` 入目标库所时递增。
 - 2026-03-31: **buffer 阶段正工时腔室写入 `process_time_map`**：`preprocess_chamber_runtime_blocks` 在合并工序工时时，对 `_route_ir_preprocess_chambers` 未覆盖、但 `route_stage_proc_time` 中为正工时的腔室（如 `kind: buffer` 的 **LLD**）补一次 `_preprocess_process_time_map`，使 `ClusterTool._base_proc_time_map` / `render_gantt` 与库所工时一致；零工时 buffer（如 LLC `0s`）不补，避免取整把 0 抬成 5。
 - 2026-03-31: **新增路线级 `takt_cycle` 直通覆盖**：`model_builder.build_net` 透传 `route_entry.takt_cycle` 到 `build_takt_payload`。当路线配置写入 `takt_cycle` 时，构网节拍直接使用配置循环并跳过 `analyze_cycle`；single/shared 可写数组，双子路径可写 `takt_cycle.by_subpath`。`cascade_routes_1_star.json` 的 `routes.4-13` 已新增 shared 循环 `[0,150,...]`（14 拍）。
 - 2026-03-31: **token 级阶段工时队列与 4-13 变工时路线**：`build_route_queue` 新增 `token_proc_time_queue`（`u_*=-1`，`t_*`=stage `process_time`）；`BasedToken` 新增 `route_proc_time_queue`；`ClusterTool._fire` 在 `t_*` 入库时按 token 指针应用当前阶段工时。`preprocess_config/model_builder` 放开同 chamber 多 stage 工时冲突，`build_takt` 改为优先使用 stage 工时口径；`cascade_routes_1_star.json` 新增双子路径 `4-13`。
