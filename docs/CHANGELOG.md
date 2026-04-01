@@ -2,6 +2,18 @@
 
 ## 2026-04-01
 
+### A 方案：评估态 fire 记录甘特（训练不记录）（2026-04-01）
+
+- **What changed**：`solutions/A/petri_net.py` 新增评估态腔室轨迹记录容器；`_fire` 在 `t_*` 入腔、`u_*` 出腔、`swap` 时实时记录/闭合 wafer 占用区间，并携带每片当前阶段实际工时。`render_gantt` 改为直接消费该记录，不再解析 `fire_log` 重建区间。新增 `tests/test_use_count_tie_breaker.py` 覆盖“训练模式不记录”“render_gantt 优先读评估记录”。
+- **Why**：4-13 等“同一腔室多次访问且工时变化”路径中，基于 place 固定工时 + `fire_log` 事后重建会导致加工段长度失真。
+- **Impact**：甘特图在评估模式下按 wafer 实际工时绘制；训练模式不写入该记录链路，避免训练期额外记录开销。`route_stage` 约束、输出命名与绘图入口保持不变。
+
+### A 方案：shared+ratio 尾片可发（非整周期）修复（2026-04-01）
+
+- **What changed**：`solutions/A/petri_net.py` 新增 `_resolve_required_release_type_for_lp_heads`。当 `shared+ratio` 当前轮次要求的 `route_type` 在 LP 队首类型集合中已不存在时，`get_action_mask` 会将比例轮次推进到“下一个仍有 LP 待发片的类型”后再门控 `u_LP*`。
+- **Why**：固定比例周期（如 `2:4`）在总片数不是周期倍数时，尾片可能只剩某一类型；原实现会继续卡在已耗尽类型，导致尾片永远无法发出。
+- **Impact**：`shared+ratio` 在“当前要求类型已无待发片”时允许跳到下一个可发类型；其余时刻仍保持严格按比例顺序门控。无 `ratio` 的 shared 与 `split_by_subpath` 路线行为不变。
+
 ### A 方案：`render_gantt` 改为直读路线 `route_stage`（2026-04-01）
 
 - **What changed**：`solutions/A/petri_net.py` 中 `ClusterTool.__init__` 新增缓存 `routes.<single_route_name>.route_stage`；`render_gantt` 的 stage 映射改为**仅**使用该配置字段，不再回退 `_route_stages` 或 `subpath_route_stages` 合并逻辑。

@@ -397,17 +397,17 @@ plot_gantt_hatched_residence(
 
 ### Abstract
 
-- **What**：`solutions/A/petri_net.py` 中 `ClusterTool.render_gantt(out_path, title_suffix=None)` 在仿真已产生 `fire_log` 后，将腔室占用重建为 `Op` 并调用本页所述 `plot_gantt_hatched_residence`。
-- **When**：训练 `rollout_and_export` 传入 `gantt_png_path`、或可视化 `render_gantt` 按钮/导出工具调用之后调用；须在 **`reset()` 后已执行 `step` 产生变迁日志**。
-- **Not**：不在 `_fire` 内写入专用甘特字段；不维护 `_chamber_timeline`；当前固定 `no_arm=True`（不在图中画机械手专用泳道）。
-- **Key rules**：只解析路线配置 `routes.<single_route_name>.route_stage` 中声明的腔室泳道；未声明腔室（即使出现在 `fire_log`）会被忽略；`cleaning_start`/`cleaning_end` 等带 `event_type` 的条目被忽略；stage 映射**只读取** `route_stage`；`route_stage` 缺失或为空时，`render_gantt` **必须**抛出 `ValueError`；`out_path` 若以 `.png` 结尾会先剥除再交给绘图函数；若没有任何腔室 `Op`，**必须**抛出 `ValueError`。
+- **What**：`solutions/A/petri_net.py` 中 `ClusterTool.render_gantt(out_path, title_suffix=None)` 直接读取评估模式下 `_fire` 实时记录的腔室占用轨迹（含每片 wafer 实际 `proc_time`），构建 `Op` 并调用本页所述 `plot_gantt_hatched_residence`。
+- **When**：评估模式（`ClusterTool.eval()`）执行 `step` 产生 `t_*/u_*/swap` 后可调用；训练 `rollout_and_export`、或可视化 `render_gantt` 按钮/导出工具均可复用。
+- **Not**：训练模式不记录该轨迹；不再通过解析 `fire_log` 重建腔室区间；不维护 `_chamber_timeline`；当前固定 `no_arm=True`（不在图中画机械手专用泳道）。
+- **Key rules**：只使用路线配置 `routes.<single_route_name>.route_stage` 中声明的腔室泳道；未声明腔室的记录会被忽略；stage 映射**只读取** `route_stage`；`route_stage` 缺失或为空时，`render_gantt` **必须**抛出 `ValueError`；`out_path` 若以 `.png` 结尾会先剥除再交给绘图函数；若没有任何腔室 `Op`，**必须**抛出 `ValueError`。
 
 ### Behavior / Rules
 
-1. **入腔**：`t_name` 以 `t_` 开头，且该变迁后置库所名在 `route_stage` 声明的腔室集合中，占用开始时刻为 `t2`（变迁结束时刻）。
-2. **出腔**：`t_name` 以 `u_` 开头，`source_place` 在 `route_stage` 声明的腔室集合中，占用结束时刻为 `t1`（变迁开始时刻）。
-3. **swap**：按 `fire_log` 中 `swap`、`swap_source_place`、`swapped_token_id`、`token_id` 对同一腔室先闭合旧片再开新片。
-4. **`proc_end`**：`start + _base_proc_time_map[chamber]`（与构网 `process_time_map` 对齐）；阶段泳道来源仅为路线配置 `route_stage`。
+1. **入腔**：`t_*` 发射后（`t2`）若目标腔室在 `route_stage` 中，立即记录占用开始，并写入该 wafer 当前阶段实际 `proc_time`。
+2. **出腔**：`u_*` 发射前（`t1`）若源腔室在 `route_stage` 中，立即闭合该 wafer 占用区间。
+3. **swap**：同一步内对同腔室“先闭合旧片，再开启新片”；关闭时刻取 `t1`，开启时刻取 `t2`。
+4. **进行中区间**：`render_gantt` 调用时仍在腔内的 wafer 以当前 `self.time` 作为 `end` 闭合。
 
 ### 输出文件名
 

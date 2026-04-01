@@ -5,6 +5,7 @@ from types import MethodType, SimpleNamespace
 import numpy as np
 
 from solutions.A.petri_net import ClusterTool
+import visualization.plot as plot_module
 
 
 class TestUseCountTieBreaker(unittest.TestCase):
@@ -163,6 +164,59 @@ class TestWaitKeyEventTruncation(unittest.TestCase):
         tool.get_next_event_delta = MethodType(_next_event, tool)
         tool.step(wait_duration=50)
         self.assertEqual(captured["dt"], 12)
+
+
+class TestEvalGanttRecording(unittest.TestCase):
+    def test_training_mode_does_not_record_eval_gantt(self) -> None:
+        tool = ClusterTool.__new__(ClusterTool)
+        tool._training = True
+        tool._eval_gantt_place_to_sm = {"PM1": (1, 0)}
+        tool._eval_gantt_slots = {"PM1": {}}
+        tool._eval_gantt_closed_ops = []
+
+        tool._record_eval_gantt_enter("PM1", token_id=7, start_time=10, proc_time=40)
+
+        self.assertEqual(tool._eval_gantt_slots["PM1"], {})
+        self.assertEqual(tool._eval_gantt_closed_ops, [])
+
+    def test_render_gantt_prefers_eval_gantt_records(self) -> None:
+        tool = ClusterTool.__new__(ClusterTool)
+        tool.single_route_name = "4-13"
+        tool._gantt_route_stages = [["PM1"]]
+        tool._base_proc_time_map = {"PM1": 30}
+        tool._training = False
+        tool.time = 100
+        tool.fire_log = []
+        tool._eval_gantt_place_to_sm = {"PM1": (1, 0)}
+        tool._eval_gantt_slots = {"PM1": {}}
+        tool._eval_gantt_closed_ops = [
+            {
+                "job": 7,
+                "stage": 1,
+                "machine": 0,
+                "start": 10.0,
+                "proc_end": 50.0,
+                "end": 70.0,
+            }
+        ]
+
+        captured = {}
+        original = plot_module.plot_gantt_hatched_residence
+
+        def _fake_plot(**kwargs):
+            captured.update(kwargs)
+
+        try:
+            plot_module.plot_gantt_hatched_residence = _fake_plot
+            tool.render_gantt("results/gantt/eval_only.png")
+        finally:
+            plot_module.plot_gantt_hatched_residence = original
+
+        self.assertIn("ops", captured)
+        self.assertEqual(len(captured["ops"]), 1)
+        op = captured["ops"][0]
+        self.assertEqual(op.job, 7)
+        self.assertEqual(op.proc_end, 50.0)
 
 
 if __name__ == "__main__":

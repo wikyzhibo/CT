@@ -1,4 +1,4 @@
-MAX_TIME: 4000
+MAX_TIME: 10000
 n_wafer: 13
 time_coef_penalty: 10
 warn_coef_penalty: 4
@@ -12,5 +12,5 @@ wait_durations:
 cleaning_enabled: false
 stride: true
 single_route_config_path: cascade_routes_1_star.json
-single_route_name: "4-10"
+single_route_name: "4-3"
 dual_arm: true

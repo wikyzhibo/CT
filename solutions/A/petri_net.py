@@ -170,6 +170,10 @@ class ClusterTool:
         self._place_use_count: Dict[str, int] = {
             str(place.name): 0 for place in self.marks
         }
+        self._eval_gantt_place_to_sm: Dict[str, Tuple[int, int]] = {}
+        self._eval_gantt_slots: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        self._eval_gantt_closed_ops: List[Dict[str, Any]] = []
+        self._reset_eval_gantt_records()
         self._u_transition_by_source: Dict[str, int] = {}
         self._u_transition_by_source_transport: Dict[Tuple[str, str], int] = {}
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
@@ -397,6 +401,7 @@ class ClusterTool:
         self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._shared_ratio_cycle_idx = 0
+        self._reset_eval_gantt_records()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
             if p.name not in self._mask_skip_places:
@@ -518,6 +523,55 @@ class ClusterTool:
         self._last_state_scan = scan_info
         return total_reward, scan_info
 
+    def _reset_eval_gantt_records(self) -> None:
+        route_stages = [list(stage) for stage in self._gantt_route_stages]
+        place_to_sm: Dict[str, Tuple[int, int]] = {}
+        for si, stage in enumerate(route_stages):
+            stage_idx = si + 1
+            for mi, pname in enumerate(stage):
+                chamber = str(pname)
+                if chamber in place_to_sm:
+                    continue
+                place_to_sm[chamber] = (stage_idx, int(mi))
+        self._eval_gantt_place_to_sm = place_to_sm
+        self._eval_gantt_slots = {name: {} for name in place_to_sm.keys()}
+        self._eval_gantt_closed_ops = []
+
+    def _record_eval_gantt_enter(self, chamber: str, token_id: int, start_time: int, proc_time: int) -> None:
+        if self._training:
+            return
+        if chamber not in self._eval_gantt_place_to_sm:
+            return
+        stage, machine = self._eval_gantt_place_to_sm[chamber]
+        chamber_slots = self._eval_gantt_slots.setdefault(chamber, {})
+        chamber_slots[int(token_id)] = {
+            "job": int(token_id),
+            "stage": int(stage),
+            "machine": int(machine),
+            "start": float(start_time),
+            "proc_end": float(start_time + int(proc_time)),
+        }
+
+    def _record_eval_gantt_exit(self, chamber: str, token_id: int, end_time: int) -> None:
+        if self._training:
+            return
+        chamber_slots = self._eval_gantt_slots.get(chamber)
+        if chamber_slots is None:
+            return
+        slot = chamber_slots.pop(int(token_id), None)
+        if slot is None:
+            return
+        self._eval_gantt_closed_ops.append(
+            {
+                "job": int(slot["job"]),
+                "stage": int(slot["stage"]),
+                "machine": int(slot["machine"]),
+                "start": float(slot["start"]),
+                "proc_end": float(slot["proc_end"]),
+                "end": float(end_time),
+            }
+        )
+
     def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
         is_multi = not isinstance(t_idx, (int, np.integer))
         transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
@@ -600,6 +654,8 @@ class ClusterTool:
                     pre_place.append(old_tok)
                     old_tok._place_idx = pre_place_idx
 
+                    self._record_eval_gantt_exit(target, old_wafer_id, int(start_time))
+                    self._record_eval_gantt_enter(target, wafer_id, int(end_time), int(pst_place.processing_time))
                     log_entries.append(
                         {
                             "t_name": t_name,
@@ -629,6 +685,9 @@ class ClusterTool:
             tok._place_idx = pst_place_idx
             if t_name.startswith("t_"):
                 self._place_use_count[pst_place.name] = int(self._place_use_count.get(pst_place.name, 0)) + 1
+                self._record_eval_gantt_enter(pst_place.name, wafer_id, int(end_time), int(pst_place.processing_time))
+            elif t_name.startswith("u_"):
+                self._record_eval_gantt_exit(pre_place.name, wafer_id, int(start_time))
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
             if t_name.startswith("u_") and pre_place.name in self._load_port_names:
@@ -893,6 +952,27 @@ class ClusterTool:
             return None
         idx = int(self._shared_ratio_cycle_idx) % len(cycle)
         return int(cycle[idx])
+
+    def _resolve_required_release_type_for_lp_heads(self) -> Optional[int]:
+        required = self._required_release_type()
+        if required is None:
+            return None
+        cycle = self._shared_ratio_cycle_types
+        if not cycle:
+            return required
+        heads = self._lp_type_head_tokens()
+        available_types = set(int(t) for t in heads.keys())
+        if not available_types or int(required) in available_types:
+            return required
+        cur_idx = int(self._shared_ratio_cycle_idx) % len(cycle)
+        for offset in range(1, len(cycle) + 1):
+            cand_idx = (cur_idx + offset) % len(cycle)
+            cand_type = int(cycle[cand_idx])
+            if cand_type not in available_types:
+                continue
+            self._shared_ratio_cycle_idx = int(cand_idx)
+            return cand_type
+        return required
 
     def _advance_release_ratio_cycle(self) -> None:
         if not self._shared_ratio_cycle_enabled:
@@ -1213,6 +1293,7 @@ class ClusterTool:
             return result
 
         # LP 出片：单路线用全局 WIP（max_wafers1）；双子路径仅按类型上限（_allow_start_for_route_type）+ 队首节拍就绪；可同时允许多条 u_LP*。
+        required_release_type = self._resolve_required_release_type_for_lp_heads()
         if self._multi_subpath or int(self.entered_wafer_count) < int(self.max_wafers1_in_system):
             for lp_name in self._load_port_names:
                 lp_place = self._place_by_name.get(lp_name)
@@ -1222,7 +1303,6 @@ class ClusterTool:
                 if int(head.stay_time) < 0:
                     continue
                 route_type = int(getattr(head, "route_type", 1) or 1)
-                required_release_type = self._required_release_type()
                 if required_release_type is not None and route_type != required_release_type:
                     continue
                 expected_lp = self._wafer_type_to_load_port.get(route_type, "LP1")
@@ -1357,90 +1437,55 @@ class ClusterTool:
             capacity[s] = len(names)
             stage_module_names[s] = [str(x) for x in names]
 
-        t_to_idx = {str(n): i for i, n in enumerate(self.id2t_name)}
-
-        def pst_name(t_name: str) -> str:
-            ti = t_to_idx[t_name]
-            return str(self.id2p_name[int(self._pst_place_indices[ti][0])])
-
-        chamber_slots: Dict[str, Dict[int, Tuple[float, int]]] = {c: {} for c in lane_places}
         ops: List[Op] = []
-
-        def close_chamber_op(chamber: str, token_id: int, end_t: float) -> None:
-            slot = chamber_slots[chamber].pop(token_id)
-            start_time, machine_idx = slot
-            proc_dur = int(self._base_proc_time_map.get(chamber, 0))
-            stage, _ = place_to_sm[chamber]
+        for raw in self._eval_gantt_closed_ops:
+            stage = int(raw["stage"])
+            machine = int(raw["machine"])
+            if stage <= 0 or stage > S:
+                continue
+            chamber_names = stage_module_names.get(stage, [])
+            if machine < 0 or machine >= len(chamber_names):
+                continue
+            chamber_name = str(chamber_names[machine])
+            if chamber_name not in lane_places:
+                continue
             ops.append(
                 Op(
-                    job=token_id,
+                    job=int(raw["job"]),
                     stage=stage,
-                    machine=machine_idx,
-                    start=float(start_time),
-                    proc_end=float(start_time + proc_dur),
-                    end=float(end_t),
+                    machine=machine,
+                    start=float(raw["start"]),
+                    proc_end=float(raw["proc_end"]),
+                    end=float(raw["end"]),
                 )
             )
-
-        for entry in self.fire_log:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("event_type"):
-                continue
-            t_name = str(entry.get("t_name", ""))
-            t1 = float(entry["t1"])
-            t2 = float(entry["t2"])
-            if entry.get("swap"):
-                ch = str(entry["swap_source_place"])
-                if ch not in lane_places:
-                    continue
-                if ch not in place_to_sm:
-                    continue
-                old_id = int(entry["swapped_token_id"])
-                new_id = int(entry["token_id"])
-                close_chamber_op(ch, old_id, t1)
-                stage_m = place_to_sm[ch]
-                chamber_slots[ch][new_id] = (t2, stage_m[1])
-                continue
-            if t_name.startswith("t_"):
-                dest = pst_name(t_name)
-                if dest not in lane_places:
-                    continue
-                tid = int(entry["token_id"])
-                if dest not in place_to_sm:
-                    continue
-                sm = place_to_sm[dest]
-                chamber_slots[dest][tid] = (t2, sm[1])
-            elif t_name.startswith("u_"):
-                src = entry.get("source_place")
-                if src is None:
-                    continue
-                src = str(src)
-                if src not in lane_places:
-                    continue
-                tid = int(entry["token_id"])
-                if src not in place_to_sm:
-                    continue
-                close_chamber_op(src, tid, t1)
-
         current_time = float(self.time)
-        for chamber_name, slots_dict in chamber_slots.items():
-            for tid, (start_time, machine_idx) in list(slots_dict.items()):
-                proc_dur = int(self._base_proc_time_map.get(chamber_name, 0))
-                stage, _ = place_to_sm[chamber_name]
+        for chamber_name, slots_dict in self._eval_gantt_slots.items():
+            if chamber_name not in lane_places:
+                continue
+            for raw in slots_dict.values():
+                stage = int(raw["stage"])
+                machine = int(raw["machine"])
+                if stage <= 0 or stage > S:
+                    continue
+                chamber_names = stage_module_names.get(stage, [])
+                if machine < 0 or machine >= len(chamber_names):
+                    continue
+                if str(chamber_names[machine]) != chamber_name:
+                    continue
                 ops.append(
                     Op(
-                        job=tid,
+                        job=int(raw["job"]),
                         stage=stage,
-                        machine=machine_idx,
-                        start=float(start_time),
-                        proc_end=float(start_time + proc_dur),
+                        machine=machine,
+                        start=float(raw["start"]),
+                        proc_end=float(raw["proc_end"]),
                         end=current_time,
                     )
                 )
 
         if not ops:
-            raise ValueError("render_gantt: no chamber operations from fire_log")
+            raise ValueError("render_gantt: no chamber operations from eval fire records")
 
         job_ids = {int(op.job) for op in ops if int(op.job) >= 0}
         n_jobs = max(1, len(job_ids))
