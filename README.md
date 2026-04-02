@@ -21,10 +21,10 @@ python -m solutions.A.ppo_trainer --device cascade --rollout-n-envs 1 --artifact
 2. 导出推理序列
 
 ```bash
-python -m solutions.A.eval.export_inference_sequence --device cascade --model results/models/quickstart_final.pt --out-name quickstart
+python -m solutions.A.eval.export_inference_sequence --model results/models/quickstart_final.pt --out-name quickstart
 ```
 
-输出文件为 `results/action_sequences/quickstart.json`。
+输出文件为 `results/action_sequences/quickstart(W<晶圆数>-M<makespan>).json`（后缀由 `env.net.n_wafer` 与 `env.net.time` 组成）。
 
 3. 启动可视化界面
 
@@ -32,7 +32,7 @@ python -m solutions.A.eval.export_inference_sequence --device cascade --model re
 python -m visualization.main --device cascade --model results/models/quickstart_final.pt
 ```
 
-可视化依赖 `PySide6`。未传 `--model` 时会进入手动模式；如需回放导出的序列，在界面中加载 `results/action_sequences/quickstart.json`。
+可视化依赖 `PySide6`。未传 `--model` 时会进入手动模式；如需回放导出的序列，在界面中加载 `results/action_sequences/` 下本次导出的 `quickstart(W…-M…).json`。
 
 ## Python 导入入口
 
@@ -160,7 +160,7 @@ flowchart LR
 | 设备模拟 | `ClusterTool`：掩码、时间推进、reward；`Env_PN_Single`：`reset` / `step`、观测 | `solutions/Continuous_model/pn_single.py`、`solutions/Continuous_model/env_single.py` |
 | 训练 | `VectorEnv` / `FastEnvWrapper`；`collect_rollout_ultra`；`MaskedPolicyHead` 与 masked 采样；优化器更新 | `solutions/Continuous_model/train_single.py`、`solutions/PPO/network/models.py` |
 | 可视化 | CLI；`Env_PN_Single` 适配器；Model A 推理 / Model B JSON；PySide6 界面 | `visualization/main.py`、`visualization/petri_single_adapter.py`、`visualization/viewmodel.py`、`visualization/main_window.py`（细则见 `docs/visualization/ui-guide.md`） |
-| 导出 | 写出回放用 JSON（含 `replay_env_overrides`），供可视化 Model B | `solutions/Continuous_model/export_inference_sequence.py` |
+| 导出 | 写出回放用 JSON（含 `replay_env_overrides`），供可视化 Model B | `solutions/A/eval/export_inference_sequence.py` |
 
 **DocRef**：`docs/continuous-model/pn-single.md`（构网链与「构网 → mask → step → reward」）。
 

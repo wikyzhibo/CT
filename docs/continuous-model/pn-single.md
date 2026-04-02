@@ -34,8 +34,8 @@
   - `python -m solutions.Continuous_model.train_single --device cascade --rollout-n-envs 1`
   - 关键参数: `--device`, `--compute-device`, `--checkpoint`, `--rollout-n-envs`, `--artifact-dir`（`--artifact-dir` 作为运行名称前缀；产物写入 `results/models`、`results/training_logs`、`results/gantt`、`results/action_sequences`；图标题带 `路径 <路线名>` 后缀）
 - 推理导出入口:
-  - `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>`
-  - action sequence 输出为 `results/action_sequences/<--out-name>.json`（默认 `tmp` → `results/action_sequences/tmp.json`）
+  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联；`--concurrent` 为双头并发权重；`--retry` 控制未 finish 重试；rollout 最大步数固定 `MAX_STEPS=10000`）
+  - action sequence 输出为 `results/action_sequences/<--out-name>(W<n_wafer>-M<time>).json`（默认 `tmp` → `results/action_sequences/tmp(W…-M…).json`）
   - 导出的 `replay_env_overrides` 会携带 `single_route_name`，并在可用时携带 `single_route_config`，用于可视化回放时保持与导出一致的构网路线
 - 二次释放惩罚验证入口:
   - `python -m solutions.Continuous_model.check_release_penalty --sequence <json_name> --results-dir results`
@@ -100,6 +100,8 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-04-02: **`export_inference_sequence` 序列文件名**：实际文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。
+- 2026-04-02: **`export_inference_sequence` CLI 收敛**：默认级联导出；`--concurrent` 使用双头并发权重；移除 `--device`、`--max-steps`、`--robot-capacity` 等；`--retry` 替代 `--single-retries`；rollout 步数固定 `MAX_STEPS=10000`；入口 `python -m solutions.A.eval.export_inference_sequence`；见 `docs/CHANGELOG.md`。
 - 2026-04-01: **WAIT 关键节点截断收敛**：`config/cluster_tool/env_config.py` 新增 `wait_key_event_truncation_enabled`（默认 `True`）。`solutions/A/petri_net.py` 的 `get_next_event_delta` 改为只保留“加工完成 + LP 节拍到点”关键事件，并在单次 `marks` 扫描中同步记录“加工完成待取片 / TM2-TM3 持片”标记；`step(do_wait)` 在上述标记任一为真时将 `WAIT>5s` 截断为 `5s`。
 - 2026-04-01: **shared+ratio 严格比例发片门控**：`solutions/A/petri_net.py` 在 `takt_policy=shared` 且路线配置含 `ratio` 时，新增 LP 发片比例循环状态；`get_action_mask` 的 `u_LP*` 只放行当前轮次 `route_type`，`_fire` 中 `u_LP*` 成功后推进轮次，`reset` 重置轮次。非 `shared+ratio` 路线保持原掩码行为。
 - 2026-04-01: **shared+ratio 非整周期尾片放行修复**：当 `shared+ratio` 当前轮次 `route_type` 在 LP 队首类型集合中已不存在时，`get_action_mask` 会把比例轮次前移到下一个仍有 LP 待发片的类型，避免总片数非比例周期倍数时尾片永久被门控。

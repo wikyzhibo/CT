@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-04-02
+
+### `export_inference_sequence` CLI 与 API 收敛（2026-04-02）
+
+- **What changed**：`solutions/A/eval/export_inference_sequence.py` 默认仅级联导出（`MaskedPolicyHead` + JSON `device_mode=cascade`）；新增 `--concurrent` 使用 `DualHeadPolicyNet`（`device_mode=concurrent`）。删除 CLI：`--device`、`--max-steps`、`--robot-capacity`、`--force-overwrite-planb`；`--single-retries` 改为 `--retry`。rollout 最大步数固定为模块常量 `MAX_STEPS=10000`。`replay_env_overrides.robot_capacity` 固定为 1。`rollout_and_export(...)` 改为 `concurrent: bool`、`retry: int`，移除 `device_mode`/`max_steps`/死参数。`solutions/A/ppo_trainer.py` 中 `_postprocess_training_artifacts` 去掉 `device_mode` 形参；训练结束导出调用上述新签名。
+- **Why**：设备仅支持级联；并发与级联权重结构不同，用显式 `--concurrent` 区分；收敛 CLI 与未使用的参数。
+- **Impact**：不再支持导出 `device_mode=single` 的 JSON。训练产物序列导出若此前在 8000 步截断，现与 `MAX_STEPS=10000` 对齐。文档入口统一为 `python -m solutions.A.eval.export_inference_sequence`。
+
+### `export_inference_sequence` 序列文件名追加 `(W-M)` 后缀（2026-04-02）
+
+- **What changed**：`rollout_and_export` 写出 JSON 时，文件名为 `<--out-name 经 safe_name 后>(W<env.net.n_wafer>-M<env.net.time>).json`。
+- **Why**：文件名同时携带配置晶圆数与 rollout 结束时刻，便于区分实验产物。
+- **Impact**：`results/action_sequences/` 下序列文件不再仅为 `<out_name>.json`；训练结束 `_postprocess_training_artifacts` 导出路径随之变化。
+
 ## 2026-04-01
 
 ### A 方案：评估态 fire 记录甘特（训练不记录）（2026-04-01）

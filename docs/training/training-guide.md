@@ -41,9 +41,9 @@
   - 参数: `--concurrent`(默认开启), `--no-concurrent`, `--checkpoint`, `--compute-device`, `--rollout-n-envs`, `--artifact-dir`
   - `--rollout-n-envs` 对并发模式同样生效（使用 `VectorEnv_Concurrent` 并行采样）
   - 并发环境 `Env_PN_Concurrent` 直接消费 `config/cluster_tool/cascade.yaml + ClusterTool` 当前级联运行时；观测维度与 TM2/TM3 动作维度由真实 net 探针动态读取，不再依赖 legacy 动作名表
-  - 训练结束若存在 `results/models/CT_concurrent_best.pt`，与单动作路径相同会调用 `export_inference_sequence.rollout_and_export(..., device_mode=concurrent)` 写出 `results/action_sequences/` 下 JSON 与 `results/gantt/` 下甘特 PNG（`run_name` 为 `train_concurrent` 或 `--artifact-dir` 安全名前缀；需 `render_gantt` 成功则见 `docs/gantt.md`）
+  - 训练结束若存在 `results/models/CT_concurrent_best.pt`，与单动作路径相同会调用 `export_inference_sequence.rollout_and_export(..., concurrent=True)` 写出 `results/action_sequences/` 下 JSON 与 `results/gantt/` 下甘特 PNG（`run_name` 为 `train_concurrent` 或 `--artifact-dir` 安全名前缀；需 `render_gantt` 成功则见 `docs/gantt.md`）
 - 导出推理序列:
-  - `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>`（输出 `results/action_sequences/<out_name>.json`，默认 `--out-name tmp` 即 `results/action_sequences/tmp.json`）
+  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `DualHeadPolicyNet`；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
   - `--model` 为已存在的 `.pt` 文件路径时直接使用；否则按 `results/models/<相对路径>` 解析。
 - 关键配置优先级:
   - cascade: `data/ppo_configs/s_train.yaml` 作为基础，CLI 参数覆盖。
@@ -75,9 +75,9 @@
 ## Edge Cases
 - `train_concurrent.py` 的默认 `--config` 是本机绝对路径，跨机器时应显式传相对路径。
 - cascade 训练 best 权重会覆盖 `results/models/CT_single_best.pt`，并行实验需使用不同运行前缀区分产物。
-- 导出脚本按 `--out-name` 写入 `results/action_sequences/<out_name>.json`；并发运行须使用不同 `out-name`。
+- 导出脚本按 `--out-name` 写入 `results/action_sequences/<out_name>(W-M).json`（后缀由 `env.net.n_wafer` 与 `env.net.time` 组成）；并发运行须使用不同 `out-name` 或依赖不同 metrics 区分。
 - `training_metrics_plot.png` 由 `eval/plot_train_metrics.py` 绘制：左图 reward（滑动平均）+ makespan 双 y 轴（`makespan==0` 不绘制），右图 finish/scrap 并列柱图；环境若带 `single_route_name`，两子图标题后缀为 `路径 <name>`。标题含中文时依赖系统已安装的无衬线中文字体（Windows 通常已有微软雅黑/黑体；若仍为方框，请安装 Noto Sans CJK 或在环境中配置 Matplotlib 字体）。
-- `solutions.A.ppo_trainer` 在单动作与并发训练结束时，只要 `CT_single_best.pt` / `CT_concurrent_best.pt` 存在即调用 `rollout_and_export`（单动作为 `device_mode=single|cascade`，并发为 `device_mode=concurrent`），写出动作序列 JSON 并尝试甘特；与是否传入 `--artifact-dir` 无关。甘特文件名由 `plot_gantt_hatched_residence` 在基路径上追加策略后缀（见 `docs/gantt.md`）。`ClusterTool.render_gantt` 从 `fire_log` 写 PNG；若 rollout 无腔室进出事件则调用会失败（见 `docs/gantt.md`）。标题后缀为 `title_suffix`（`路径 <single_route_name>`）。
+- `solutions.A.ppo_trainer` 在单动作与并发训练结束时，只要 `CT_single_best.pt` / `CT_concurrent_best.pt` 存在即调用 `rollout_and_export`（单动作为 `concurrent=False` 级联导出，并发为 `concurrent=True`），写出动作序列 JSON 并尝试甘特；与是否传入 `--artifact-dir` 无关。甘特文件名由 `plot_gantt_hatched_residence` 在基路径上追加策略后缀（见 `docs/gantt.md`）。`ClusterTool.render_gantt` 从 `fire_log` 写 PNG；若 rollout 无腔室进出事件则调用会失败（见 `docs/gantt.md`）。标题后缀为 `title_suffix`（`路径 <single_route_name>`）。
 - **train_all 多路线批量训练**：暂缓，当前仓库不提供该入口；验收 `train_single --artifact-dir` 后再扩展。
 
 ## Related Docs
@@ -87,7 +87,8 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
-- 2026-03-31: `solutions.A.ppo_trainer` 并发训练结束与单动作一致：存在 `CT_concurrent_best.pt` 时 `rollout_and_export(..., device_mode=concurrent)` 导出动作序列与甘特；见 `solutions/A/eval/export_inference_sequence.py`。
+- 2026-04-02: `solutions/A/eval/export_inference_sequence.py`：CLI 收敛为默认级联、`--concurrent` 选双头模型；移除 `--device`、`--max-steps`、`--robot-capacity`、`--force-overwrite-planb`；`--single-retries` 改为 `--retry`；`rollout_and_export` 使用 `concurrent`/`retry`；`ppo_trainer` 训练产物导出步数与 `MAX_STEPS=10000` 对齐；序列文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。
+- 2026-03-31: `solutions.A.ppo_trainer` 并发训练结束与单动作一致：存在 `CT_concurrent_best.pt` 时 `rollout_and_export(..., concurrent=True)` 导出动作序列与甘特；见 `solutions/A/eval/export_inference_sequence.py`。
 - 2026-03-31: A 方案 `solutions/A/petri_net.py` 中 `ClusterTool.render_gantt` 已实现：由 `fire_log` 写腔室甘特 PNG（见 `docs/gantt.md`）。
 - 2026-03-29: `solutions.A.ppo_trainer` 的并发探针环境继续是 `Env_PN_Concurrent`，但该环境现已直接复用 `ClusterTool` 当前级联运行时；TM2/TM3 动作维度与观测维度由真实 net 探针动态读取，和 UI / rollout wrapper 保持同一口径，不再依赖 legacy `u_LP1_s1/t_s1` 命名集合。
 - 2026-03-29: 并发训练路径切换为 `collect_rollout_ultra_concurrent` + `VectorEnv_Concurrent`，`--rollout-n-envs` 现对并发模式同样生效；输出新增 rollout/update 分段计时与 steps/sec 统计。

@@ -484,7 +484,6 @@ def _train_concurrent(
     _postprocess_training_artifacts(
         best_model_path,
         run_name,
-        "cascade",
         config,
         route_label,
         concurrent=True,
@@ -1105,7 +1104,6 @@ def _save_training_metrics_json(log: dict[str, list] | defaultdict[str, list], p
 def _postprocess_training_artifacts(
     best_model_path: Path,
     run_name: str,
-    device_mode: str,
     config: PPOTrainingConfig,
     route_label: str | None,
     concurrent: bool = False,
@@ -1113,7 +1111,6 @@ def _postprocess_training_artifacts(
     if not best_model_path.is_file():
         print("[artifact] 无 best 模型，跳过序列导出", flush=True)
         return
-    export_mode = "concurrent" if concurrent else str(device_mode).lower()
     safe_run_name = safe_name(
         run_name,
         "train_concurrent_run" if concurrent else "train_single_run",
@@ -1122,13 +1119,10 @@ def _postprocess_training_artifacts(
     gantt_png = gantt_output_path(f"{safe_run_name}_gantt.png")
     out = rollout_and_export(
         model_path=best_model_path,
-        max_steps=8000,
         seed=int(config.seed),
         out_name=seq_name,
-        force_overwrite_planb=False,
-        device_mode=export_mode,
-        robot_capacity=1,
-        single_retries=10,
+        concurrent=concurrent,
+        retry=10,
         gantt_png_path=gantt_png,
         gantt_title_suffix=route_label,
     )
@@ -1422,7 +1416,7 @@ def train_single(
             route_label=route_label,
         )
         print(f"[artifact] metrics_plot={metrics_png}", flush=True)
-    _postprocess_training_artifacts(best_model_path, run_name, device_mode, config, route_label)
+    _postprocess_training_artifacts(best_model_path, run_name, config, route_label, concurrent=False)
     return log, policy_backbone
 
 

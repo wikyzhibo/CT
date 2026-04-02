@@ -27,7 +27,7 @@
 - 当前入口：
   - `solutions/Continuous_model/env_single.py`
   - `solutions/Continuous_model/train_single.py`
-  - `solutions/Continuous_model/export_inference_sequence.py`
+  - `solutions/A/eval/export_inference_sequence.py`
 - 历史说明：
   - 旧版 place-centered 观测将库所状态直接拼接进 observation。
   - 该接口已被统一入口替代，不再作为当前实现的一部分。

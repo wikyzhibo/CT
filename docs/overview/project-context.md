@@ -28,14 +28,14 @@
 - 高层数据流:
   1. 配置加载 (`data/petri_configs`, `data/ppo_configs`)。
   2. 环境构建 (`pn_single.py` / `env_single.py`)。
-  3. 训练或推理导出 (`train_single.py`, `train_concurrent.py`, `export_inference_sequence.py`)。
+  3. 训练或推理导出 (`train_single.py`, `train_concurrent.py`, `solutions/A/eval/export_inference_sequence.py`)。
   4. 可视化回放 (`visualization/main.py`)。
 
 ## Interfaces
 - 统一入口命令（推荐）:
   - 级联训练: `python -m solutions.Continuous_model.train_single --device cascade`（`--artifact-dir` 作为运行名称前缀；产物统一写入 `results/` 规范目录，含 `training_metrics_plot.png` 与有 best 时的甘特图）
   - 并发训练: `python -m solutions.Continuous_model.train_concurrent --config data/ppo_configs/concurrent_phase2_config.json`
-  - 推理导出: `python -m solutions.Continuous_model.export_inference_sequence --device cascade --model <model_path>`（默认 `results/action_sequences/tmp.json`；`--out-name` 控制文件名）
+  - 推理导出: `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联；`--concurrent` 为双头模型；默认 `--out-name tmp` 时文件名为 `tmp(W…-M…).json`；`--out-name` 为文件名前缀）
   - 可视化: `python -m visualization.main --device cascade`
   - Td_petri 主入口: `python -m solutions.Td_petri.tdpn`
 - Python 导入入口:

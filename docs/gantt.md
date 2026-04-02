@@ -417,7 +417,7 @@ plot_gantt_hatched_residence(
 ### Related Docs
 
 - `docs/pn_api.md`（ClusterTool / 统计与甘特小节）
-- `docs/training/training-guide.md`（训练结束 `rollout_and_export`：`device_mode=single|cascade|concurrent`）
+- `docs/training/training-guide.md`（训练结束 `rollout_and_export`：`concurrent=True|False`）
 - `solutions/A/eval/export_inference_sequence.py`（`rollout_and_export`）
 
 ## 实现文件

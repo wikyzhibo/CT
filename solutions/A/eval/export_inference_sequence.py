@@ -1,8 +1,14 @@
 """
-单设备/级联/并发双动作推理序列导出工具。
+级联 / 并发双动作推理序列导出工具。
 
-在 `Env_PN_Single` 或 `Env_PN_Concurrent` 上 roll out 策略，将 `sequence`、`replay_env_overrides`、`reward_report`
-等写入仓库根目录 `results/action_sequences/<out_name>.json`（默认文件名见 CLI `--out-name`）。
+默认在 `Env_PN_Single`（级联拓扑、`MaskedPolicyHead`）上 roll out，导出 JSON 中每步为双机械臂占位
+`actions: [动作名, "WAIT"]`。`--concurrent` 时在 `Env_PN_Concurrent` 上加载 `DualHeadPolicyNet` 权重 rollout。
+
+将 `sequence`、`replay_env_overrides`、`reward_report` 等写入仓库根目录
+`results/action_sequences/<out_name>(W<晶圆数>-M<makespan>).json`：`out_name` 经 `safe_name` 清洗后，
+后缀取自 rollout 结束时的 `env.net.n_wafer` 与 `env.net.time`（仿真时刻）。
+
+Rollout 最大步数固定为模块常量 `MAX_STEPS`（10000）。
 
 `rollout_and_export(..., gantt_png_path=..., gantt_title_suffix=...)` 可在导出 JSON 后
 对本次 rollout 的 `env.net` 调用 `render_gantt` 写出甘特 PNG（与 `ClusterTool.render_gantt` 行为一致）。
@@ -25,7 +31,20 @@ from torchrl.modules import MaskedCategorical, ProbabilisticActor
 
 from solutions.model.network import DualHeadPolicyNet, MaskedPolicyHead
 from solutions.A.rl_env import Env_PN_Concurrent, Env_PN_Single
-from results.paths import action_sequence_path, model_output_path, safe_name
+from results.paths import ACTION_SEQUENCES_DIR, ensure_results_dirs, model_output_path, safe_name
+
+MAX_STEPS = 10000
+
+
+def _action_sequence_export_path(out_name: str, env: Env_PN_Single | Env_PN_Concurrent) -> Path:
+    """`results/action_sequences/<safe(out_name)>(W{n_wafer}-M{time}).json`。"""
+    base = safe_name(str(out_name), "export")
+    net = env.net
+    w = int(net.n_wafer)
+    m = int(net.time)
+    stem = f"{base}(W{w}-M{m})"
+    ensure_results_dirs()
+    return ACTION_SEQUENCES_DIR / f"{stem}.json"
 
 
 class _DualActionPolicyModule(nn.Module):
@@ -172,10 +191,7 @@ def _build_single_policy(
 
 def _rollout_single_sequence(
     model_path: Path,
-    max_steps: int,
     seed: int,
-    robot_capacity: int,
-    device_mode: str = "single",
     exploration: str = "mode",
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Single]:
     device = torch.device("cpu")
@@ -191,7 +207,7 @@ def _rollout_single_sequence(
     idle_steps: list[int] = []
 
     with torch.no_grad():
-        for step in range(1, max_steps + 1):
+        for step in range(1, MAX_STEPS + 1):
             try:
                 obs = td["observation"]
                 td_model = TensorDict(
@@ -244,8 +260,8 @@ def _rollout_single_sequence(
     replay_env_overrides = {
         # 回放时固定为本次 episode 的实际工序时长，避免可视化重启后与导出时不一致。
         "process_time_map": dict(getattr(env.net, "_base_proc_time_map", {})),
-        "robot_capacity": int(robot_capacity),
-        "device_mode": str(device_mode),
+        "robot_capacity": 1,
+        "device_mode": "cascade",
         # 配置驱动路线信息：用于可视化重建与导出时一致的路径拓扑。
         "single_route_name": getattr(env.net, "single_route_name", None),
     }
@@ -257,11 +273,8 @@ def _rollout_single_sequence(
 
 def _rollout_single_sequence_with_retry(
     model_path: Path,
-    max_steps: int,
     seed: int,
-    robot_capacity: int,
     max_retries: int = 10,
-    device_mode: str = "single",
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], bool, Env_PN_Single]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
@@ -275,10 +288,7 @@ def _rollout_single_sequence_with_retry(
         attempt_seed = seed + attempt
         sequence, finished, replay_env_overrides, reward_report, env = _rollout_single_sequence(
             model_path=model_path,
-            max_steps=max_steps,
             seed=attempt_seed,
-            robot_capacity=robot_capacity,
-            device_mode=device_mode,
             exploration="mode" if attempt == 0 else "random",
         )
         last_sequence = sequence
@@ -288,10 +298,10 @@ def _rollout_single_sequence_with_retry(
         last_env = env
         if finished:
             if attempt > 0:
-                print(f"[INFO] single 模式第 {attempt + 1} 次推理达到 finish。")
+                print(f"[INFO] 级联模式第 {attempt + 1} 次推理达到 finish。")
             return sequence, replay_env_overrides, reward_report, finished, env
 
-    print(f"[WARN] single 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
+    print(f"[WARN] 级联模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
     assert last_env is not None
     return last_sequence, last_overrides, last_report, last_finished, last_env
 
@@ -354,9 +364,7 @@ def _decode_concurrent_actions(env: Env_PN_Concurrent, a_tm2: int, a_tm3: int) -
 
 def _rollout_concurrent_sequence(
     model_path: Path,
-    max_steps: int,
     seed: int,
-    robot_capacity: int,
     exploration: str = "mode",
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Concurrent]:
     device = torch.device("cpu")
@@ -373,7 +381,7 @@ def _rollout_concurrent_sequence(
     idle_steps: list[int] = []
 
     with torch.no_grad():
-        for step in range(1, max_steps + 1):
+        for step in range(1, MAX_STEPS + 1):
             obs_f = td["observation"].unsqueeze(0).to(device).float()
             mask_tm2 = td["action_mask_tm2"].unsqueeze(0).to(device).bool()
             mask_tm3 = td["action_mask_tm3"].unsqueeze(0).to(device).bool()
@@ -432,7 +440,7 @@ def _rollout_concurrent_sequence(
     }
     replay_env_overrides = {
         "process_time_map": dict(getattr(env.net, "_base_proc_time_map", {})),
-        "robot_capacity": int(robot_capacity),
+        "robot_capacity": 1,
         "device_mode": "concurrent",
         "single_route_name": getattr(env.net, "single_route_name", None),
     }
@@ -444,9 +452,7 @@ def _rollout_concurrent_sequence(
 
 def _rollout_concurrent_sequence_with_retry(
     model_path: Path,
-    max_steps: int,
     seed: int,
-    robot_capacity: int,
     max_retries: int = 10,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], bool, Env_PN_Concurrent]:
     if max_retries < 1:
@@ -461,9 +467,7 @@ def _rollout_concurrent_sequence_with_retry(
         attempt_seed = seed + attempt
         sequence, finished, replay_env_overrides, reward_report, env = _rollout_concurrent_sequence(
             model_path=model_path,
-            max_steps=max_steps,
             seed=attempt_seed,
-            robot_capacity=robot_capacity,
             exploration="mode" if attempt == 0 else "random",
         )
         last_sequence = sequence
@@ -483,42 +487,33 @@ def _rollout_concurrent_sequence_with_retry(
 
 def rollout_and_export(
     model_path: Path,
-    max_steps: int,
     seed: int,
     out_name: str,
-    force_overwrite_planb: bool,
-    device_mode: str,
-    robot_capacity: int,
-    single_retries: int,
+    concurrent: bool,
+    retry: int,
     gantt_png_path: Path | None = None,
     gantt_title_suffix: str | None = None,
 ) -> dict[str, Path]:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
-    if device_mode == "single":
-        sequence, replay_env_overrides, reward_report, _finished, env = _rollout_single_sequence_with_retry(
+    if concurrent:
+        sequence, replay_env_overrides, reward_report, _finished, env = _rollout_concurrent_sequence_with_retry(
             model_path=model_path,
-            max_steps=max_steps,
             seed=seed,
-            robot_capacity=robot_capacity,
-            max_retries=single_retries,
-            device_mode="single",
+            max_retries=retry,
         )
-        payload: dict[str, Any] | list[dict[str, Any]] = {
+        payload: dict[str, Any] = {
             "reward_report": reward_report,
             "schema_version": 2,
-            "device_mode": "single",
+            "device_mode": "concurrent",
             "sequence": sequence,
             "replay_env_overrides": replay_env_overrides,
         }
-    elif device_mode == "cascade":
+    else:
         sequence, replay_env_overrides, reward_report, _finished, env = _rollout_single_sequence_with_retry(
             model_path=model_path,
-            max_steps=max_steps,
             seed=seed,
-            robot_capacity=robot_capacity,
-            max_retries=single_retries,
-            device_mode="cascade",
+            max_retries=retry,
         )
         sequence_dual = []
         for item in sequence:
@@ -537,26 +532,8 @@ def rollout_and_export(
             "sequence": sequence_dual,
             "replay_env_overrides": replay_env_overrides,
         }
-    elif device_mode == "concurrent":
-        sequence, replay_env_overrides, reward_report, _finished, env = _rollout_concurrent_sequence_with_retry(
-            model_path=model_path,
-            max_steps=max_steps,
-            seed=seed,
-            robot_capacity=robot_capacity,
-            max_retries=single_retries,
-        )
-        payload = {
-            "reward_report": reward_report,
-            "schema_version": 2,
-            "device_mode": "concurrent",
-            "sequence": sequence,
-            "replay_env_overrides": replay_env_overrides,
-        }
-    else:
-        raise ValueError(f"不支持的 device_mode: {device_mode}")
 
-    safe_out_name = safe_name(str(out_name), "export")
-    action_series_path = action_sequence_path(safe_out_name)
+    action_series_path = _action_sequence_export_path(out_name, env)
 
     with action_series_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -569,46 +546,28 @@ def rollout_and_export(
 
 def main() -> None:
     default_model = model_output_path("CT_single_best.pt")
-    parser = argparse.ArgumentParser(description="导出推理动作序列（级联/单设备）")
+    parser = argparse.ArgumentParser(description="导出推理动作序列（默认级联；--concurrent 为双头并发模型）")
     parser.add_argument("--model", type=Path, default=default_model, help="模型权重路径")
-    parser.add_argument("--max-steps", type=int, default=500, help="最大推理步数")
     parser.add_argument("--seed", type=int, default=0, help="随机种子")
     parser.add_argument(
         "--out-name",
         type=str,
         default="tmp",
-        help="results/action_sequences 下 JSON 文件名（不含 .json）",
+        help="JSON 主文件名前缀（不含 .json）；实际文件名为 <前缀>(W晶圆数-M时刻).json",
     )
     parser.add_argument(
-        "--device",
-        type=str,
-        default="cascade",
-        choices=["cascade", "single"],
-        help="设备模式：cascade=级联双机械手，single=单设备单动作",
-    )
-    parser.add_argument(
-        "--robot-capacity",
-        type=int,
-        default=1,
-        choices=[1, 2],
-        help="单设备机械手容量（仅 single 模式生效）",
-    )
-    parser.add_argument(
-        "--force-overwrite-planb",
+        "--concurrent",
         action="store_true",
-        help="允许覆盖 solutions/Td_petri/planB_sequence.json",
+        help="使用 DualHeadPolicyNet（Env_PN_Concurrent）；默认使用级联 MaskedPolicyHead",
     )
     parser.add_argument(
-        "--single-retries",
+        "--retry",
         type=int,
         default=10,
-        help="single 模式未 finish 时的最大重试次数",
+        help="未 finish 时的最大重试次数",
     )
     args = parser.parse_args()
     out_name = args.out_name
-    selected_device = args.device
-    if out_name == "concurrent_infer_seq" and selected_device == "single":
-        out_name = "single_infer_seq"
     raw_model = args.model
     cand = Path(raw_model)
     if cand.is_file():
@@ -617,13 +576,10 @@ def main() -> None:
         model_path = model_output_path(str(raw_model)).resolve()
     out = rollout_and_export(
         model_path=model_path,
-        max_steps=args.max_steps,
         seed=args.seed,
         out_name=out_name,
-        force_overwrite_planb=args.force_overwrite_planb,
-        device_mode=selected_device,
-        robot_capacity=args.robot_capacity,
-        single_retries=args.single_retries,
+        concurrent=bool(args.concurrent),
+        retry=int(args.retry),
     )
 
     print(f"[INFO] 已导出 action_series: {out['action_series_path']}")
