@@ -69,6 +69,32 @@ else:
     step_core_numba = _step_core_numpy
 
 
+def _load_cascade_runtime_config(
+    *,
+    n_wafer: Optional[int] = None,
+    single_route_config: Optional[Dict[str, Any]] = None,
+    single_route_name: Optional[str] = None,
+    process_time_map: Optional[Dict[str, int]] = None,
+    wait_durations: Optional[List[int]] = None,
+) -> PetriEnvConfig:
+    config_dir = Path(__file__).parents[2] / "config" / "cluster_tool"
+    base_config = PetriEnvConfig.load(config_dir / "cascade.yaml")
+    payload = base_config.model_dump(mode="python")
+    if n_wafer is not None:
+        payload["n_wafer"] = int(n_wafer)
+    if single_route_config is not None:
+        payload["single_route_config"] = dict(single_route_config)
+    if single_route_name is not None:
+        payload["single_route_name"] = str(single_route_name)
+    if process_time_map is not None:
+        payload["process_time_map"] = {
+            str(chamber): int(value) for chamber, value in dict(process_time_map).items()
+        }
+    if wait_durations is not None:
+        payload["wait_durations"] = [int(value) for value in list(wait_durations)]
+    return PetriEnvConfig.model_validate(payload)
+
+
 class Env_PN_Single(EnvBase):
     """
     单设备 Petri 网 RL 环境。训练时应传入 device="cpu"（与 train_single 约定一致）。
@@ -78,21 +104,16 @@ class Env_PN_Single(EnvBase):
 
     def __init__(self, device: str = "cpu", seed=None, eval_mode: bool = False,
                  single_route_config: Optional[Dict[str, Any]] = None, single_route_name: Optional[str] = None,
-                 process_time_map: Optional[Dict[str, int]] = None):
+                 process_time_map: Optional[Dict[str, int]] = None, n_wafer: Optional[int] = None):
         super().__init__(device=device)
         self.eval_mode = eval_mode
 
-        dir = Path(__file__).parents[2] / "config" / "cluster_tool"
-        path = dir / "cascade.yaml"
-        config = PetriEnvConfig.load(path)
-        if single_route_config is not None:
-            config.single_route_config = dict(single_route_config)
-        if single_route_name is not None:
-            config.single_route_name = str(single_route_name)
-        if process_time_map is not None:
-            config.process_time_map = {
-                str(chamber): int(value) for chamber, value in dict(process_time_map).items()
-            }
+        config = _load_cascade_runtime_config(
+            n_wafer=n_wafer,
+            single_route_config=single_route_config,
+            single_route_name=single_route_name,
+            process_time_map=process_time_map,
+        )
 
         self.net = ClusterTool(config=config, concurrent=False)
         # 与 pn_single 保持同一份 wait 档位来源，避免 env/net 两处规则漂移。
@@ -234,11 +255,24 @@ class Env_PN_Concurrent(EnvBase):
     metadata = {'render.modes': ['human', 'rgb_array'], "reder_fps": 30}
     batch_locked = False
 
-    def __init__(self, device: str = "cpu", seed=None):
+    def __init__(
+        self,
+        device: str = "cpu",
+        seed=None,
+        *,
+        n_wafer: Optional[int] = None,
+        single_route_config: Optional[Dict[str, Any]] = None,
+        single_route_name: Optional[str] = None,
+        process_time_map: Optional[Dict[str, int]] = None,
+    ):
         super().__init__(device=device)
-        dir = Path(__file__).parents[2] / "config" / "cluster_tool"
-        config = PetriEnvConfig.load(dir / "cascade.yaml")
-        config.wait_durations = [5]
+        config = _load_cascade_runtime_config(
+            n_wafer=n_wafer,
+            single_route_config=single_route_config,
+            single_route_name=single_route_name,
+            process_time_map=process_time_map,
+            wait_durations=[5],
+        )
 
         self.net = ClusterTool(config=config, concurrent=True)
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))

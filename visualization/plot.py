@@ -294,10 +294,10 @@ def plot_gantt_hatched_residence(
         ax.set_yticks([])
         
         # 添加垂直网格线提高时间轴可读性
-        # 主刻度：500（显示在坐标轴上 + 大网格）
-        ax.xaxis.set_major_locator(MultipleLocator(500))
-        # 次刻度：50（只用于小网格，不显示在坐标轴）
-        ax.xaxis.set_minor_locator(MultipleLocator(50))
+        # 主刻度：1000（显示在坐标轴上 + 大网格）
+        ax.xaxis.set_major_locator(MultipleLocator(1000))
+        # 次刻度：200（只用于小网格，不显示在坐标轴）
+        ax.xaxis.set_minor_locator(MultipleLocator(200))
         # 大网格（主刻度）
         ax.grid(True, axis='x', which='major',
                 linestyle='--', linewidth=0.6, alpha=0.4, color='#94A3B8')

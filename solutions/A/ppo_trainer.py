@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from collections import defaultdict, deque
 from datetime import datetime
 from time import perf_counter
@@ -64,6 +65,65 @@ class DualActionPolicyModule(nn.Module):
 
     def forward(self, observation_f):
         return self.backbone(observation_f)
+
+
+def _env_override_kwargs(env_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not env_overrides:
+        return {}
+    allowed_keys = ("n_wafer", "single_route_config", "single_route_name", "process_time_map")
+    return {
+        key: env_overrides[key]
+        for key in allowed_keys
+        if key in env_overrides and env_overrides[key] is not None
+    }
+
+
+def _build_single_env(
+    *,
+    device: str = "cpu",
+    seed: int | None = None,
+    eval_mode: bool = False,
+    env_overrides: dict[str, Any] | None = None,
+) -> Env_PN_Single:
+    return Env_PN_Single(
+        device=device,
+        seed=seed,
+        eval_mode=eval_mode,
+        **_env_override_kwargs(env_overrides),
+    )
+
+
+def _build_concurrent_env(
+    *,
+    device: str = "cpu",
+    seed: int | None = None,
+    env_overrides: dict[str, Any] | None = None,
+) -> Env_PN_Concurrent:
+    return Env_PN_Concurrent(
+        device=device,
+        seed=seed,
+        **_env_override_kwargs(env_overrides),
+    )
+
+
+def _format_batch_progress_line(label: str, current: int, total: int, eta_str: str) -> str:
+    total_i = max(1, int(total))
+    current_i = min(max(0, int(current)), total_i)
+    width = 24
+    filled = int(width * current_i / total_i)
+    bar = "#" * filled + "-" * (width - filled)
+    return f"\r[{bar}] {current_i:>4}/{total_i:<4} {label} ETA={eta_str}"
+
+
+def _write_batch_progress(label: str, current: int, total: int, eta_str: str) -> None:
+    line = _format_batch_progress_line(label, current, total, eta_str)
+    sys.stdout.write(line.ljust(160))
+    sys.stdout.flush()
+
+
+def _finish_batch_progress() -> None:
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 @torch.no_grad()
@@ -217,12 +277,17 @@ def _train_concurrent(
     checkpoint_path: str | None = None,
     artifact_dir: str | Path | None = None,
     rollout_n_envs: int = 1,
+    env_overrides: dict[str, Any] | None = None,
+    batch_progress_only: bool = False,
+    progress_label: str | None = None,
+    return_summary: bool = False,
 ):
     """
     双机械手并发 PPO 训练（Ultra collector + 并行环境 rollout）。
     """
-    print("[Concurrent PPO Training]", flush=True)
-    print(config, flush=True)
+    if not batch_progress_only:
+        print("[Concurrent PPO Training]", flush=True)
+        print(config, flush=True)
 
     torch.manual_seed(config.seed)
     device = config.device
@@ -249,25 +314,27 @@ def _train_concurrent(
     rollout_device = "cpu"
 
     # 从一个探针环境读取动作/观测维度
-    _probe_env = Env_PN_Concurrent(device="cpu")
+    _probe_env = _build_concurrent_env(device="cpu", env_overrides=env_overrides)
     n_obs = _probe_env.observation_spec["observation"].shape[0]
     n_actions_tm2 = int(_probe_env.n_actions_tm2)
     n_actions_tm3 = int(_probe_env.n_actions_tm3)
-    if n_actions_tm2 < 2 or n_actions_tm3 < 2:
-        raise ValueError("并发动作空间非法：TM2/TM3 均需包含变迁+WAIT")
+    route_label = _artifact_route_label(_probe_env)
+    #if n_actions_tm2 < 2 or n_actions_tm3 < 2:
+    #    raise ValueError("并发动作空间非法：TM2/TM3 均需包含变迁+WAIT")
     del _probe_env
 
-    print(f"  计算设备: {device}", flush=True)
-    print(f"  环境类型: Env_PN_Concurrent", flush=True)
-    print(
-        f"  Rollout Collector: ultra_concurrent "
-        f"(n_envs={rollout_n_envs}, rollout_device={rollout_device})",
-        flush=True,
-    )
-    print(f"  观测维度: {n_obs}", flush=True)
-    print(f"  TM2 动作空间: {n_actions_tm2}", flush=True)
-    print(f"  TM3 动作空间: {n_actions_tm3}", flush=True)
-    print("  并发 WAIT 规则: 单档 WAIT(5s)", flush=True)
+    if not batch_progress_only:
+        print(f"  计算设备: {device}", flush=True)
+        print(f"  环境类型: Env_PN_Concurrent", flush=True)
+        print(
+            f"  Rollout Collector: ultra_concurrent "
+            f"(n_envs={rollout_n_envs}, rollout_device={rollout_device})",
+            flush=True,
+        )
+        print(f"  观测维度: {n_obs}", flush=True)
+        print(f"  TM2 动作空间: {n_actions_tm2}", flush=True)
+        print(f"  TM3 动作空间: {n_actions_tm3}", flush=True)
+        print("  并发 WAIT 规则: 单档 WAIT(5s)", flush=True)
 
     backbone = DualHeadPolicyNet(
         n_obs=n_obs,
@@ -279,7 +346,8 @@ def _train_concurrent(
     policy_module = DualActionPolicyModule(backbone).to(device)
 
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
-        print(f"从 checkpoint 加载: {checkpoint_path}", flush=True)
+        if not batch_progress_only:
+            print(f"从 checkpoint 加载: {checkpoint_path}", flush=True)
         state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
         policy_module.load_state_dict(state_dict)
 
@@ -306,11 +374,15 @@ def _train_concurrent(
     run_name = "train_concurrent"
     if artifact_dir is not None:
         run_name = safe_name(Path(str(artifact_dir)).name, "train_concurrent")
+    progress_text = progress_label or route_label or run_name
     best_model_path = model_output_path("CT_concurrent_best.pt")
     run_best_model_path = model_output_path(f"{run_name}_best.pt")
     run_final_model_path = model_output_path(f"{run_name}_final.pt")
 
     best_reward = float("-inf")
+    best_batch_index = 0
+    best_batch_makespan = 0.0
+    best_batch_reward = float("-inf")
     log = defaultdict(list)
 
     training_start = perf_counter()
@@ -330,7 +402,7 @@ def _train_concurrent(
 
         steps_per_env = max(1, (int(config.frames_per_batch) + rollout_n_envs - 1) // rollout_n_envs)
         rollout_cpu, ultra_state = collect_rollout_ultra_concurrent(
-            env_fn=lambda: Env_PN_Concurrent(device="cpu"),
+            env_fn=lambda: _build_concurrent_env(device="cpu", env_overrides=env_overrides),
             policy=policy_for_rollout,
             n_steps=steps_per_env,
             n_envs=rollout_n_envs,
@@ -430,21 +502,28 @@ def _train_concurrent(
         log["value_loss"].append(update_stats["value_loss"])
         log["entropy"].append(update_stats["entropy"])
 
-        print(
-            f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
-            f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
-            f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
-            f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
-            f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
-            flush=True,
-        )
+        if batch_progress_only:
+            _write_batch_progress(progress_text, batch_idx + 1, int(config.total_batch), eta_str)
+        else:
+            print(
+                f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
+                f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
+                f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
+                f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
+                f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
+                flush=True,
+            )
 
         if ep_reward > best_reward and finish_count > 0:
             best_reward = ep_reward
+            best_batch_index = batch_idx + 1
+            best_batch_makespan = avg_makespan
+            best_batch_reward = ep_reward
             torch.save(policy_module.state_dict(), best_model_path)
             torch.save(policy_module.state_dict(), run_best_model_path)
             torch.save(policy_module.state_dict(), backup_dir / "CT_concurrent_best.pt")
-            print(f"  -> New best model! reward={ep_reward:.2f}", flush=True)
+            if not batch_progress_only:
+                print(f"  -> New best model! reward={ep_reward:.2f}", flush=True)
 
     total_training_time = perf_counter() - training_start
     total_rollout = sum(log["rollout_time"])
@@ -456,21 +535,25 @@ def _train_concurrent(
     rollout_pct = (avg_rollout / avg_batch * 100) if avg_batch > 0 else 0.0
     update_pct = (avg_update / avg_batch * 100) if avg_batch > 0 else 0.0
 
-    print("\n[Concurrent Training Summary]", flush=True)
-    print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
-    print(f"  总 env steps: {total_env_steps}", flush=True)
-    print(
-        f"  平均 batch: {avg_batch:.2f}s "
-        f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
-        f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
-        flush=True,
-    )
-    print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
-    print(f"  Best reward: {best_reward:.2f}", flush=True)
+    if batch_progress_only:
+        _finish_batch_progress()
+    else:
+        print("\n[Concurrent Training Summary]", flush=True)
+        print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
+        print(f"  总 env steps: {total_env_steps}", flush=True)
+        print(
+            f"  平均 batch: {avg_batch:.2f}s "
+            f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
+            f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
+            flush=True,
+        )
+        print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
+        print(f"  Best reward: {best_reward:.2f}", flush=True)
 
     torch.save(policy_module.state_dict(), backup_dir / "CT_concurrent_final.pt")
     torch.save(policy_module.state_dict(), run_final_model_path)
-    print(f"Best model: {best_model_path}", flush=True)
+    if not batch_progress_only:
+        print(f"Best model: {best_model_path}", flush=True)
 
     training_log_path = training_log_output_path(f"{run_name}_training_log.json")
     training_metrics_path = training_log_output_path(f"{run_name}_training_metrics.json")
@@ -478,16 +561,29 @@ def _train_concurrent(
     _save_training_log_json(log, training_log_path)
     _save_training_metrics_json(log, training_metrics_path)
     if log.get("reward"):
-        plot_metrics(training_metrics_path, metrics_png, route_label="路径 concurrent")
-        print(f"[artifact] metrics_plot={metrics_png}", flush=True)
-    route_label = _artifact_route_label(Env_PN_Concurrent(device="cpu"))
+        plot_metrics(training_metrics_path, metrics_png, route_label=route_label or "路径 concurrent")
+        if not batch_progress_only:
+            print(f"[artifact] metrics_plot={metrics_png}", flush=True)
     _postprocess_training_artifacts(
-        best_model_path,
+        run_best_model_path,
         run_name,
         config,
         route_label,
         concurrent=True,
+        env_overrides=env_overrides,
+        verbose=not batch_progress_only,
     )
+    has_best_batch = best_batch_index > 0
+    summary = {
+        "best_batch_index": int(best_batch_index),
+        "best_batch_reward": float(best_batch_reward) if has_best_batch else None,
+        "best_batch_makespan": float(best_batch_makespan) if has_best_batch else None,
+        "training_time_seconds": float(total_training_time),
+        "best_model_path": str(run_best_model_path) if run_best_model_path.is_file() else None,
+        "run_name": run_name,
+    }
+    if return_summary:
+        return log, policy_module, summary
     return log, policy_module
 
 
@@ -1107,9 +1203,12 @@ def _postprocess_training_artifacts(
     config: PPOTrainingConfig,
     route_label: str | None,
     concurrent: bool = False,
+    env_overrides: dict[str, Any] | None = None,
+    verbose: bool = True,
 ) -> None:
     if not best_model_path.is_file():
-        print("[artifact] 无 best 模型，跳过序列导出", flush=True)
+        if verbose:
+            print("[artifact] 无 best 模型，跳过序列导出", flush=True)
         return
     safe_run_name = safe_name(
         run_name,
@@ -1125,10 +1224,13 @@ def _postprocess_training_artifacts(
         retry=10,
         gantt_png_path=gantt_png,
         gantt_title_suffix=route_label,
+        env_overrides=env_overrides,
+        verbose=verbose,
     )
     seq_path = out["action_series_path"]
-    print(f"[artifact] seq={seq_path}", flush=True)
-    print(f"[artifact] gantt={gantt_png}", flush=True)
+    if verbose:
+        print(f"[artifact] seq={seq_path}", flush=True)
+        print(f"[artifact] gantt={gantt_png}", flush=True)
 
 
 def train_single(
@@ -1138,6 +1240,10 @@ def train_single(
     rollout_n_envs: int = 1,
     artifact_dir: str | Path | None = None,
     concurrent: bool = True,
+    env_overrides: dict[str, Any] | None = None,
+    batch_progress_only: bool = False,
+    progress_label: str | None = None,
+    return_summary: bool = False,
 ):
     assert config is not None, "training config must be provided"
 
@@ -1147,6 +1253,10 @@ def train_single(
             checkpoint_path=checkpoint_path,
             artifact_dir=artifact_dir,
             rollout_n_envs=rollout_n_envs,
+            env_overrides=env_overrides,
+            batch_progress_only=batch_progress_only,
+            progress_label=progress_label,
+            return_summary=return_summary,
         )
 
     print("[Single PPO Training]", flush=True)

@@ -34,6 +34,16 @@ python -m visualization.main --device cascade --model results/models/quickstart_
 
 可视化依赖 `PySide6`。未传 `--model` 时会进入手动模式；如需回放导出的序列，在界面中加载 `results/action_sequences/` 下本次导出的 `quickstart(W…-M…).json`。
 
+## 多路线批量训练与评估
+
+若要一次性按多条路线执行并发训练与评估，先编辑 [solutions/A/eval/validate_all_routes.py](/D:/Code/CT/solutions/A/eval/validate_all_routes.py) 中的 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE`。前者填写每条路线的训练/评估晶圆数，后者为每条路线指定 `simple` / `medium` / `promax` 三档训练配置。
+
+```bash
+python -m solutions.A.eval.validate_all_routes --rollout-n-envs 1
+```
+
+运行期间训练阶段只显示一个 batch 进度条。最终会把汇总结果写到 `results/training_logs/validate_all_routes_summary.json`，其中包含每条路线的训练晶圆、best batch makespan、评估晶圆、评估 makespan、训练时间和评估动作序列路径。
+
 ## Python 导入入口
 
 `solutions` 顶层支持直接导入 `A` / `B` 下的无重名模块；重名模块不会扁平化到顶层。

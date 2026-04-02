@@ -36,6 +36,17 @@ from results.paths import ACTION_SEQUENCES_DIR, ensure_results_dirs, model_outpu
 MAX_STEPS = 10000
 
 
+def _env_override_kwargs(env_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not env_overrides:
+        return {}
+    allowed_keys = ("n_wafer", "single_route_config", "single_route_name", "process_time_map")
+    return {
+        key: env_overrides[key]
+        for key in allowed_keys
+        if key in env_overrides and env_overrides[key] is not None
+    }
+
+
 def _action_sequence_export_path(out_name: str, env: Env_PN_Single | Env_PN_Concurrent) -> Path:
     """`results/action_sequences/<safe(out_name)>(W{n_wafer}-M{time}).json`。"""
     base = safe_name(str(out_name), "export")
@@ -193,10 +204,11 @@ def _rollout_single_sequence(
     model_path: Path,
     seed: int,
     exploration: str = "mode",
+    env_overrides: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Single]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Single(seed=seed, eval_mode=True)
+    env = Env_PN_Single(seed=seed, eval_mode=True, **_env_override_kwargs(env_overrides))
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()
@@ -275,6 +287,8 @@ def _rollout_single_sequence_with_retry(
     model_path: Path,
     seed: int,
     max_retries: int = 10,
+    env_overrides: dict[str, Any] | None = None,
+    verbose: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], bool, Env_PN_Single]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
@@ -290,6 +304,7 @@ def _rollout_single_sequence_with_retry(
             model_path=model_path,
             seed=attempt_seed,
             exploration="mode" if attempt == 0 else "random",
+            env_overrides=env_overrides,
         )
         last_sequence = sequence
         last_overrides = replay_env_overrides
@@ -298,10 +313,12 @@ def _rollout_single_sequence_with_retry(
         last_env = env
         if finished:
             if attempt > 0:
-                print(f"[INFO] 级联模式第 {attempt + 1} 次推理达到 finish。")
+                if verbose:
+                    print(f"[INFO] 级联模式第 {attempt + 1} 次推理达到 finish。")
             return sequence, replay_env_overrides, reward_report, finished, env
 
-    print(f"[WARN] 级联模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
+    if verbose:
+        print(f"[WARN] 级联模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
     assert last_env is not None
     return last_sequence, last_overrides, last_report, last_finished, last_env
 
@@ -366,10 +383,11 @@ def _rollout_concurrent_sequence(
     model_path: Path,
     seed: int,
     exploration: str = "mode",
+    env_overrides: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Concurrent]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Concurrent(device="cpu")
+    env = Env_PN_Concurrent(device="cpu", **_env_override_kwargs(env_overrides))
     env.net.eval()
     policy_module = _build_concurrent_policy(env, model_path=model_path, device=device)
 
@@ -454,6 +472,8 @@ def _rollout_concurrent_sequence_with_retry(
     model_path: Path,
     seed: int,
     max_retries: int = 10,
+    env_overrides: dict[str, Any] | None = None,
+    verbose: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], bool, Env_PN_Concurrent]:
     if max_retries < 1:
         raise ValueError("max_retries 必须 >= 1")
@@ -469,6 +489,7 @@ def _rollout_concurrent_sequence_with_retry(
             model_path=model_path,
             seed=attempt_seed,
             exploration="mode" if attempt == 0 else "random",
+            env_overrides=env_overrides,
         )
         last_sequence = sequence
         last_overrides = replay_env_overrides
@@ -477,10 +498,12 @@ def _rollout_concurrent_sequence_with_retry(
         last_env = env
         if finished:
             if attempt > 0:
-                print(f"[INFO] concurrent 模式第 {attempt + 1} 次推理达到 finish。")
+                if verbose:
+                    print(f"[INFO] concurrent 模式第 {attempt + 1} 次推理达到 finish。")
             return sequence, replay_env_overrides, reward_report, finished, env
 
-    print(f"[WARN] concurrent 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
+    if verbose:
+        print(f"[WARN] concurrent 模式重试 {max_retries} 次后仍未 finish，导出最后一次序列。")
     assert last_env is not None
     return last_sequence, last_overrides, last_report, last_finished, last_env
 
@@ -493,7 +516,9 @@ def rollout_and_export(
     retry: int,
     gantt_png_path: Path | None = None,
     gantt_title_suffix: str | None = None,
-) -> dict[str, Path]:
+    env_overrides: dict[str, Any] | None = None,
+    verbose: bool = True,
+) -> dict[str, Any]:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     if concurrent:
@@ -501,6 +526,8 @@ def rollout_and_export(
             model_path=model_path,
             seed=seed,
             max_retries=retry,
+            env_overrides=env_overrides,
+            verbose=verbose,
         )
         payload: dict[str, Any] = {
             "reward_report": reward_report,
@@ -514,6 +541,8 @@ def rollout_and_export(
             model_path=model_path,
             seed=seed,
             max_retries=retry,
+            env_overrides=env_overrides,
+            verbose=verbose,
         )
         sequence_dual = []
         for item in sequence:
@@ -541,7 +570,13 @@ def rollout_and_export(
     if gantt_png_path is not None:
         env.net.render_gantt(str(gantt_png_path), title_suffix=gantt_title_suffix)
 
-    return {"action_series_path": action_series_path}
+    return {
+        "action_series_path": action_series_path,
+        "makespan": int(env.net.time),
+        "n_wafer": int(env.net.n_wafer),
+        "finished": bool(_finished),
+        "single_route_name": getattr(env.net, "single_route_name", None),
+    }
 
 
 def main() -> None:

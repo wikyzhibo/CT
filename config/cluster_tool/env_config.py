@@ -53,6 +53,7 @@ class PetriEnvConfig(BaseModel):
     single_route_config: Optional[Dict[str, Any]] = None
     single_route_config_path: Optional[str] = None
     single_route_name: Optional[str] = None
+    process_time_map: Optional[Dict[str, int]] = None
     wait_durations: List[int] = Field(default_factory=_default_wait_durations)
     stride: bool = True
 
@@ -77,6 +78,9 @@ class PetriEnvConfig(BaseModel):
         if route_name not in routes_cfg:
             raise ValueError(f"single_route_name not found in single_route_config.routes: {route_name}")
         self.single_route_name = route_name
+        self.process_time_map = {
+            str(name): int(value) for name, value in dict(self.process_time_map or {}).items()
+        }
         if self.chambers is not None:
             pt_map = dict(self.process_time_map)
             for name, spec in self.chambers.items():

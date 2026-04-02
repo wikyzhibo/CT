@@ -3,18 +3,20 @@
 ## Abstract
 
 - **What**：`PPOTrainingConfig` 为 Pydantic 模型；磁盘格式以 **YAML** 为主（`.yaml`/`.yml`），`load` 仍可读 **JSON**（`.json`）。
-- **When**：调整 PPO 超参、复现实验时编辑 `s_train.yaml` 或通过 `PPOTrainingConfig.load(path)` 加载。
+- **When**：调整 PPO 超参、配置多路线训练档位时编辑 `simple.yaml` / `medium.yaml` / `promax.yaml` / `s_train.yaml`，或通过 `PPOTrainingConfig.load(path)` 加载。
 - **Not**：本类不包含行为克隆等未在 `training_config.py` 中声明的字段；多余键会被忽略。
 - **Key rules**：根目录 `requirements.txt` 需包含 `pydantic>=2`、`PyYAML>=6`。
 
 ## 目录结构
 
 ```
-data/ppo_configs/
+config/training/
 ├── __init__.py
 ├── training_config.py          # PPOTrainingConfig（Pydantic）
-├── s_train.yaml                # 级联训练默认超参（主路径）
-├── usage_example.py
+├── simple.yaml                 # 轻量路线训练档位
+├── medium.yaml                 # 中等路线训练档位
+├── promax.yaml                 # 高难路线训练档位
+├── s_train.yaml                # A 方案默认单路线训练档位
 └── README.md
 ```
 
@@ -48,7 +50,7 @@ data/ppo_configs/
 ### 方法1: 使用配置对象
 
 ```python
-from data.ppo_configs.training_config import PPOTrainingConfig
+from config.training.training_config import PPOTrainingConfig
 
 # 创建默认配置
 config = PPOTrainingConfig()
@@ -67,10 +69,10 @@ log, policy = train(env, eval_env, config=config)
 ### 方法2: 从配置文件加载
 
 ```python
-from data.ppo_configs.training_config import PPOTrainingConfig
+from config.training.training_config import PPOTrainingConfig
 
 # 加载配置文件
-config = PPOTrainingConfig.load("data/ppo_configs/s_train.yaml")
+config = PPOTrainingConfig.load("config/training/simple.yaml")
 
 # 训练
 log, policy = train(env, eval_env, config=config)
@@ -83,7 +85,7 @@ log, policy = train(env, eval_env, config=config)
 log, policy = train(
     env, 
     eval_env, 
-    config_path="data/ppo_configs/phase2_config.json"
+    config_path="config/training/promax.yaml"
 )
 ```
 
@@ -96,7 +98,7 @@ config.save("data/ppo_configs/my_config.yaml")  # 或 .json，由后缀决定格
 
 ## 配置文件管理
 
-`solutions/C/train.py` 在每次训练开始会将当前配置写入 `results/training_logs/`，文件名形如 `config_ppo_{时间戳}.yaml`（后缀由 `save` 路径决定）。
+`solutions.A.eval.validate_all_routes` 会按路线映射选择 `simple.yaml` / `medium.yaml` / `promax.yaml`，并把训练汇总写入 `results/training_logs/validate_all_routes_summary.json`。`solutions/C/train.py` 在每次训练开始时仍会把当前配置写入 `results/training_logs/`，文件名形如 `config_ppo_{时间戳}.yaml`（后缀由 `save` 路径决定）。
 
 ## Related Docs
 

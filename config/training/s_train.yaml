@@ -1,7 +1,7 @@
 n_hidden: 256 #
 n_layer: 4
-total_batch: 15
-sub_batch_size: 128
+total_batch: 60
+sub_batch_size: 256
 num_epochs: 10
 gamma: 0.99
 gae_lambda: 0.95
