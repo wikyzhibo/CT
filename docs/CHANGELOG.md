@@ -2,9 +2,15 @@
 
 ## 2026-04-02
 
+### A 方案：`validate_all_routes` 路线配置合并为 `ROUTE_PLAN`（2026-04-02）
+
+- **What changed**：`solutions/A/eval/validate_all_routes.py` 删除 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE`，改为单一 `ROUTE_PLAN`；每条路线统一声明 `train`、`eval`、`profile`。默认计划中为 `4-2` / `4-3` 补齐 `low` 档位。`run_all_routes(...)` 改为只接收 `route_plan`。`tests/test_validate_all_routes.py`、`README.md`、`docs/training/training-guide.md`、`config/training/README.md` 同步切到新结构。
+- **Why**：路线晶圆计划与训练档位本质上属于同一份配置，拆成两张表会引入重复维护和缺项风险。
+- **Impact**：多路线批跑配置入口收敛为 `ROUTE_PLAN`；训练档位真源统一为 `low` / `medium` / `high`，分别映射到 `config/training/low.yaml`、`medium.yaml`、`high.yaml`。
+
 ### A 方案：新增多路线并发训练/评估入口 `validate_all_routes`（2026-04-02）
 
-- **What changed**：新增 `solutions/A/eval/validate_all_routes.py`。该入口按 `ROUTE_WAFER_PLAN` 指定的训练/评估晶圆数与 `ROUTE_TRAINING_PROFILE` 指定的 `simple` / `medium` / `promax` 档位，顺序执行多路线 concurrent 训练与评估，并把汇总结果写入 `results/training_logs/validate_all_routes_summary.json`。`solutions/A/ppo_trainer.py` 的并发训练新增 `env_overrides`、`batch_progress_only`、`return_summary`；批量模式下不再打印训练配置或逐 batch 指标，只显示单行进度条。`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 支持 `n_wafer` / `single_route_name` / `single_route_config` / `process_time_map` 运行时覆盖。`solutions/A/eval/export_inference_sequence.py` 的 `rollout_and_export(...)` 支持 overrides，并返回 `makespan` / `n_wafer` / `finished` / `single_route_name` 等结构化结果。
+- **What changed**：新增 `solutions/A/eval/validate_all_routes.py`。该入口按 `ROUTE_PLAN` 指定的训练/评估晶圆数与 `low` / `medium` / `high` 档位，顺序执行多路线 concurrent 训练与评估，并把汇总结果写入 `results/training_logs/validate_all_routes_summary.json`。`solutions/A/ppo_trainer.py` 的并发训练新增 `env_overrides`、`batch_progress_only`、`return_summary`；批量模式下不再打印训练配置或逐 batch 指标，只显示单行进度条。`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 支持 `n_wafer` / `single_route_name` / `single_route_config` / `process_time_map` 运行时覆盖。`solutions/A/eval/export_inference_sequence.py` 的 `rollout_and_export(...)` 支持 overrides，并返回 `makespan` / `n_wafer` / `finished` / `single_route_name` 等结构化结果。
 - **Why**：需要一次性训练并评估若干路径，且训练晶圆数、评估晶圆数和训练档位都按路线区分，同时避免统一训练时刷出逐 batch 日志。
 - **Impact**：多路线统一训练固定走 concurrent 口径，路线真源仍是 `single_route_name + single_route_config`；训练结果中的 makespan 取 best batch 指标，评估 makespan 取 best 权重在评估晶圆数上的 rollout 结果。若某路线未产出 best 模型，该路线评估字段会保留为空。
 

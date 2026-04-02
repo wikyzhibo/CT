@@ -36,7 +36,7 @@ python -m visualization.main --device cascade --model results/models/quickstart_
 
 ## 多路线批量训练与评估
 
-若要一次性按多条路线执行并发训练与评估，先编辑 [solutions/A/eval/validate_all_routes.py](/D:/Code/CT/solutions/A/eval/validate_all_routes.py) 中的 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE`。前者填写每条路线的训练/评估晶圆数，后者为每条路线指定 `simple` / `medium` / `promax` 三档训练配置。
+若要一次性按多条路线执行并发训练与评估，先编辑 [solutions/A/eval/validate_all_routes.py](/D:/Code/CT/solutions/A/eval/validate_all_routes.py) 中的 `ROUTE_PLAN`。每条路线都必须同时填写 `train`、`eval` 和 `profile`；`profile` 只接受 `low` / `medium` / `high`，分别对应 `config/training/low.yaml`、`medium.yaml`、`high.yaml`。
 
 ```bash
 python -m solutions.A.eval.validate_all_routes --rollout-n-envs 1

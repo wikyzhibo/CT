@@ -20,7 +20,7 @@
   - UI 回放细节。
 
 ## Architecture or Data Flow
-1. 读取配置（`config/training/simple.yaml` / `medium.yaml` / `promax.yaml` / `s_train.yaml`）。
+1. 读取配置（`config/training/low.yaml` / `medium.yaml` / `high.yaml` / `s_train.yaml`）。
 2. 构建环境 (`Env_PN_Single` 或 `Env_PN_Concurrent`)。
 3. rollout 采样与 PPO 更新。
 4. 保存 best/final 权重。
@@ -46,8 +46,8 @@
 - A 方案多路线批量训练 + 评估（固定并发）:
   - `python -m solutions.A.eval.validate_all_routes`
   - 可选参数: `--retry`, `--compute-device`, `--rollout-n-envs`
-  - 路线与晶圆数在 `solutions/A/eval/validate_all_routes.py` 的 `ROUTE_WAFER_PLAN` 中配置；路线与训练档位映射在 `ROUTE_TRAINING_PROFILE` 中配置
-  - 训练档位只接受 `simple` / `medium` / `promax`，分别从 `config/training/simple.yaml`、`medium.yaml`、`promax.yaml` 读取
+  - 路线配置在 `solutions/A/eval/validate_all_routes.py` 的 `ROUTE_PLAN` 中统一维护；每条路线必须同时提供 `train`、`eval`、`profile`
+  - 训练档位只接受 `low` / `medium` / `high`，分别从 `config/training/low.yaml`、`medium.yaml`、`high.yaml` 读取
   - 统一训练时 `solutions.A.ppo_trainer` 不打印训练配置和逐 batch 指标，只显示一个 batch 进度条；最终汇总写入 `results/training_logs/validate_all_routes_summary.json`
 - 导出推理序列:
   - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `DualHeadPolicyNet`；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
@@ -88,7 +88,7 @@
 - 导出脚本按 `--out-name` 写入 `results/action_sequences/<out_name>(W-M).json`（后缀由 `env.net.n_wafer` 与 `env.net.time` 组成）；并发运行须使用不同 `out-name` 或依赖不同 metrics 区分。
 - `training_metrics_plot.png` 由 `eval/plot_train_metrics.py` 绘制：左图 reward（滑动平均）+ makespan 双 y 轴（`makespan==0` 不绘制），右图 finish/scrap 并列柱图；环境若带 `single_route_name`，两子图标题后缀为 `路径 <name>`。标题含中文时依赖系统已安装的无衬线中文字体（Windows 通常已有微软雅黑/黑体；若仍为方框，请安装 Noto Sans CJK 或在环境中配置 Matplotlib 字体）。
 - `solutions.A.ppo_trainer` 在单动作与并发训练结束时，只要 `CT_single_best.pt` / `CT_concurrent_best.pt` 存在即调用 `rollout_and_export`（单动作为 `concurrent=False` 级联导出，并发为 `concurrent=True`），写出动作序列 JSON 并尝试甘特；与是否传入 `--artifact-dir` 无关。甘特文件名由 `plot_gantt_hatched_residence` 在基路径上追加策略后缀（见 `docs/gantt.md`）。`ClusterTool.render_gantt` 从 `fire_log` 写 PNG；若 rollout 无腔室进出事件则调用会失败（见 `docs/gantt.md`）。标题后缀为 `title_suffix`（`路径 <single_route_name>`）。
-- `validate_all_routes` 的 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE` 必须同时覆盖同一组路线；任一缺项都会直接报错。
+- `validate_all_routes` 的 `ROUTE_PLAN` 中每条路线都必须同时提供 `train` / `eval` / `profile`；任一缺项都会直接报错。
 - `validate_all_routes` 的 summary 固定写 `results/training_logs/validate_all_routes_summary.json`；若某路线训练阶段没有产出 best 模型，则该路线评估字段保留为空。
 
 ## Related Docs
@@ -98,7 +98,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
-- 2026-04-02: 新增 `solutions/A/eval/validate_all_routes.py` 作为多路线并发训练/评估入口；路线晶圆数来自 `ROUTE_WAFER_PLAN`，训练档位来自 `ROUTE_TRAINING_PROFILE`；档位固定读取 `config/training/simple.yaml` / `medium.yaml` / `promax.yaml`；统一训练时 `ppo_trainer` 改为单进度条输出并返回结构化 summary；`Env_PN_Concurrent` 与 `rollout_and_export` 支持 `n_wafer` / `single_route_name` / `single_route_config` 覆盖；summary 写入 `results/training_logs/validate_all_routes_summary.json`；见 `docs/CHANGELOG.md`。
+- 2026-04-02: `solutions/A/eval/validate_all_routes.py` 将 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE` 合并为单一 `ROUTE_PLAN`；路线配置统一写 `train` / `eval` / `profile`；训练档位固定读取 `config/training/low.yaml` / `medium.yaml` / `high.yaml`；统一训练时 `ppo_trainer` 改为单进度条输出并返回结构化 summary；summary 写入 `results/training_logs/validate_all_routes_summary.json`；见 `docs/CHANGELOG.md`。
 - 2026-04-02: `solutions/A/eval/export_inference_sequence.py`：CLI 收敛为默认级联、`--concurrent` 选双头模型；移除 `--device`、`--max-steps`、`--robot-capacity`、`--force-overwrite-planb`；`--single-retries` 改为 `--retry`；`rollout_and_export` 使用 `concurrent`/`retry`；`ppo_trainer` 训练产物导出步数与 `MAX_STEPS=10000` 对齐；序列文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。
 - 2026-03-31: `solutions.A.ppo_trainer` 并发训练结束与单动作一致：存在 `CT_concurrent_best.pt` 时 `rollout_and_export(..., concurrent=True)` 导出动作序列与甘特；见 `solutions/A/eval/export_inference_sequence.py`。
 - 2026-03-31: A 方案 `solutions/A/petri_net.py` 中 `ClusterTool.render_gantt` 已实现：由 `fire_log` 写腔室甘特 PNG（见 `docs/gantt.md`）。

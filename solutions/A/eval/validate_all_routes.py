@@ -1,10 +1,8 @@
 from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
 from typing import Any
-
 from config.cluster_tool.env_config import PetriEnvConfig
 from config.training.training_config import PPOTrainingConfig
 from results.paths import gantt_output_path, training_log_output_path
@@ -12,59 +10,41 @@ from solutions.A.eval.export_inference_sequence import rollout_and_export
 from solutions.A.ppo_trainer import train_single
 
 
-# 每条路线训练/评估使用的晶圆数。
+# 每条路线训练/评估使用的晶圆数与训练档位。
 # 注1：1-6 路线存在死锁
 # 注2：3-* 测试路径只取一部分
 # 注3：4-* 4-1未跑通、4-5~4-7 路线仍未建模、4-10~4-12泛化失败、4-15~4-16难度过大未建模
 # 注4：4-* 双腔路线（4-9~4-14）未达到最优
-ROUTE_WAFER_PLAN: dict[str, dict[str, int]] = {
-    "1-1": {"train": 8, "eval": 75}, #1-*单腔线路
-    "1-2": {"train": 8, "eval": 75},
-    "1-3": {"train": 8, "eval": 75},
-    "1-4": {"train": 12, "eval": 75},
-    "1-5": {"train": 10, "eval": 75},
-    "2-1": {"train": 8, "eval": 75}, #2-* 集创赛ABCD路径
-    "2-2": {"train": 6, "eval": 75},
-    "2-3": {"train": 6, "eval": 75},
-    "2-4": {"train": 6, "eval": 75},
-    "3-1": {"train": 9, "eval": 75}, #3-* 单腔测试路径
-    "3-2": {"train": 6, "eval": 75},
-    "3-3": {"train": 6, "eval": 75},
-    "4-2": {"train": 8, "eval": 75}, #4-* 双腔路径
-    "4-3": {"train": 8, "eval": 75},
-    "4-8": {"train": 10, "eval": 75},
-    "4-9": {"train": 12, "eval": 75},
-    "4-10": {"train": 12, "eval": 75},
-    "4-11": {"train": 12, "eval": 75},
-    "4-12": {"train": 12, "eval": 75},
-    "4-13": {"train": 10, "eval": 75},
-    "4-14": {"train": 10, "eval": 75},
+# 注5：所有路径clean_enabled=False，降低训练难度
+# 注6：训练档位根据路径难度预设，主要影响训练时长和最终效果，low(~4s)，medium(~14s)，high(~26s)，实际效果会有波动
+ROUTE_PLAN: dict[str, dict[str, int | str]] = {
+    "1-1": {"train": 8, "eval": 75, "profile": "low"},  # 1-* 单腔线路
+    "1-2": {"train": 8, "eval": 75, "profile": "low"},
+    "1-3": {"train": 8, "eval": 75, "profile": "low"},
+    "1-4": {"train": 12, "eval": 75, "profile": "medium"},
+    "1-5": {"train": 10, "eval": 75, "profile": "medium"},
+    "2-1": {"train": 8, "eval": 75, "profile": "low"},  # 2-* 集创赛 ABCD 路径
+    "2-2": {"train": 6, "eval": 75, "profile": "low"},
+    "2-3": {"train": 6, "eval": 75, "profile": "medium"},
+    "2-4": {"train": 6, "eval": 75, "profile": "low"},
+    "3-1": {"train": 9, "eval": 75, "profile": "low"},  # 3-* 单腔测试路径
+    "3-2": {"train": 6, "eval": 75, "profile": "low"},
+    "3-3": {"train": 6, "eval": 15, "profile": "low"},
+    "4-2": {"train": 8, "eval": 75, "profile": "low"},  # 4-* 双腔路径
+    "4-3": {"train": 8, "eval": 75, "profile": "low"},
+    "4-8": {"train": 10, "eval": 75, "profile": "medium"},
+    "4-9": {"train": 12, "eval": 75, "profile": "medium"},
+    "4-10": {"train": 12, "eval": 75, "profile": "low"},
+    "4-11": {"train": 12, "eval": 75, "profile": "medium"},
+    "4-12": {"train": 12, "eval": 75, "profile": "high"},
+    "4-13": {"train": 10, "eval": 75, "profile": "medium"},
+    "4-14": {"train": 10, "eval": 75, "profile": "medium"},
 }
 
 
-# 根据路线难度选择训练配置档位，
-# low(~4s) / medium(~13s) / high 分别对应不同的训练时长和资源
-ROUTE_TRAINING_PROFILE: dict[str, str] = {
-    "1-1": "low",
-    "1-2": "low",
-    "1-3": "low",
-    "1-4": "medium",
-    "1-5": "medium",
-    "2-1": "low",
-    "2-2": "low",
-    "2-3": "medium",
-    "2-4": "low",
-    "3-1": "low",
-    "3-2": "low",
-    "3-3": "medium",
-    "4-8": "medium",
-    "4-9": "medium",
-    "4-10": "low",
-    "4-11": "medium",
-    "4-12": "high",
-    "4-13": "medium",
-    "4-14": "medium",
-}
+
+
+
 
 
 TRAINING_PROFILE_FILES: dict[str, str] = {
@@ -111,36 +91,25 @@ def _build_env_overrides(route_config: dict[str, Any], route_name: str, n_wafer:
 
 
 def _normalize_route_plan(
-    route_wafer_plan: dict[str, dict[str, int]],
-    route_training_profile: dict[str, str],
+    route_plan: dict[str, dict[str, int | str]],
     route_config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if not route_wafer_plan:
-        raise ValueError("ROUTE_WAFER_PLAN 为空，请先填写训练/评估晶圆数")
-    if not route_training_profile:
-        raise ValueError("ROUTE_TRAINING_PROFILE 为空，请先填写路线对应档位")
-
-    route_names = list(route_wafer_plan.keys())
-    missing_profiles = [route for route in route_names if route not in route_training_profile]
-    extra_profiles = [route for route in route_training_profile.keys() if route not in route_wafer_plan]
-    if missing_profiles:
-        raise ValueError(f"以下路线缺少训练档位: {', '.join(missing_profiles)}")
-    if extra_profiles:
-        raise ValueError(f"以下训练档位映射没有对应晶圆计划: {', '.join(extra_profiles)}")
+    if not route_plan:
+        raise ValueError("ROUTE_PLAN 为空，请先填写每条路线的 train / eval / profile")
 
     route_entries = dict(route_config.get("routes") or {})
     normalized: list[dict[str, Any]] = []
-    for route_name in route_names:
+    for route_name in route_plan.keys():
         if route_name not in route_entries:
             raise ValueError(f"single_route_config.routes 中不存在路线: {route_name}")
-        wafer_spec = dict(route_wafer_plan[route_name] or {})
-        if "train" not in wafer_spec or "eval" not in wafer_spec:
-            raise ValueError(f"路线 {route_name} 的晶圆计划必须同时提供 train 和 eval")
-        train_n = int(wafer_spec["train"])
-        eval_n = int(wafer_spec["eval"])
+        route_spec = dict(route_plan[route_name] or {})
+        if "train" not in route_spec or "eval" not in route_spec or "profile" not in route_spec:
+            raise ValueError(f"路线 {route_name} 必须同时提供 train / eval / profile")
+        train_n = int(route_spec["train"])
+        eval_n = int(route_spec["eval"])
         if train_n <= 0 or eval_n <= 0:
             raise ValueError(f"路线 {route_name} 的 train/eval 晶圆数必须 > 0")
-        profile_name = str(route_training_profile[route_name]).strip().lower()
+        profile_name = str(route_spec["profile"]).strip().lower()
         normalized.append(
             {
                 "route_name": route_name,
@@ -206,16 +175,14 @@ def _format_summary_table(rows: list[dict[str, Any]]) -> str:
 
 def run_all_routes(
     *,
-    route_wafer_plan: dict[str, dict[str, int]] | None = None,
-    route_training_profile: dict[str, str] | None = None,
+    route_plan: dict[str, dict[str, int | str]] | None = None,
     retry: int = 10,
     compute_device: str | None = None,
     rollout_n_envs: int = 1,
 ) -> tuple[list[dict[str, Any]], Path]:
     route_config = _load_route_config()
     normalized_routes = _normalize_route_plan(
-        route_wafer_plan if route_wafer_plan is not None else ROUTE_WAFER_PLAN,
-        route_training_profile if route_training_profile is not None else ROUTE_TRAINING_PROFILE,
+        route_plan if route_plan is not None else ROUTE_PLAN,
         route_config,
     )
 
