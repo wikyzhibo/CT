@@ -31,8 +31,15 @@ from .algorithm_interface import (
 )
 
 def _is_transport_place_name(name: str) -> bool:
-    """级联 v3 拓扑运输库所为 TM2/TM3；历史构网为 d_TM1/d_TM2/d_TM3。"""
-    return name.startswith("d_TM") or name in {"TM2", "TM3"}
+    """级联固定拓扑运输库所为 TM1/TM2/TM3；历史构网兼容 d_TM*。"""
+    return name.startswith("d_TM") or name in {"TM1", "TM2", "TM3"}
+
+
+def _normalize_transport_name(name: str) -> str:
+    raw = str(name)
+    if raw.startswith("d_TM"):
+        return raw[2:]
+    return raw
 
 
 class PetriSingleAdapter(AlgorithmAdapter):
@@ -153,12 +160,13 @@ class PetriSingleAdapter(AlgorithmAdapter):
         transports: List[ChamberState] = []
         release_schedule: Dict[str, list] = {}
         trigger_map = getattr(self.net, "_cleaning_trigger_map", None)
-        cascade_lp_slots: List[Tuple[int, Place, List[WaferState]]] = []
+        cascade_lp_slots: List[Tuple[int, Any, List[WaferState]]] = []
         for idx, place in enumerate(self.net.marks):
+            place_name = str(place.name)
             wafers = [
                 WaferState(
                     token_id=int(tok.token_id),
-                    place_name=place.name,
+                    place_name=place_name,
                     place_idx=idx,
                     place_type=int(place.type),
                     stay_time=float(tok.stay_time),
@@ -170,11 +178,11 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 for tok in place.tokens
                 if int(getattr(tok, "token_id", -1)) >= 0
             ]
-            release_schedule[place.name] = list(getattr(place, "release_schedule", []))
-            if _is_transport_place_name(place.name):
+            release_schedule[place_name] = list(getattr(place, "release_schedule", []))
+            if _is_transport_place_name(place_name):
                 transports.append(
                     ChamberState(
-                        name=place.name,
+                        name=_normalize_transport_name(place_name),
                         place_idx=idx,
                         capacity=int(place.capacity),
                         wafers=wafers,
@@ -185,40 +193,22 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 )
                 continue
 
-            if self.device_mode == "cascade" and place.name in ("LP1", "LP2"):
+            if self.device_mode == "cascade" and place_name in ("LP1", "LP2"):
                 cascade_lp_slots.append((idx, place, wafers))
                 continue
 
-            display_name = place.name
-            if self.device_mode == "cascade":
-                if place.name == "LP":
-                    display_name = "LLA"
-                elif place.name == "LP_done":
-                    display_name = "LLB"
-            chamber_type = "disabled" if display_name in self.disabled_chambers else "processing"
-            status = self._calc_status(place.name, wafers, chamber_type)
-            is_cleaning = bool(getattr(place, "is_cleaning", False))
-            cleaning_remaining = float(getattr(place, "cleaning_remaining", 0.0))
-            if is_cleaning:
-                status = "cleaning"
-            processed = int(getattr(place, "processed_wafer_count", 0))
-            if trigger_map is not None:
-                chamber_trigger = int(trigger_map.get(place.name, 0))
-                countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
-            else:
-                countdown = -1
             chambers.append(
-                ChamberState(
-                    name=display_name,
+                self._build_chamber_state(
+                    display_name=place_name,
+                    source_name=place_name,
                     place_idx=idx,
                     capacity=int(place.capacity),
                     wafers=wafers,
                     proc_time=float(place.processing_time),
-                    status=status,
-                    chamber_type=chamber_type,
-                    cleaning_remaining=cleaning_remaining,
-                    inbound_blocked=is_cleaning,
-                    cleaning_wafer_countdown=countdown,
+                    is_cleaning=bool(getattr(place, "is_cleaning", False)),
+                    cleaning_remaining=float(getattr(place, "cleaning_remaining", 0.0)),
+                    processed=int(getattr(place, "processed_wafer_count", 0)),
+                    trigger_map=trigger_map,
                 )
             )
         if self.device_mode == "cascade" and cascade_lp_slots:
@@ -227,34 +217,21 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 merged_w.extend(ws)
             cap_sum = sum(int(p.capacity) for _, p, _ in cascade_lp_slots)
             idx0, place0, _ = cascade_lp_slots[0]
-            release_schedule["LLA"] = []
+            release_schedule["LP"] = []
             for n in ("LP1", "LP2"):
-                release_schedule["LLA"].extend(release_schedule.pop(n, []))
-            display_name = "LLA"
-            chamber_type = "disabled" if display_name in self.disabled_chambers else "processing"
-            status = self._calc_status(place0.name, merged_w, chamber_type)
-            is_cleaning = bool(getattr(place0, "is_cleaning", False))
-            cleaning_remaining = float(getattr(place0, "cleaning_remaining", 0.0))
-            if is_cleaning:
-                status = "cleaning"
-            processed = int(getattr(place0, "processed_wafer_count", 0))
-            if trigger_map is not None:
-                chamber_trigger = int(trigger_map.get(place0.name, 0))
-                countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
-            else:
-                countdown = -1
+                release_schedule["LP"].extend(release_schedule.pop(n, []))
             chambers.append(
-                ChamberState(
-                    name=display_name,
+                self._build_chamber_state(
+                    display_name="LP",
+                    source_name="LP1",
                     place_idx=idx0,
                     capacity=cap_sum,
                     wafers=merged_w,
                     proc_time=float(place0.processing_time),
-                    status=status,
-                    chamber_type=chamber_type,
-                    cleaning_remaining=cleaning_remaining,
-                    inbound_blocked=is_cleaning,
-                    cleaning_wafer_countdown=countdown,
+                    is_cleaning=bool(getattr(place0, "is_cleaning", False)),
+                    cleaning_remaining=float(getattr(place0, "cleaning_remaining", 0.0)),
+                    processed=int(getattr(place0, "processed_wafer_count", 0)),
+                    trigger_map=trigger_map,
                 )
             )
         if self.device_mode == "cascade":
@@ -276,12 +253,16 @@ class PetriSingleAdapter(AlgorithmAdapter):
                     )
                 )
 
+        robot_wafers_tm1: List[WaferState] = []
         robot_wafers_tm2: List[WaferState] = []
         robot_wafers_tm3: List[WaferState] = []
         if transports:
             if self.device_mode == "cascade":
-                d_tm2 = next((c for c in transports if c.name in {"d_TM2", "TM2"}), None)
-                d_tm3 = next((c for c in transports if c.name in {"d_TM3", "TM3"}), None)
+                d_tm1 = next((c for c in transports if c.name == "TM1"), None)
+                d_tm2 = next((c for c in transports if c.name == "TM2"), None)
+                d_tm3 = next((c for c in transports if c.name == "TM3"), None)
+                if d_tm1 is not None:
+                    robot_wafers_tm1.extend(d_tm1.wafers)
                 if d_tm2 is not None:
                     robot_wafers_tm2.extend(d_tm2.wafers)
                 if d_tm3 is not None:
@@ -309,9 +290,10 @@ class PetriSingleAdapter(AlgorithmAdapter):
             time=float(getattr(self.net, "time", 0)),
             chambers=chambers,
             transport_buffers=transports,
-            start_buffers=[c for c in chambers if c.name in {"LP", "LLA"}],
-            end_buffers=[c for c in chambers if c.name in {"LP_done", "LLB"}],
+            start_buffers=[c for c in chambers if c.name == "LP"],
+            end_buffers=[c for c in chambers if c.name == "LP_done"],
             robot_states={
+                "TM1": RobotState(name="TM1", busy=bool(robot_wafers_tm1), wafers=robot_wafers_tm1),
                 "TM2": RobotState(name="TM2", busy=bool(robot_wafers_tm2), wafers=robot_wafers_tm2),
                 "TM3": RobotState(name="TM3", busy=bool(robot_wafers_tm3), wafers=robot_wafers_tm3),
             },
@@ -335,6 +317,41 @@ class PetriSingleAdapter(AlgorithmAdapter):
                 "qtime_violation_count": int(getattr(self.net, "qtime_violation_count", 0)),
                 "chamber_processed_counts": {},
             },
+        )
+
+    def _build_chamber_state(
+        self,
+        display_name: str,
+        source_name: str,
+        place_idx: int,
+        capacity: int,
+        wafers: List[WaferState],
+        proc_time: float,
+        is_cleaning: bool,
+        cleaning_remaining: float,
+        processed: int,
+        trigger_map,
+    ) -> ChamberState:
+        chamber_type = "disabled" if display_name in self.disabled_chambers else "processing"
+        status = self._calc_status(source_name, wafers, chamber_type)
+        if is_cleaning:
+            status = "cleaning"
+        if trigger_map is not None:
+            chamber_trigger = int(trigger_map.get(source_name, 0))
+            countdown = max(0, chamber_trigger - processed) if chamber_trigger > 0 else -1
+        else:
+            countdown = -1
+        return ChamberState(
+            name=display_name,
+            place_idx=place_idx,
+            capacity=capacity,
+            wafers=wafers,
+            proc_time=proc_time,
+            status=status,
+            chamber_type=chamber_type,
+            cleaning_remaining=cleaning_remaining,
+            inbound_blocked=is_cleaning,
+            cleaning_wafer_countdown=countdown,
         )
 
     def _time_to_scrap(self, place, stay_time: float) -> float:

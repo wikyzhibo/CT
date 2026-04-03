@@ -16,9 +16,15 @@
 
 ### 可视化：级联单臂布局新增 LP/AL/CL/LP_done/TM1，并按缩放自动扩距（2026-04-03）
 
-- **What changed**：`visualization/widgets/center_canvas.py` 仅对 `device=cascade` 且单臂模式扩展下半区布局：在 `LLA/LLB` 下方新增 `AL`、`CL`、`LP`、`LP_done`，并增加 `TM1 ARM`。新增 4 个腔室与 `TM1 ARM` 仅为 UI 占位，不接状态层真实数据；`TM2/TM3` 继续使用现有映射。该模式当前基准参数为 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际布局步距会按缩放后腔室尺寸自动扩到最少留 `10px` 间隔。`docs/visualization/ui-guide.md` 同步补充行为规则与边界说明。
+- **What changed**：`visualization/widgets/center_canvas.py` 仅对 `device=cascade` 且单臂模式扩展下半区布局：在 `LLA/LLB` 下方新增 `AL`、`CL`、`LP`、`LP_done`，并增加 `TM1 ARM`。`visualization/petri_single_adapter.py` 现将 `LP1/LP2` 聚合显示为 `LP`、保留 `LP_done` 实名终点，并把 `TM1` 运输位只映射到 `TM1 ARM`；`AL/CL/LP/LP_done/TM1 ARM` 全部直接消费真实运行时状态。该模式当前基准参数为 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际布局步距会按缩放后腔室尺寸自动扩到最少留 `10px` 间隔。`docs/visualization/ui-guide.md` 同步补充行为规则与边界说明。
 - **Why**：新增下半区后，若继续允许手动调大 `scale` 而不抬高步距，腔室会直接发生重叠；步距跟随缩放自动扩张才是根因修复。
 - **Impact**：single 布局与级联双臂布局保持不变；当前代码已把 `AL/CL/LP/LP_done/TM1 ARM` 接到真实运行时状态。放大单臂级联卡片后，画布可能超过默认视口并出现滚动。
+
+### 可视化：单动作级联单臂状态映射与无-scrap buffer 渲染修复（2026-04-03）
+
+- **What changed**：`visualization/petri_single_adapter.py` 修复单动作级联状态映射：`TM1` 进入 `transport_buffers/robot_states`，不再误当普通 chamber；`LP1/LP2` 聚合显示为 `LP`，`LP_done` 直显为 `LP_done`，不再把起点/终点错映到 `LLA/LLB`。`visualization/graphics/wafer_item.py`、`visualization/widgets/chamber_widget.py`、`visualization/widgets/wafer_widget.py` 同步收敛 `time_to_scrap` 口径：`time_to_scrap < 0` 只表示“无 scrap 风险”，`AL/CL/LLA/LLB` 这类正工时 buffer 完成后显示 `+Ns`，不再显示红色或 `SCRAP`。新增 `tests/test_visualization_single_adapter.py` 覆盖 reset、`TM1` 持片和 `AL` 渲染回归。
+- **Why**：旧单动作适配器沿用了 `LP/LP_done -> LLA/LLB` 的历史别名逻辑，且前端把所有 `place_type=5 + proc_time>0` 都按“有 scrap 截止”的加工腔解释，导致初始 wafer 出现在 `LLA`、终点显示为 `LLB`、`TM1` 不显示持片、`AL` 刚入腔就被渲染成红色/`SCRAP`。
+- **Impact**：级联单臂单动作 UI 现与真实物理链路 `LP -> AL -> LLA -> ... -> LLB -> CL -> LP_done` 对齐；`1-*` 与 `2-*` 路线都按 `LP/LP_done` 显示起终点。若外部代码错误依赖重复 `LLA/LLB` alias，会在本次修复后暴露。
 
 ## 2026-04-02
 

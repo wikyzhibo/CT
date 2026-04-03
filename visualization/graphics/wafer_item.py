@@ -159,12 +159,7 @@ class WaferItem(QGraphicsObject):
         
         # 内容逻辑
         if self._is_timed_chamber_wafer(wafer):
-            remaining = max(0, int(wafer.proc_time - wafer.stay_time))
-            if remaining > 0:
-                main_text = str(remaining)
-            else:
-                overtime = int(wafer.stay_time - wafer.proc_time)
-                main_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}"
+            main_text = self._timed_wafer_main_text(wafer)
             sub_text = f"#{wafer.token_id}"
         else:
             main_text = f"#{wafer.token_id}"
@@ -189,10 +184,12 @@ class WaferItem(QGraphicsObject):
         if self._is_timed_chamber_wafer(wafer):
             proc = getattr(wafer, "proc_time", 0) or 0
             stay = int(wafer.stay_time)
-            if wafer.time_to_scrap <= 0: return self.theme.danger
-            if proc > 0 and stay >= proc + 20: return self.theme.danger
-            if proc > 0 and stay >= proc: return self.theme.warning
-            if wafer.time_to_scrap <= 5: return self.theme.warning
+            if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 0:
+                return self.theme.danger
+            if proc > 0 and stay >= proc:
+                return self.theme.warning
+            if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 5:
+                return self.theme.warning
             return self.theme.success
         if wafer.place_type == 2:
             stay = int(wafer.stay_time)
@@ -200,6 +197,21 @@ class WaferItem(QGraphicsObject):
             if stay >= 7: return self.theme.warning
             return self.theme.success
         return self.theme.secondary
+
+    @staticmethod
+    def _has_scrap_deadline(wafer: WaferState | None) -> bool:
+        if wafer is None:
+            return False
+        return float(getattr(wafer, "time_to_scrap", -1) or -1) >= 0
+
+    def _timed_wafer_main_text(self, wafer: WaferState) -> str:
+        remaining = max(0, int(wafer.proc_time - wafer.stay_time))
+        if remaining > 0:
+            return str(remaining)
+        overtime = max(0, int(wafer.stay_time - wafer.proc_time))
+        if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 0:
+            return "SCRAP"
+        return f"+{overtime}s"
 
     def _get_contrast_color(self, bg_color: tuple) -> tuple:
         luminance = (0.299 * bg_color[0] + 0.587 * bg_color[1] + 0.114 * bg_color[2]) / 255

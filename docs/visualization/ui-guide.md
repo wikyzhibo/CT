@@ -61,14 +61,14 @@
 4. 可视化文档中的命令示例必须与 `visualization/main.py` 参数一致。
 5. 级联 / 单设备 + `--debug`：右侧 **TRANSITIONS** 区按当前网 `id2t_name` 顺序**每两个变迁一行**（左先右后，奇数个时末行右侧留白）；全量列出，用 `enabled` 区分可点/禁用。展示名映射（仅影响按钮文案，不改变 `action_id`）：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`；级联下物理名为 `u_LLD*` 的卸载变迁 tooltip 可附 `LLD` 去向列表。
 6. `adapter_factory` 在级联模式下会把窗口当前选择的 `single_route_name` 以 `setdefault` 写入 `env_overrides`，以便与回放 JSON 中的 `replay_env_overrides` 合并时后者仍可覆盖。
-7. 晶圆可视化口径：`LLC/LLD`（`place_type=5`）在 `proc_time>0` 时按加工腔渲染，显示外圈进度与加工完成橙色；其 scrap 判定阈值与 `pn_single` 一致为 `process_time + 3 * P_Residual_time`，超时显示红色。
+7. 晶圆可视化口径：`LLC/LLD`（`place_type=5`）在 `proc_time>0` 时按加工腔渲染，显示外圈进度与加工完成橙色；其 scrap 判定阈值与 `pn_single` 一致为 `process_time + 3 * P_Residual_time`，超时显示红色。`time_to_scrap < 0` 表示“无 scrap 风险”，禁止把该值解释为已 scrap；`AL/CL/LLA/LLB` 这类正工时 buffer 只显示计时/完成态，不显示 `SCRAP`。
 8. 手动导出（甘特图/统计/动作）必须强制写入 `results/` 规范目录：`results/gantt`、`results/training_logs`、`results/action_sequences`。
 9. `--concurrent` 下 Model A 默认权重路径是 `results/models/CT_concurrent_best.pt`；未显式传 `--model` 时会优先尝试该文件。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
 12. 只要权重 `state_dict` 含 `head_tm1/head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
-14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。
+14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。单动作级联 runtime 下，`LP1/LP2` 必须聚合显示为 `LP`，`LP_done` 必须保持 `LP_done` 名称，`TM1` 只通过 `TM1 ARM` 展示，不单独作为 chamber 渲染。
 15. `device=cascade` 且单臂模式下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 与 cascade 双臂布局禁止复用该缩放与自动扩距规则。
 
 ## Examples
@@ -96,7 +96,8 @@
 - `../viz.md`
 
 ## Change Notes
-- 2026-04-03: `center_canvas.py` 扩展级联单臂布局：在 `LLA/LLB` 下方新增 `AL/CL/LP/LP_done`，并增加 `TM1 ARM` 占位；该模式当前使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际步距会按缩放后卡片尺寸自动扩至最少留 `10px` 间隔，single 与级联双臂布局保持不变。
+- 2026-04-03: `center_canvas.py` 扩展级联单臂布局：在 `LLA/LLB` 下方新增 `AL/CL/LP/LP_done`，并增加 `TM1 ARM`；`petri_single_adapter.py` 现将 `LP1/LP2` 聚合为 `LP`、`LP_done` 直显为 `LP_done`，且 `TM1` 只通过 `TM1 ARM` 展示真实持片；该模式当前使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际步距会按缩放后卡片尺寸自动扩至最少留 `10px` 间隔，single 与级联双臂布局保持不变。
+- 2026-04-03: `wafer_item.py` / `chamber_widget.py` / `wafer_widget.py` 收敛 `time_to_scrap` 口径：`time_to_scrap < 0` 表示无 scrap 风险，不再把 `AL/CL/LLA/LLB` 这类正工时 buffer 渲染为红色或 `SCRAP`。
 - 2026-03-30: 移除 `route_code` / `--single-route-code`：回放与 CLI 仅以 `single_route_name` / `single_route_config` 对齐构网；`replay_env_overrides` 不再包含 `route_code`。
 - 2026-03-29: 并发可视化运行时切换到当前 `ClusterTool`：`Env_PN_Concurrent` 不再绑定 `deprecated.pn.Petri`，而是直接加载 `config/cluster_tool/cascade.yaml` 构建级联并发环境；`main.py` 在并发分支会同步透传 `single_route_name/single_route_config/process_time_map`。`petri_adapter.py` 改为遍历当前 net 的真实库所和变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。
 - 2026-03-29: Model B 并发识别收口为“显式 runtime 优先 + 双非 WAIT 兜底”：`main_window.py` 优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当缺失显式标识且同一步出现两个非 WAIT 动作时才切并发 runtime，避免把单动作导出序列 `actions=[action, "WAIT"]` 误判为并发。同时恢复并发级联 runtime 的路线横幅与路径切换。

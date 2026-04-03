@@ -175,7 +175,7 @@ class ChamberWidget(QWidget):
             painter.setFont(wafer_font)
             if remaining == 0:
                 overtime = max(0, int(wafer.stay_time - wafer.proc_time))
-                done_text = "SCRAP" if wafer.time_to_scrap <= 0 else f"+{overtime}s"
+                done_text = "SCRAP" if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 0 else f"+{overtime}s"
                 painter.drawText(bot_rect, Qt.AlignHCenter | Qt.AlignVCenter, done_text)
             else:
                 painter.drawText(bot_rect, Qt.AlignHCenter | Qt.AlignVCenter, f"{remaining}#{wafer.token_id}")
@@ -216,13 +216,11 @@ class ChamberWidget(QWidget):
         if self._is_timed_chamber_wafer(wafer):  # 加工腔（含 LLC/LLD 的计时腔室）
             proc = getattr(wafer, "proc_time", 0) or 0
             stay = int(wafer.stay_time)
-            if wafer.time_to_scrap <= 0:
-                return self.theme.danger
-            if proc > 0 and stay >= proc + 20:
+            if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 0:
                 return self.theme.danger
             if proc > 0 and stay >= proc:
                 return self.theme.warning
-            if wafer.time_to_scrap <= 5:
+            if self._has_scrap_deadline(wafer) and wafer.time_to_scrap <= 5:
                 return self.theme.warning
             return self.theme.success
         if wafer.place_type == 2:  # 运输位：stay<7 绿，7–10 黄，≥10 红
@@ -238,3 +236,7 @@ class ChamberWidget(QWidget):
     def _is_timed_chamber_wafer(wafer) -> bool:
         proc = float(getattr(wafer, "proc_time", 0) or 0)
         return wafer.place_type in (1, 5) and proc > 0
+
+    @staticmethod
+    def _has_scrap_deadline(wafer) -> bool:
+        return float(getattr(wafer, "time_to_scrap", -1) or -1) >= 0

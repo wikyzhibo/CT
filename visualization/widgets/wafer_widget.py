@@ -40,7 +40,7 @@ class WaferWidget(QWidget):
         painter.drawEllipse(rect)
 
         # 进度环（仅加工腔室）
-        if self.wafer.place_type == 1 and self.wafer.proc_time > 0:
+        if self._is_timed_chamber_wafer():
             progress = min(1.0, max(0.0, self.wafer.stay_time / self.wafer.proc_time))
             ring_pen = QPen(self.theme.qcolor(self.theme.accent))
             ring_pen.setWidth(4)
@@ -67,12 +67,21 @@ class WaferWidget(QWidget):
         painter.drawText(0, rect.bottom() + 2, self.width(), 12, Qt.AlignCenter, status_text)
 
     def _get_status_color(self):
-        if self.wafer.place_type == 1:
-            if self.wafer.time_to_scrap <= 0:
+        if self._is_timed_chamber_wafer():
+            if self._has_scrap_deadline() and self.wafer.time_to_scrap <= 0:
                 return self.theme.danger
-            if self.wafer.time_to_scrap <= 5:
+            if int(self.wafer.stay_time) >= int(self.wafer.proc_time):
+                return self.theme.warning
+            if self._has_scrap_deadline() and self.wafer.time_to_scrap <= 5:
                 return self.theme.warning
             return self.theme.success
         if self.wafer.place_type == 2:
             return self.theme.info
         return self.theme.secondary
+
+    def _is_timed_chamber_wafer(self) -> bool:
+        proc = float(getattr(self.wafer, "proc_time", 0) or 0)
+        return self.wafer.place_type in (1, 5) and proc > 0
+
+    def _has_scrap_deadline(self) -> bool:
+        return float(getattr(self.wafer, "time_to_scrap", -1) or -1) >= 0
