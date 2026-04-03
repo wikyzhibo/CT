@@ -283,7 +283,7 @@
               "PM7",
               "PM8"
             ],
-            "process_time": 99
+            "process_time": 100
           }
         },
         {
@@ -292,7 +292,7 @@
               "PM9",
               "PM10"
             ],
-            "process_time": 73
+            "process_time": 70
           }
         },
         {
@@ -318,7 +318,7 @@
             "candidates": [
               "PM1"
             ],
-            "process_time": 128
+            "process_time": 130
           }
         },
         {
@@ -326,7 +326,7 @@
             "candidates": [
               "PM3"
             ],
-            "process_time": 126
+            "process_time": 125
           }
         },
         {
@@ -368,7 +368,7 @@
               "PM7",
               "PM8"
             ],
-            "process_time": 87
+            "process_time": 85
           }
         },
         {
@@ -376,7 +376,7 @@
             "candidates": [
               "LLC"
             ],
-            "process_time": 41
+            "process_time": 40
           }
         },
         {
@@ -404,7 +404,7 @@
             "candidates": [
               "LLD"
             ],
-            "process_time": 39
+            "process_time": 40
           }
         },
         {
@@ -413,7 +413,7 @@
               "PM9",
               "PM10"
             ],
-            "process_time": 54.6
+            "process_time": 55
           }
         },
         {
@@ -455,7 +455,7 @@
             "candidates": [
               "LLC"
             ],
-            "process_time": 34
+            "process_time": 35
           }
         },
         {
@@ -464,7 +464,7 @@
               "PM1",
               "PM6"
             ],
-            "process_time": 53,
+            "process_time": 55,
             "cleaning_duration": 304,
             "cleaning_trigger_wafers": 50
           }
@@ -476,7 +476,7 @@
               "PM3",
               "PM5"
             ],
-            "process_time": 107
+            "process_time": 105
           }
         },
         {
@@ -484,7 +484,7 @@
             "candidates": [
               "LLD"
             ],
-            "process_time": 34
+            "process_time": 35
           }
         },
         {
@@ -526,7 +526,7 @@
               "LLC",
               "LLD"
             ],
-            "process_time": 37
+            "process_time": 35
           }
         },
         {
@@ -535,7 +535,7 @@
               "PM9",
               "PM10"
             ],
-            "process_time": 56,
+            "process_time": 55,
             "cleaning_duration": 352,
             "cleaning_trigger_wafers": 25
           }
@@ -569,7 +569,7 @@
               "PM7",
               "PM8"
             ],
-            "process_time": 101
+            "process_time": 100
           }
         },
         {
@@ -585,7 +585,7 @@
             "candidates": [
               "PM1"
             ],
-            "process_time": 41,
+            "process_time": 40,
             "cleaning_duration": 420,
             "cleaning_trigger_wafers": 20
           }
@@ -595,7 +595,7 @@
             "candidates": [
               "PM3"
             ],
-            "process_time": 93
+            "process_time": 90
           }
         },
         {
@@ -641,7 +641,7 @@
       "max_wafer1_in_system": 12,
       "max_wafer2_in_system": 0,
       "ratio": [1,0],
-      "route_stage": [["AL"],["LLA"],["PM7","PM8"],["PM1","PM2","PM3","PM4"],["LLD"],["PM9","PM10"],["LLB"],["CL"]],
+      "route_stage": [["PM7","PM8"],["PM1","PM2","PM3","PM4"],["LLD"],["PM9","PM10"]],
       "sequence": [
         {
           "stage": {
@@ -784,7 +784,7 @@
       "max_wafer1_in_system": 3,
       "max_wafer2_in_system": 0,
       "ratio": [1,0],
-      "route_stage": [["AL"],["LLA"],["PM7"],["PM8"],["LLD"],["LLB"],["CL"]],
+      "route_stage": [["PM7"],["PM8"],["LLD"]],
       "sequence": [
         {
           "stage": {

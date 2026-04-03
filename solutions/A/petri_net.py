@@ -223,7 +223,12 @@ class ClusterTool:
         self._lp_done = self._place_by_name.get("LP_done")
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         order = list(self._load_port_names) + ["TM1", "TM2", "TM3"] + list(self.chambers)
-        obs_names = [name for name in order if name in self._place_by_name]
+        _skip_obs_places = frozenset({"AL", "CL", "TM1", "LP_done"}) | frozenset(
+            self._load_port_names
+        )
+        obs_names = [
+            name for name in order if name in self._place_by_name and name not in _skip_obs_places
+        ]
         self._obs_place_names = obs_names
         self._obs_places = [self._place_by_name[name] for name in obs_names]
         offsets: List[int] = []

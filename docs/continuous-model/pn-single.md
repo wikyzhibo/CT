@@ -80,6 +80,7 @@
 35. `build_route_queue` 为每个 token 生成两条同索引队列：`route_queue` 与 `route_proc_time_queue`。其中 `u_*` 占位步固定写 `-1`，`t_*` 步写当前目标 stage 的 `process_time`。
 36. `ClusterTool._fire` 在 `t_*` 入目标库所时，按 token 当前 `route_head_idx` 读取 `route_proc_time_queue`，并将该值写入目标库所 `processing_time`；工时按“每片 wafer 的访问序号”生效，`use_count` 仅用于并行选机。
 37. `preprocess_chamber_runtime_blocks` 与 `model_builder` 允许同一 chamber 在不同 stage 使用不同 `process_time`；`chamber_blocks.process_time` 仅作为基础值，不再作为重复访问时的唯一工时。
+38. 级联 `ClusterTool.get_obs()` **不**写入下列库所的观测段：`route_meta.load_port_names` 所列各装载口、`AL`、`CL`、`TM1`、`LP_done`（`_skip_obs_places` 显式包含上述名字）。其余库所仍按 `load_port_names + TM1 + TM2 + TM3 + chambers` 顺序在剔除上述名字后保留相对次序；动作空间、`get_action_mask` 与 Petri 拓扑**不因**该剔除而改变。
 
 ## Examples
 - 正例:

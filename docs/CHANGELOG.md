@@ -2,6 +2,12 @@
 
 ## 2026-04-03
 
+### A 方案：级联观测剔除装载口 / `AL` / `CL` / `TM1`（2026-04-03）
+
+- **What changed**：`solutions/A/petri_net.py` 在构造 `_obs_place_names` 时跳过 `route_meta.load_port_names`、`AL`、`CL`、`TM1`、`LP_done`（`LP_done` 与装载口等同列入 `_skip_obs_places`，避免日后 `order` / `chambers` 含终点时误入观测）。级联典型 `obs_dim` 由 **162** 降为 **139**（与剔除前相比 `LP_done` 本不占维，数值不变）。
+- **Why**：减少策略侧冗余或易泄露 TM1 外层与装载口细节的维度，工艺与 TM2/TM3 状态仍可从其余腔室与运输位观测推断。
+- **Impact**：`Env_PN_Single` / `Env_PN_Concurrent` 的 `observation` 最后一维变小；**旧 checkpoint**（按 162 维建网）与新观测 **不兼容**，须重训或匹配新 `obs_dim` 的权重。动作维度与 mask 逻辑未变。
+
 ### 配置：`route_config.json` 的 `1-*`/`3-*`/`4-*` 与 `2-*` 对齐 TM1 外层链（2026-04-03）
 
 - **What changed**：`config/cluster_tool/route_config.json` 中 `1-1`～`1-6`、`3-1`～`3-3`、`4-1`～`4-3`、`4-8`～`4-14` 的 `entry`/`exit` 改为 `LLA`/`LLB`，`sequence`（含双路径 `subpaths` 内层）首段由 `LP` 改为 `LLA`（`process_time: 20`）、末段由 `LP_done` 改为 `LLB`（`process_time: 20`）；可读 `path` 统一为 `LP->AL(10s)->LLA->…->LLB(20s)->CL(20s)->LP_done` 形式。各条路线的 `route_stage` 未改。`tests/test_tm1_route_upgrade.py` 对 `1-1` 的断言改为与 `2-1` 相同的 TM1 外层链与 `release_control_places`。
