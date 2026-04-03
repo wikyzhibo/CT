@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-04-03
+
+### 可视化：级联单臂布局新增 LP/AL/CL/LP_done/TM1，并按缩放自动扩距（2026-04-03）
+
+- **What changed**：`visualization/widgets/center_canvas.py` 仅对 `device=cascade` 且单臂模式扩展下半区布局：在 `LLA/LLB` 下方新增 `AL`、`CL`、`LP`、`LP_done`，并增加 `TM1 ARM`。新增 4 个腔室与 `TM1 ARM` 仅为 UI 占位，不接状态层真实数据；`TM2/TM3` 继续使用现有映射。该模式当前基准参数为 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际布局步距会按缩放后腔室尺寸自动扩到最少留 `10px` 间隔。`docs/visualization/ui-guide.md` 同步补充行为规则与边界说明。
+- **Why**：新增下半区后，若继续允许手动调大 `scale` 而不抬高步距，腔室会直接发生重叠；步距跟随缩放自动扩张才是根因修复。
+- **Impact**：single 布局与级联双臂布局保持不变；级联单臂下 `AL/CL/LP/LP_done/TM1 ARM` 默认显示为 `idle` 占位，不代表运行时已存在同名真实状态。放大单臂级联卡片后，画布可能超过默认视口并出现滚动。
+
 ## 2026-04-02
 
 ### A 方案：`validate_all_routes` 路线配置合并为 `ROUTE_PLAN`（2026-04-02）

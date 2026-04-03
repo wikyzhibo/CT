@@ -67,6 +67,8 @@
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
 12. 只要权重 `state_dict` 含 `head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“双非 WAIT 同步动作”兜底识别并发。禁止继续把 `(a1, a2)` 压缩成单动作执行。
+14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这 4 个腔室与 `TM1 ARM` 当前只做 UI 占位，不消费运行时真实状态；`TM2/TM3` 仍按现有状态层驱动。
+15. `device=cascade` 且单臂模式下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 与 cascade 双臂布局禁止复用该缩放与自动扩距规则。
 
 ## Examples
 - 正例:
@@ -83,6 +85,8 @@
 - `--concurrent` 依赖运行环境已安装 `PySide6`；缺失时入口会在导入 GUI 模块阶段失败。
 - 序列文件路径正确但字段不完整时，Model B 回放可能失败。
 - 由单动作导出脚本生成的 `actions=[<single_action>, "WAIT"]` 序列不会再被自动识别为并发 runtime。
+- 级联单臂新增的 `AL/CL/LP/LP_done/TM1 ARM` 在未接入状态层前会固定显示为 `idle` 占位；这是预期行为，不代表运行时存在同名真实库所或机械手。
+- 级联单臂若手动调大 `chamber_scale` / `robot_scale`，画布会优先自动扩距避免腔室重叠，而不是强制压回旧尺寸；超出视口时由 `QGraphicsView` 自身滚动显示。
 
 ## Related Docs
 - `../overview/project-context.md`
@@ -92,6 +96,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-03: `center_canvas.py` 扩展级联单臂布局：在 `LLA/LLB` 下方新增 `AL/CL/LP/LP_done`，并增加 `TM1 ARM` 占位；该模式当前使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际步距会按缩放后卡片尺寸自动扩至最少留 `10px` 间隔，single 与级联双臂布局保持不变。
 - 2026-03-30: 移除 `route_code` / `--single-route-code`：回放与 CLI 仅以 `single_route_name` / `single_route_config` 对齐构网；`replay_env_overrides` 不再包含 `route_code`。
 - 2026-03-29: 并发可视化运行时切换到当前 `ClusterTool`：`Env_PN_Concurrent` 不再绑定 `deprecated.pn.Petri`，而是直接加载 `config/cluster_tool/cascade.yaml` 构建级联并发环境；`main.py` 在并发分支会同步透传 `single_route_name/single_route_config/process_time_map`。`petri_adapter.py` 改为遍历当前 net 的真实库所和变迁，不再依赖 `LP1/LP2/s1-s5/d_TM2/d_TM3` 硬编码。
 - 2026-03-29: Model B 并发识别收口为“显式 runtime 优先 + 双非 WAIT 兜底”：`main_window.py` 优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当缺失显式标识且同一步出现两个非 WAIT 动作时才切并发 runtime，避免把单动作导出序列 `actions=[action, "WAIT"]` 误判为并发。同时恢复并发级联 runtime 的路线横幅与路径切换。

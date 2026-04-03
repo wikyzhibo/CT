@@ -20,7 +20,7 @@ class MainWindowParams:
     initial_x: int = 100             # 窗口初始左上角 x
     initial_y: int = 100             # 窗口初始左上角 y
     initial_width: int = 1300        # 窗口初始宽度
-    initial_height: int = 1000       # 窗口初始高度
+    initial_height: int = 1300       # 窗口初始高度
     central_spacing: int = 12        # 左/中/右三栏之间的间距 (px)
     
     # ───────── 无边框窗口参数 ─────────

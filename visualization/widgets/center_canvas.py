@@ -17,7 +17,7 @@ from ..graphics import ChamberItem, RobotItem
 
 
 class CenterCanvas(QGraphicsView):
-    """中心区域：QGraphicsView + 腔室/机械手 Item，7×4 网格布局"""
+    """中心区域：QGraphicsView + 腔室/机械手 Item，支持浮点网格布局"""
 
     def __init__(self, theme: ColorTheme, parent=None) -> None:
         super().__init__(parent)
@@ -74,10 +74,16 @@ class CenterCanvas(QGraphicsView):
         self.chambers.clear()
         self.robots.clear()
 
-        cc = ui_params.center_canvas
         ch_item = ui_params.chamber_item
         r_item = ui_params.robot_item
-        cw, ch = cc.cell_w, cc.cell_h
+        layout_metrics = self._layout_metrics()
+        chamber_scale = layout_metrics["chamber_scale"]
+        robot_scale = layout_metrics["robot_scale"]
+        chamber_w = ch_item.w * chamber_scale
+        chamber_h = ch_item.h * chamber_scale
+        robot_w = r_item.w * robot_scale
+        robot_h = r_item.h * robot_scale
+        cw, ch = self._layout_pitch(layout_metrics, chamber_w, chamber_h)
 
         positions, self._display_to_state, self._robot_chambers = self._layout_config_by_mode()
         state_chambers = {c.name: c for c in state.chambers}
@@ -92,35 +98,62 @@ class CenterCanvas(QGraphicsView):
             source = state_chambers.get(source_name)
             chamber_state = self._clone_chamber_state(display_name, source)
             item = ChamberItem(chamber_state, self.theme)
+            item.setScale(chamber_scale)
             self.chambers[display_name] = item
             self.scene.addItem(item)
-            x, y = self._position_for_cell(row, col, cw, ch, ch_item.w, ch_item.h)
+            x, y = self._position_for_cell(row, col, cw, ch, chamber_w, chamber_h)
             item.setPos(x, y)
             min_x = min(min_x, x)
             min_y = min(min_y, y)
-            max_x = max(max_x, x + ch_item.w)
-            max_y = max(max_y, y + ch_item.h)
+            max_x = max(max_x, x + chamber_w)
+            max_y = max(max_y, y + chamber_h)
 
-        robot_centers = self._robot_centers(positions, cw, ch)
+        robot_centers = self._robot_centers(positions, cw, ch, chamber_w, chamber_h, robot_w)
         for name, chamber_names in self._robot_chambers.items():
             source_name = self._robot_display_to_state.get(name, name)
             source_robot = state.robot_states.get(source_name, RobotState(name=source_name, busy=False, wafers=[]))
             robot = RobotState(name=name, busy=source_robot.busy, wafers=source_robot.wafers)
             item = RobotItem(robot, self.theme)
+            item.setScale(robot_scale)
             self.robots[name] = item
             self.scene.addItem(item)
             if chamber_names and name in robot_centers:
                 cx, cy = robot_centers[name]
-                item.setPos(cx - r_item.w / 2, cy - r_item.h / 2)
-                min_x = min(min_x, cx - r_item.w / 2)
-                min_y = min(min_y, cy - r_item.h / 2)
-                max_x = max(max_x, cx + r_item.w / 2)
-                max_y = max(max_y, cy + r_item.h / 2)
+                item.setPos(cx - robot_w / 2, cy - robot_h / 2)
+                min_x = min(min_x, cx - robot_w / 2)
+                min_y = min(min_y, cy - robot_h / 2)
+                max_x = max(max_x, cx + robot_w / 2)
+                max_y = max(max_y, cy + robot_h / 2)
 
-        padding = 24.0
+        padding = layout_metrics["padding"]
         if min_x == float("inf"):
             min_x, min_y, max_x, max_y = 0.0, 0.0, float(cw), float(ch)
         self.scene.setSceneRect(min_x - padding, min_y - padding, (max_x - min_x) + padding * 2, (max_y - min_y) + padding * 2)
+
+    def _layout_metrics(self) -> dict[str, float]:
+        """不同模式使用不同布局度量；仅级联单臂启用缩放与扩展下半区。"""
+        metrics = {
+            "cell_w": float(ui_params.center_canvas.cell_w),
+            "cell_h": float(ui_params.center_canvas.cell_h),
+            "chamber_scale": 1.0,
+            "robot_scale": 1.0,
+            "padding": 24.0,
+        }
+        if self._device_mode == "cascade" and self._robot_capacity == 1:
+            metrics["cell_w"] = 96.0
+            metrics["cell_h"] = 84.0
+            metrics["chamber_scale"] = 0.8
+            metrics["robot_scale"] = 0.7
+        return metrics
+
+    def _layout_pitch(self, metrics: dict[str, float], chamber_w: float, chamber_h: float) -> tuple[float, float]:
+        """级联单臂布局按缩放后卡片尺寸自动抬高步距，避免手动调大 scale 后重叠。"""
+        pitch_w = float(metrics["cell_w"])
+        pitch_h = float(metrics["cell_h"])
+        if self._device_mode == "cascade" and self._robot_capacity == 1:
+            pitch_w = max(pitch_w, chamber_w + 10.0)
+            pitch_h = max(pitch_h, chamber_h + 10.0)
+        return pitch_w, pitch_h
 
     def _layout_config_by_mode(self) -> tuple[dict, dict, dict]:
         if self._device_mode == "single":
@@ -171,10 +204,23 @@ class CenterCanvas(QGraphicsView):
                 }
             else:
                 robot_chambers = {
+                    "TM1 ARM": ["LP", "AL", "CL", "LP_done", "LLA", "LLB"],
                     "TM2 ARM": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
                     "TM3 ARM": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
                 }
-                self._robot_display_to_state = {"TM2 ARM": "TM2", "TM3 ARM": "TM3"}
+                positions = {
+                    "PM3": (0, 1), "PM4": (0, 2),
+                    "PM2": (1, 0), "PM1": (2, 0),
+                    "PM5": (1, 3), "PM6": (2, 3),
+                    "LLC": (3, 1), "LLD": (3, 2),
+                    "PM8": (4, 0), "PM7": (5, 0),
+                    "PM9": (4, 3), "PM10": (5, 3),
+                    "LLA": (6, 1), "LLB": (6, 2),
+                    "AL": (7.1, 0), "CL": (7.1, 3),
+                    "LP": (8.2, 1), "LP_done": (8.2, 2),
+                }
+                display_to_state = {name: name for name in positions}
+                self._robot_display_to_state = {"TM1 ARM": "TM1", "TM2 ARM": "TM2", "TM3 ARM": "TM3"}
             return positions, display_to_state, robot_chambers
 
     @staticmethod
@@ -204,7 +250,15 @@ class CenterCanvas(QGraphicsView):
             cleaning_wafer_countdown=getattr(source, "cleaning_wafer_countdown", -1),
         )
 
-    def _center_of_chambers(self, positions: dict, names: list, cw: float, ch: float) -> tuple[float, float]:
+    def _center_of_chambers(
+        self,
+        positions: dict,
+        names: list,
+        cw: float,
+        ch: float,
+        item_w: float,
+        item_h: float,
+    ) -> tuple[float, float]:
         """计算若干腔室网格中心的几何中心 (px)。"""
         xs, ys = [], []
         alias = {"LP": "LLA", "LP1": "LLA", "LP2": "LLA", "LP_done": "LLB"}
@@ -215,19 +269,19 @@ class CenterCanvas(QGraphicsView):
             if key not in positions:
                 continue
             row, col = positions[key]
-            cell_x, cell_y = self._position_for_cell(row, col, cw, ch, ui_params.chamber_item.w, ui_params.chamber_item.h)
-            visual_x = cell_x + ui_params.chamber_item.w / 2
-            visual_y = cell_y + ui_params.chamber_item.h / 2
+            cell_x, cell_y = self._position_for_cell(row, col, cw, ch, item_w, item_h)
+            visual_x = cell_x + item_w / 2
+            visual_y = cell_y + item_h / 2
             xs.append(visual_x)
             ys.append(visual_y)
         if not xs:
             for row, col in positions.values():
-                cell_x, cell_y = self._position_for_cell(row, col, cw, ch, ui_params.chamber_item.w, ui_params.chamber_item.h)
-                xs.append(cell_x + ui_params.chamber_item.w / 2)
-                ys.append(cell_y + ui_params.chamber_item.h / 2)
+                cell_x, cell_y = self._position_for_cell(row, col, cw, ch, item_w, item_h)
+                xs.append(cell_x + item_w / 2)
+                ys.append(cell_y + item_h / 2)
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
-    def _position_for_cell(self, row: int, col: int, cw: float, ch: float, item_w: float, item_h: float) -> tuple[float, float]:
+    def _position_for_cell(self, row: float, col: float, cw: float, ch: float, item_w: float, item_h: float) -> tuple[float, float]:
         x = col * cw + (cw - item_w) / 2
         y = row * ch + (ch - item_h) / 2
         if self._device_mode == "single" and self._robot_capacity == 2:
@@ -243,14 +297,22 @@ class CenterCanvas(QGraphicsView):
             y += (float(row) - 3.0) * 2.5
         return x, y
 
-    def _robot_centers(self, positions: dict, cw: float, ch: float) -> dict[str, tuple[float, float]]:
+    def _robot_centers(
+        self,
+        positions: dict,
+        cw: float,
+        ch: float,
+        item_w: float,
+        item_h: float,
+        robot_w: float,
+    ) -> dict[str, tuple[float, float]]:
         centers: dict[str, tuple[float, float]] = {}
         if not self._robot_chambers:
             return centers
 
         if self._device_mode == "single" and self._robot_capacity == 2 and {"ARM1", "ARM2"}.issubset(self._robot_chambers.keys()):
             center_names = self._robot_chambers["ARM1"]
-            cx, cy = self._center_of_chambers(positions, center_names, cw, ch)
+            cx, cy = self._center_of_chambers(positions, center_names, cw, ch, item_w, item_h)
             gap = 148.0
             centers["ARM1"] = (cx - gap / 2, cy)
             centers["ARM2"] = (cx + gap / 2, cy)
@@ -261,25 +323,27 @@ class CenterCanvas(QGraphicsView):
             and self._robot_capacity == 2
             and {"TM2 ARM1", "TM2 ARM2", "TM3 ARM1", "TM3 ARM2"}.issubset(self._robot_chambers.keys())
         ):
-            tm2_cx, tm2_cy = self._center_of_chambers(positions, self._robot_chambers["TM2 ARM1"], cw, ch)
-            tm3_cx, tm3_cy = self._center_of_chambers(positions, self._robot_chambers["TM3 ARM1"], cw, ch)
+            tm2_cx, tm2_cy = self._center_of_chambers(positions, self._robot_chambers["TM2 ARM1"], cw, ch, item_w, item_h)
+            tm3_cx, tm3_cy = self._center_of_chambers(positions, self._robot_chambers["TM3 ARM1"], cw, ch, item_w, item_h)
             # 横排时使用基于卡片宽度的安全间距，避免双臂互相重叠
-            arm_gap = float(ui_params.robot_item.w + 15)
+            arm_gap = float(robot_w + 15.0)
             centers["TM2 ARM1"] = (tm2_cx - arm_gap / 2, tm2_cy)
             centers["TM2 ARM2"] = (tm2_cx + arm_gap / 2, tm2_cy)
             centers["TM3 ARM1"] = (tm3_cx - arm_gap / 2, tm3_cy)
             centers["TM3 ARM2"] = (tm3_cx + arm_gap / 2, tm3_cy)
             return centers
 
-        if self._device_mode == "cascade" and self._robot_capacity == 1 and {"TM2 ARM", "TM3 ARM"}.issubset(self._robot_chambers.keys()):
-            tm2_cx, tm2_cy = self._center_of_chambers(positions, self._robot_chambers["TM2 ARM"], cw, ch)
-            tm3_cx, tm3_cy = self._center_of_chambers(positions, self._robot_chambers["TM3 ARM"], cw, ch)
-            centers["TM2 ARM"] = (tm2_cx, tm2_cy)
-            centers["TM3 ARM"] = (tm3_cx, tm3_cy)
-            return centers
+        if self._device_mode == "cascade" and self._robot_capacity == 1:
+            for name in ("TM1 ARM", "TM2 ARM", "TM3 ARM"):
+                chamber_names = self._robot_chambers.get(name)
+                if not chamber_names:
+                    continue
+                centers[name] = self._center_of_chambers(positions, chamber_names, cw, ch, item_w, item_h)
+            if centers:
+                return centers
 
         for name, chamber_names in self._robot_chambers.items():
             if not chamber_names:
                 continue
-            centers[name] = self._center_of_chambers(positions, chamber_names, cw, ch)
+            centers[name] = self._center_of_chambers(positions, chamber_names, cw, ch, item_w, item_h)
         return centers
