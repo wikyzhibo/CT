@@ -385,6 +385,78 @@ class ClusterTool:
             obs,
         )
 
+    def _select_auto_tm1_transition(self) -> Optional[int]:
+        """
+        规则引擎为 TM1 自动选择变迁（基于当前 action mask 中已启用的 TM1 变迁）。
+
+        优先级（从高到低）：
+          1. TM1 已持有晶圆 → 投递到路由目的地（t_TM1_*）
+          2. LLB 头部晶圆完成 → u_LLB_TM1（防止堵塞 TM2）
+          3. CL 头部晶圆完成 → u_CL_TM1（及时送 LP_done）
+          4. AL 头部晶圆完成 且 LLA 未满 → u_AL_TM1
+          5. LP 有晶圆 且 AL 空 且 LLA 未满 → u_LP_TM1
+
+        所有具体条件（停留时间、容量、清洗、节拍、WIP 上限）已由 get_action_mask 处理。
+        """
+        full_mask = self.get_action_mask()
+        pbname = self._place_by_name
+        tm1_t_indices = self._t_transitions_by_transport.get("TM1", [])
+
+        # ── 1. TM1 持有晶圆 → 投递到路由目的地 ──────────────────────
+        tm1_place = pbname.get("TM1")
+        if tm1_place is not None and len(tm1_place.tokens) > 0:
+            for t_idx in tm1_t_indices:
+                if full_mask[t_idx]:
+                    return t_idx
+            return None  # 目的地暂不可用，等待
+
+        # ── 2. LLB 有完成晶圆 → 优先清空（防止 LLB 满阻塞 TM2） ────
+        u_llb = self._u_transition_by_source_transport.get(("LLB", "TM1"))
+        if u_llb is not None and full_mask[u_llb]:
+            return u_llb
+
+        # ── 3. CL 有完成晶圆 → 取走送 LP_done ───────────────────────
+        u_cl = self._u_transition_by_source_transport.get(("CL", "TM1"))
+        if u_cl is not None and full_mask[u_cl]:
+            return u_cl
+
+        # ── 4. AL 有完成晶圆 且 LLA 未满 → 送料到 LLA ───────────────
+        lla = pbname.get("LLA")
+        if lla is not None and len(lla.tokens) < lla.capacity:
+            u_al = self._u_transition_by_source_transport.get(("AL", "TM1"))
+            if u_al is not None and full_mask[u_al]:
+                return u_al
+
+        # ── 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料 ──────────
+        al = pbname.get("AL")
+        if (al is not None and len(al.tokens) == 0
+                and lla is not None and len(lla.tokens) < lla.capacity):
+            for lp_name in self._load_port_names:
+                u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
+                if u_lp is not None and full_mask[u_lp]:
+                    return u_lp
+
+        return None
+
+    def step_auto(
+        self,
+        a2=None,
+        a3=None,
+        wait_duration: Optional[int] = None,
+    ):
+        """
+        TM1 自动控制入口：TM1 由规则引擎决策，TM2/TM3 由外部传入（或 None）。
+
+        若 TM1 有可执行动作，与 a2/a3 并发执行；
+        否则按正常逻辑推进（WAIT 或仅 TM2/TM3 动作）。
+
+        返回与 step() 相同：(done, reward, scrap, action_mask, obs)。
+        """
+        a1 = self._select_auto_tm1_transition()
+        if a1 is not None:
+            return self.step(a1=a1, a2=a2, a3=a3)
+        return self.step(a2=a2, a3=a3, wait_duration=wait_duration)
+
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
@@ -511,6 +583,9 @@ class ClusterTool:
             if p.type == CHAMBER:
                 resident_limit = self.P_Residual_time
             elif p.type == 5:
+                # LLA/LLB/CL 作为缓冲区，允许晶圆无限停留，不触发 scrap
+                if p.name in {"LLA", "LLB", "CL"}:
+                    continue
                 resident_limit = self.P_Residual_time * 3
             else:
                 continue
@@ -1024,7 +1099,8 @@ class ClusterTool:
             takt = self._takt_result_by_type.get(type_id)
             release_count = int(self._u_entry_release_count_by_type.get(type_id, 0))
         else:
-            # shared / 默认：所有类型共用同一条 takt_cycle，索引按全局发片计数推进。
+            # shared / 默认：所有类型共用同一条 takt_cycle（build_takt 已为各类型赋同一 shared 结果），
+            # 索引按全局发片计数 _u_entry_release_count 推进，与 ratio_cycle 交替无关。
             takt = self._takt_result_by_type.get(type_id)
             if takt is None and self._takt_result_by_type:
                 takt = next(iter(self._takt_result_by_type.values()))
@@ -1248,10 +1324,12 @@ class ClusterTool:
             )
 
     def _is_swap_eligible(self, pst_place: Place) -> bool:
-        """目标 PM 是否可执行 swap（仅在 _fire 中调用）。"""
+        """目标库所是否可执行 swap（仅在 _fire 中调用）。
+        PM 腔室及 TM1 的 AL/CL 目标均可 swap。
+        """
         if not self._dual_arm:
             return False
-        if not pst_place.is_pm:
+        if not pst_place.is_pm and pst_place.name not in self._TM1_SWAP_PLACES:
             return False
         if len(pst_place.tokens) < pst_place.capacity:
             return False
@@ -1296,6 +1374,8 @@ class ClusterTool:
         return True, target_name
 
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
+    # TM1 在这些库所支持双臂 swap（AL：送新料同时带走旧料；CL：送入同时取出待送 LP_done 的料）
+    _TM1_SWAP_PLACES: frozenset = frozenset({"AL", "CL"})
 
     def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         tm1_idx = self._tm1_transition_indices
