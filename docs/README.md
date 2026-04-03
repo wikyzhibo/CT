@@ -47,6 +47,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-04-03: `config/cluster_tool/route_config.json` / `CHANGELOG.md`：`1-*`/`3-*`/`4-*` 的 `entry`/`exit`/`sequence`/`path` 与 `2-*` 对齐 TM1 外层链（`LLA`…`LLB` + `LP`→`AL`→…→`CL`→`LP_done`）；`route_stage` 未改；见 `CHANGELOG.md`。
 - 2026-04-03: `config/cluster_tool/route_config.json` / `CHANGELOG.md` / `visualization/ui-guide.md`：`source`/`sink` 容量提至 `100`，避免 `n_wafer` 大于旧 `sink.capacity` 时 `LP_done` 满仓、TM1 无法投终点。
 - 2026-04-03: `CHANGELOG.md` / `training/training-guide.md` / `continuous-model/pn-single.md` / `visualization/ui-guide.md`：并发 TM1 规则自动、策略/导出/可视化为 `DualHeadPolicyNet`（TM2/TM3）；导出与 History 仍三动作字段。
 - 2026-04-03: `continuous-model/pn-single.md` / `pn_api.md` / `training/training-guide.md` / `visualization/ui-guide.md` / `CHANGELOG.md`：`2-*` 路线新增 `TM1/AL/LLA/LLB/CL` 外层链路，节拍入口迁到 `LLA`，并发接口升级为 `TM1/TM2/TM3` 三头；旧 topology cache 与旧双头并发 checkpoint 不兼容；见 `CHANGELOG.md`。

@@ -19,9 +19,9 @@ from solutions.A.ppo_trainer import train_single
 # 注6：训练档位根据路径难度预设，主要影响训练时长和最终效果，low(~4s)，medium(~14s)，high(~26s)，实际效果会有波动
 ROUTE_PLAN: dict[str, dict[str, int | str]] = {
     "1-1": {"train": 8, "eval": 75, "profile": "low"},  # 1-* 单腔线路
-    "1-2": {"train": 8, "eval": 75, "profile": "low"},
-    "1-3": {"train": 8, "eval": 75, "profile": "low"},
-    "1-4": {"train": 12, "eval": 75, "profile": "medium"},
+    "1-2": {"train": 10, "eval": 75, "profile": "medium"},
+    "1-3": {"train": 10, "eval": 75, "profile": "medium"},
+    #"1-4": {"train": 12, "eval": 75, "profile": "medium"},
     "1-5": {"train": 10, "eval": 75, "profile": "medium"},
     "2-1": {"train": 8, "eval": 75, "profile": "low"},  # 2-* 集创赛 ABCD 路径
     "2-2": {"train": 6, "eval": 75, "profile": "low"},

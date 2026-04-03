@@ -2,6 +2,12 @@
 
 ## 2026-04-03
 
+### 配置：`route_config.json` 的 `1-*`/`3-*`/`4-*` 与 `2-*` 对齐 TM1 外层链（2026-04-03）
+
+- **What changed**：`config/cluster_tool/route_config.json` 中 `1-1`～`1-6`、`3-1`～`3-3`、`4-1`～`4-3`、`4-8`～`4-14` 的 `entry`/`exit` 改为 `LLA`/`LLB`，`sequence`（含双路径 `subpaths` 内层）首段由 `LP` 改为 `LLA`（`process_time: 20`）、末段由 `LP_done` 改为 `LLB`（`process_time: 20`）；可读 `path` 统一为 `LP->AL(10s)->LLA->…->LLB(20s)->CL(20s)->LP_done` 形式。各条路线的 `route_stage` 未改。`tests/test_tm1_route_upgrade.py` 对 `1-1` 的断言改为与 `2-1` 相同的 TM1 外层链与 `release_control_places`。
+- **Why**：`model_builder.build_net` 仅在逻辑 `entry`/`exit` 为 `LLA`/`LLB` 时启用 `_wrap_route_ir_with_tm1_prefix_suffix`；此前仅 `2-*` 走该链，`1-*`/`3-*`/`4-*` 仍为 `LP`/`LP_done` 直连逻辑路线，构网不会插入 `AL/LLA/LLB/CL`，与固定拓扑 v6 及真实设备链不一致。
+- **Impact**：选用上述路线时仿真多段 TM1 外层 transport 与节拍/甘特与 `2-*` 同构；旧仅含 `LP->…->LP_done` 的 `sequence` 或依赖旧拓扑的 checkpoint/回放 JSON 与新构网不兼容，需按新 `single_route_config` 重训或重导出。
+
 ### 配置：`route_config.json` 的 `source`/`sink` 容量与 `n_wafer` 对齐（2026-04-03）
 
 - **What changed**：`config/cluster_tool/route_config.json` 顶层 `source.capacity` / `sink.capacity`（及 `source.initial_tokens`）由 `25` 调整为 `100`，与 `model_builder` 缺省口径一致，并覆盖 `cascade.yaml` 当前 `n_wafer: 30`。

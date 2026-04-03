@@ -57,11 +57,22 @@ def test_route_2_1_builds_tm1_outer_chain_and_real_capacities():
     assert capacity["TM1"] == 1
 
 
-def test_route_1_1_keeps_tm2_lp_done_compatibility():
+def test_route_1_1_uses_tm1_outer_chain_like_2_1():
     info = build_net(n_wafer1=1, route_config=_load_route_config(), route_name="1-1")
 
-    assert "t_TM2_LP_done" in info["id2t_name"]
-    assert info["route_meta"]["release_control_places"] == ("LP1",)
+    assert "t_TM1_LP_done" in info["id2t_name"]
+    assert "t_TM2_LP_done" not in info["id2t_name"]
+    assert {
+        "u_LP1_TM1",
+        "u_AL_TM1",
+        "u_LLB_TM1",
+        "u_CL_TM1",
+        "t_TM1_AL",
+        "t_TM1_LLA",
+        "t_TM1_CL",
+        "t_TM1_LP_done",
+    }.issubset(set(info["id2t_name"]))
+    assert info["route_meta"]["release_control_places"] == ("LLA",)
 
 
 def test_concurrent_env_exposes_triple_masks_and_tm1_prefix_step():
@@ -85,11 +96,12 @@ def test_concurrent_env_exposes_triple_masks_and_tm1_prefix_step():
     assert tuple(next_td["action_mask_tm1"].shape) == (env.n_actions_tm1,)
 
 
-def test_concurrent_env_old_route_still_resets():
+def test_concurrent_env_1_1_resets_with_tm1_action_space_aligned_to_2_1():
     env = Env_PN_Concurrent(single_route_name="1-1", n_wafer=1)
+    ref = Env_PN_Concurrent(single_route_name="2-1", n_wafer=1)
     td = env.reset()
 
     assert tuple(td["action_mask_tm1"].shape) == (env.n_actions_tm1,)
     assert tuple(td["action_mask_tm2"].shape) == (env.n_actions_tm2,)
     assert tuple(td["action_mask_tm3"].shape) == (env.n_actions_tm3,)
-    assert env.n_actions_tm1 == 1
+    assert env.n_actions_tm1 == ref.n_actions_tm1
