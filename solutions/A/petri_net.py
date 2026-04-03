@@ -179,6 +179,7 @@ class ClusterTool:
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
         self._tm2_transition_indices: List[int] = []
         self._tm3_transition_indices: List[int] = []
+        self._last_enable_times: Dict[int, int] = {}
 
         # ====== 10) 清洗状态与节拍缓存 ======
         self._last_deadlock = False
@@ -316,14 +317,21 @@ class ClusterTool:
         else:
             self._consecutive_wait_time = 0
             swap_indices = {t_idx for t_idx in transitions if self._will_swap(int(t_idx))}
-            action_duration = self.swap_duration if swap_indices else self.ttime
-            t2 = t1 + action_duration
+            base_duration = self.swap_duration if swap_indices else self.ttime
+            enable_times = self._last_enable_times
+            actual_end = max(
+                (enable_times.get(t_idx, t1) + base_duration for t_idx in transitions),
+                default=t1 + base_duration,
+            )
+            action_duration = actual_end - t1
+            t2 = actual_end
             reward, scan_info = self._advance_and_compute_reward(action_duration, t1, t2)
             log_entry = self._fire(
                 transitions,
                 start_time=t1,
                 end_time=t2,
                 swap_indices=swap_indices,
+                enable_times=enable_times,
             )
             if isinstance(log_entry, list):
                 self.fire_log.extend(log_entry)
@@ -409,6 +417,7 @@ class ClusterTool:
                 self.k[idx] = 1
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._last_state_scan = {}
+        self._last_enable_times = {}
         T = int(self.T)
         mask = self.get_action_mask(
             wait_action_start=T,
@@ -572,7 +581,7 @@ class ClusterTool:
             }
         )
 
-    def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
+    def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None, enable_times: Optional[Dict[int, int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
         is_multi = not isinstance(t_idx, (int, np.integer))
         transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
         if not transitions:
@@ -597,16 +606,22 @@ class ClusterTool:
             t_name = self.id2t_name[current_t_idx]
             pre_places = self._pre_place_indices[current_t_idx]
             pst_places = self._pst_place_indices[current_t_idx]
+            # 计算精确使能时间和有效结束时间
+            if enable_times and current_t_idx in enable_times:
+                effective_start = enable_times[current_t_idx]
+            else:
+                effective_start = start_time
+            effective_end = effective_start + (end_time - start_time)
             if pre_places.size == 0 or pst_places.size == 0:
                 log_entries.append(
-                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+                    {"t_name": t_name, "t1": effective_start, "t2": effective_end, "token_id": -1}
                 )
                 continue
             pre_place = self.marks[int(pre_places[0])]
             pst_place = self.marks[int(pst_places[0])]
             if len(pre_place.tokens) == 0:
                 log_entries.append(
-                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
+                    {"t_name": t_name, "t1": effective_start, "t2": effective_end, "token_id": -1}
                 )
                 continue
 
@@ -615,8 +630,8 @@ class ClusterTool:
 
             tok = pre_place.pop_head()
             wafer_id = tok.token_id
-            tok.enter_time = self.time
-            tok.stay_time = 0
+            tok.enter_time = effective_end
+            tok.stay_time = max(0, self.time - effective_end)
 
             if t_name.startswith("u_"):
                 src = pre_place.name
@@ -638,8 +653,8 @@ class ClusterTool:
 
                     self._on_processing_unload(target)
 
-                    old_tok.enter_time = self.time
-                    old_tok.stay_time = 0
+                    old_tok.enter_time = effective_end
+                    old_tok.stay_time = max(0, self.time - effective_end)
                     old_tok._dst_level_targets = tuple(self._u_targets.get(target, []))
                     old_tok.machine = tok.machine
                     old_tok.route_head_idx += 1
@@ -654,13 +669,13 @@ class ClusterTool:
                     pre_place.append(old_tok)
                     old_tok._place_idx = pre_place_idx
 
-                    self._record_eval_gantt_exit(target, old_wafer_id, int(start_time))
-                    self._record_eval_gantt_enter(target, wafer_id, int(end_time), int(pst_place.processing_time))
+                    self._record_eval_gantt_exit(target, old_wafer_id, int(effective_start))
+                    self._record_eval_gantt_enter(target, wafer_id, int(effective_end), int(pst_place.processing_time))
                     log_entries.append(
                         {
                             "t_name": t_name,
-                            "t1": int(start_time),
-                            "t2": int(end_time),
+                            "t1": int(effective_start),
+                            "t2": int(effective_end),
                             "token_id": wafer_id,
                             "swap": True,
                             "swapped_token_id": old_wafer_id,
@@ -685,9 +700,9 @@ class ClusterTool:
             tok._place_idx = pst_place_idx
             if t_name.startswith("t_"):
                 self._place_use_count[pst_place.name] = int(self._place_use_count.get(pst_place.name, 0)) + 1
-                self._record_eval_gantt_enter(pst_place.name, wafer_id, int(end_time), int(pst_place.processing_time))
+                self._record_eval_gantt_enter(pst_place.name, wafer_id, int(effective_end), int(pst_place.processing_time))
             elif t_name.startswith("u_"):
-                self._record_eval_gantt_exit(pre_place.name, wafer_id, int(start_time))
+                self._record_eval_gantt_exit(pre_place.name, wafer_id, int(effective_start))
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
             if t_name.startswith("u_") and pre_place.name in self._load_port_names:
@@ -696,7 +711,7 @@ class ClusterTool:
                 self._entered_wafer_count_by_type[released_type] = (
                     int(self._entered_wafer_count_by_type.get(released_type, 0)) + 1
                 )
-                self._last_u_LP_fire_time = int(start_time)
+                self._last_u_LP_fire_time = int(effective_start)
                 self._u_LP_release_count += 1
                 self._u_LP_release_count_by_type[released_type] = (
                     int(self._u_LP_release_count_by_type.get(released_type, 0)) + 1
@@ -705,8 +720,8 @@ class ClusterTool:
                 self._arm_lp_head_with_takt_delay(released_type)
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
-                "t1": int(start_time),
-                "t2": int(end_time),
+                "t1": int(effective_start),
+                "t2": int(effective_end),
                 "token_id": wafer_id,
             }
             if t_name.startswith("u_"):
@@ -1209,7 +1224,7 @@ class ClusterTool:
             return False
         if not pst_place.tokens:
             return False
-        if pst_place.tokens[0].stay_time < pst_place.processing_time:
+        if pst_place.tokens[0].stay_time + 5 < pst_place.processing_time:
             return False
         return not pst_place.is_cleaning
 
@@ -1279,6 +1294,8 @@ class ClusterTool:
             n_actions if n_actions is not None else (start + len(self.wait_durations))
         )
         mask = np.zeros(total_actions, dtype=bool)
+        _window = self.ttime  # 时间窗口=5s，允许在 [current_time, current_time+window] 内使能
+        self._last_enable_times = {}
         struct_enabled_cache: Dict[int, bool] = {}
         selected_parallel_target_cache: Dict[Tuple[int, Tuple[str, ...]], str] = {}
 
@@ -1368,16 +1385,17 @@ class ClusterTool:
                         if target_place is None or target_place.is_cleaning:
                             continue
                         if self._dual_arm and target_place.is_pm:
-                            if len(target_place.tokens) > 0 and target_place.tokens[0].stay_time < target_place.processing_time:
+                            if len(target_place.tokens) > 0 and target_place.tokens[0].stay_time + _window < target_place.processing_time:
                                 continue
                         else:
                             if not _is_struct_enabled(t_idx):
                                 continue
                         if 0 <= t_idx < total_actions:
                             mask[t_idx] = True
+                            self._last_enable_times[t_idx] = self.time  # TM token 已就绪
             else:
                 head = tokens[0]
-                if is_timed and proc_time > 0 and head.stay_time < proc_time:
+                if is_timed and proc_time > 0 and head.stay_time + _window < proc_time:
                     continue
                 available, target = self._is_next_stage_available(source=pname)
                 if available and target is not None:
@@ -1388,10 +1406,12 @@ class ClusterTool:
                     struct_enabled = bool(u_idx is not None and _is_struct_enabled(u_idx))
                     if u_idx is not None and struct_enabled and 0 <= u_idx < total_actions:
                         mask[u_idx] = True
+                        enable_t = self.time + max(0, proc_time - head.stay_time)
+                        self._last_enable_times[u_idx] = enable_t
 
             if not has_ready_chamber and p_type == CHAMBER and proc_time > 0 and pname in ready_chambers:
                 for tok in tokens:
-                    if tok.stay_time >= proc_time:
+                    if tok.stay_time + _window >= proc_time:
                         has_ready_chamber = True
                         break
 

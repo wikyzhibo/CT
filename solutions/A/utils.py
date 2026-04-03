@@ -29,5 +29,5 @@ def _preprocess_process_time_map(
     processed: Dict[str, int] = {}
     for chamber in chambers:
         raw_value = process_time_map.get(chamber, defaults[chamber])
-        processed[chamber] = _round_to_nearest_five(raw_value)
+        processed[chamber] = max(1, int(round(float(raw_value))))
     return processed
