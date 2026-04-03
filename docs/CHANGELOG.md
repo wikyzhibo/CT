@@ -2,6 +2,24 @@
 
 ## 2026-04-03
 
+### 配置：`route_config.json` 的 `source`/`sink` 容量与 `n_wafer` 对齐（2026-04-03）
+
+- **What changed**：`config/cluster_tool/route_config.json` 顶层 `source.capacity` / `sink.capacity`（及 `source.initial_tokens`）由 `25` 调整为 `100`，与 `model_builder` 缺省口径一致，并覆盖 `cascade.yaml` 当前 `n_wafer: 30`。
+- **Why**：`sink.capacity` 小于 rollout 片数时，`LP_done` 先满仓，`t_TM1_LP_done` 无法再向终点投片，表现为「CL 之后第 N 片长期停在 TM1 / 进不了 LP_done」；与 `docs/continuous-model/pn-single.md` 中「`n_wafer` 大于 sink 容量导致终点堵塞」同因。
+- **Impact**：仅影响读取该 JSON 构网的级联/可视化；若自定义 `n_wafer` 仍须保证 `source/sink.capacity >= n_wafer`。
+
+### 可视化：并发 `PetriAdapter` 修复 `LP`/`LP_done` 晶圆数翻倍（2026-04-03）
+
+- **What changed**：`visualization/petri_adapter.py` 的 `_collect_state_info` 将 `LP`/`LP_done` 别名腔室改为空壳初始化，仅在遍历 `marks` 时对 `LP1/LP2` 与 `LP_done` 各 `_merge_alias_state` 一次；删除「先全量 `_build_alias_state` 再合并」的重复路径。`docs/visualization/ui-guide.md` 行为规则与 Change Notes 同步。
+- **Why**：旧逻辑对同一终点/起点库所把 token 装了两次，界面 `LP_done`（及 `LP`）上每进 1 片会显示 2 片，易误判为「完工计数异常」或「晶圆卡在 TM1」。
+- **Impact**：仅影响 `--concurrent` + `PetriAdapter` 的腔室卡片与聚合容量；`ClusterTool.done_count` 与仿真状态未变。
+
+### 并发：TM1 规则自动 + 双头策略；导出序列与可视化对齐（2026-04-03）
+
+- **What changed**：`solutions/A/eval/export_inference_sequence.py` 的 `--concurrent` rollout 改为只推理 `DualHeadPolicyNet` 的 `logits_tm2`/`logits_tm3`，`env.step` 固定 `action_tm1=WAIT`，导出 `actions`/`action_tm1` 中 TM1 来自 `step` 前 `ClusterTool._cached_auto_tm1_action` 规则解码。`visualization/petri_adapter.py` 仅调用 `ClusterTool.step(a2=..., a3=...)`；History 仍三列，TM1 文案来自上述缓存。`visualization/main.py` 的 `load_concurrent_model` 改为加载 `DualHeadPolicyNet`；`visualization/viewmodel.py` 并发 History 串取自适配器。`docs/training/training-guide.md`、`docs/continuous-model/pn-single.md`、`docs/visualization/ui-guide.md` 同步。
+- **Why**：TM1 已在 `petri_net.ClusterTool` 内由 `_pick_tm1_from_mask` 自动执行；策略与导出不应再假装存在 `logits_tm1`；可视化推进须与 `FastEnvWrapper_Concurrent.step_auto` 一致。
+- **Impact**：旧 **TripleHead**（`head_tm1`）并发权重若仍存在，当前导出与 UI Model A 加载路径按 **双头** 真源；需使用与 `ppo_trainer` 一致的 `CT_concurrent_best.pt`。Model B JSON 仍可为每步三动作字符串，但仿真 TM1 由规则决定，与导出脚本口径一致。
+
 ### A 方案：`2-*` 路线新增 `TM1/AL/LLA/LLB/CL` 外层链路，节拍入口迁到 `LLA`（2026-04-03）
 
 - **What changed**：`solutions/A/construct/build_topology.py` 的固定拓扑升到 v6，新增真实库所 `AL/LLA/LLB/CL/TM1`；`solutions/A/model_builder.py` 对 `2-1`~`2-4` 改为“逻辑路线 `LLA ... LLB` + 物理前后缀 `LP -> AL -> LLA` / `LLB -> CL -> LP_done`”的构网方式；`solutions/A/petri_net.py` 的 release/takt/WIP 入口由 `LP` 迁到 `route_meta.release_control_places`，`2-*` 上实际生效点为 `u_LLA_TM2`。`config/cluster_tool/route_config.json` 新增 `AL/LLA/LLB/CL` 与 `TM1`，并把 `2-*` 的 `entry/exit/path/sequence/route_stage` 同步切到新口径。`solutions/A/construct/build_marks.py`、`preprocess_config.py`、`model_builder.py` 同步放开逐库所真实容量，不再把所有非 source/sink 库所强制写成 1。

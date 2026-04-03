@@ -143,7 +143,7 @@ class CenterCanvas(QGraphicsView):
             metrics["cell_w"] = 96.0
             metrics["cell_h"] = 84.0
             metrics["chamber_scale"] = 0.8
-            metrics["robot_scale"] = 0.7
+            metrics["robot_scale"] = 0.8
         return metrics
 
     def _layout_pitch(self, metrics: dict[str, float], chamber_w: float, chamber_h: float) -> tuple[float, float]:
@@ -216,8 +216,8 @@ class CenterCanvas(QGraphicsView):
                     "PM8": (4, 0), "PM7": (5, 0),
                     "PM9": (4, 3), "PM10": (5, 3),
                     "LLA": (6, 1), "LLB": (6, 2),
-                    "AL": (7.1, 0), "CL": (7.1, 3),
-                    "LP": (8.2, 1), "LP_done": (8.2, 2),
+                    "AL": (7.2, 0), "CL": (7.2, 3),
+                    "LP": (8.4, 1), "LP_done": (8.4, 2),
                 }
                 display_to_state = {name: name for name in positions}
                 self._robot_display_to_state = {"TM1 ARM": "TM1", "TM2 ARM": "TM2", "TM3 ARM": "TM3"}

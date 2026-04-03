@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from .algorithm_interface import AlgorithmAdapter, StateInfo
+from .petri_adapter import PetriAdapter
 
 
 class PetriViewModel(QObject):
@@ -99,13 +100,18 @@ class PetriViewModel(QObject):
         self.last_reward = reward
         self.done = done
 
-        action_labels = []
-        for idx, action_id in enumerate(actions, start=1):
-            action_name = "WAIT" if action_id == -1 else self.adapter.get_action_name(action_id)
-            action_labels.append(f"TM{idx}:{action_name}")
+        if isinstance(self.adapter, PetriAdapter):
+            hist = self.adapter.export_action_sequence()
+            action_line = hist[-1]["action"] if hist else ""
+        else:
+            action_labels = []
+            for idx, action_id in enumerate(actions, start=1):
+                action_name = "WAIT" if action_id == -1 else self.adapter.get_action_name(action_id)
+                action_labels.append(f"TM{idx}:{action_name}")
+            action_line = " | ".join(action_labels)
         self.action_history.append({
             "step": self.step_count,
-            "action": " | ".join(action_labels),
+            "action": action_line,
             "reward": reward,
             "detail": self.adapter.get_reward_breakdown(),
         })

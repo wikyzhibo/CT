@@ -7,13 +7,13 @@
   "source": {
     "name": "LP",
     "type": "source",
-    "capacity": 25,
-    "initial_tokens": 25
+    "capacity": 100,
+    "initial_tokens": 100
   },
   "sink": {
     "name": "LP_done",
     "type": "sink",
-    "capacity": 25,
+    "capacity": 100,
     "initial_tokens": 0
   },
   "chambers": {
@@ -719,7 +719,7 @@
       "max_wafer1_in_system": 12,
       "max_wafer2_in_system": 0,
       "ratio": [1,0],
-      "route_stage": [["AL"],["LLA"],["PM7","PM8"],["PM1","PM2"],["LLD"],["LLB"],["CL"]],
+      "route_stage": [["PM7","PM8"],["PM1","PM2"],["LLD"]],
       "sequence": [
         {
           "stage": {
@@ -851,7 +851,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LLA->PM7/PM8(70s)->PM9/PM10(200s)->LLB(20s)",
-      "route_stage": [["AL"],["LLA"],["PM7","PM8"],["PM9","PM10"],["LLB"],["CL"]],
+      "route_stage": [["PM7","PM8"],["PM9","PM10"]],
       "sequence": [
         {
           "stage": {

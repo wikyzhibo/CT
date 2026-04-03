@@ -34,7 +34,7 @@
   - `python -m solutions.Continuous_model.train_single --device cascade --rollout-n-envs 1`
   - 关键参数: `--device`, `--compute-device`, `--checkpoint`, `--rollout-n-envs`, `--artifact-dir`（`--artifact-dir` 作为运行名称前缀；产物写入 `results/models`、`results/training_logs`、`results/gantt`、`results/action_sequences`；图标题带 `路径 <路线名>` 后缀）
 - 推理导出入口:
-- `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联；`--concurrent` 为三头并发权重；`--retry` 控制未 finish 重试；rollout 最大步数固定 `MAX_STEPS=10000`）
+- `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联；`--concurrent` 为 `DualHeadPolicyNet` 并发权重，TM1 规则自动、仅策略 TM2/TM3；`--retry` 控制未 finish 重试；rollout 最大步数固定 `MAX_STEPS=10000`）
   - action sequence 输出为 `results/action_sequences/<--out-name>(W<n_wafer>-M<time>).json`（默认 `tmp` → `results/action_sequences/tmp(W…-M…).json`）
   - 导出的 `replay_env_overrides` 会携带 `single_route_name`，并在可用时携带 `single_route_config`，用于可视化回放时保持与导出一致的构网路线
 - 二次释放惩罚验证入口:
@@ -166,4 +166,4 @@
 - 2026-03-19: 建立 pn_single 主文档，统一单设备入口、脚本接口与行为规则说明。
 - 2026-03-19: 修复 `1-6` 路径中 `PM3` 满载时 `u_PM1` 仍被使能的问题：`get_action_mask`（及当时并行的使能列表实现）在使用 `route_target` 时新增目标容量与清洗校验，禁止绕过 `_select_target_for_source` 的接收约束。
 - 2026-04-03: **`2-*` 路线新增 TM1 外层链路**：固定拓扑升到 `TM1/TM2/TM3` 三机械手，新增 `AL/LLA/LLB/CL` 四个真实缓冲位；`2-1`~`2-4` 的逻辑路径改为 `LLA ... LLB`，构网时固定包装物理前后缀 `LP -> AL -> LLA` 与 `LLB -> CL -> LP_done`。节拍/WIP 入口迁到 `LLA`，`render_gantt` 仍只读路线 `route_stage`。同时容量口径从“除 source/sink 外全 1”改为逐库所读取真实配置。旧 topology cache 版本与旧双头并发 checkpoint 均不兼容；见 `docs/CHANGELOG.md`。
-- 2026-04-03: **并发接口升级为三头**：`ClusterTool.get_action_mask(concurrent=True)` 与 `step(...).action_mask` 从 `(mask_tm2, mask_tm3)` 变为 `(mask_tm1, mask_tm2, mask_tm3)`；`Env_PN_Concurrent` 新增 `action_tm1/action_mask_tm1`；`export_inference_sequence --concurrent` 改用 `TripleHeadPolicyNet` 并导出 `actions=[tm1, tm2, tm3]`；见 `docs/CHANGELOG.md`。
+- 2026-04-03: **并发接口升级为三机械手掩码**：`ClusterTool.get_action_mask(concurrent=True)` 与 `step(...).action_mask` 为 `(mask_tm1, mask_tm2, mask_tm3)`；`Env_PN_Concurrent` 含 `action_tm1/action_mask_tm1`；TM1 点火由 `ClusterTool` 内 `_pick_tm1_from_mask` 自动选择；`export_inference_sequence --concurrent` 使用 `DualHeadPolicyNet` 并导出 `actions=[tm1, tm2, tm3]`（tm1 为规则解码）；见 `docs/CHANGELOG.md`。

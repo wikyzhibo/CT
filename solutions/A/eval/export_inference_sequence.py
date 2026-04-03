@@ -1,8 +1,12 @@
 """
-级联 / 并发三动作推理序列导出工具。
+级联 / 并发推理序列导出工具。
 
 默认在 `Env_PN_Single`（级联拓扑、`MaskedPolicyHead`）上 roll out，导出 JSON 中每步为三机械臂占位
-`actions: [动作名, "WAIT", "WAIT"]`。`--concurrent` 时在 `Env_PN_Concurrent` 上加载 `TripleHeadPolicyNet` 权重 rollout。
+`actions: [动作名, "WAIT", "WAIT"]`。
+
+`--concurrent` 时在 `Env_PN_Concurrent` 上加载 `DualHeadPolicyNet`（仅 TM2/TM3 策略头）；TM1 由 `ClusterTool`
+内部规则（`get_action_mask` → `_cached_auto_tm1_action`）在每步 `step` 中自动执行。导出 JSON 每步仍含
+`actions: [tm1名, tm2名, tm3名]` 与 `action_tm*`，其中 TM1 为当步规则解码结果而非策略输出。
 
 将 `sequence`、`replay_env_overrides`、`reward_report` 等写入仓库根目录
 `results/action_sequences/<out_name>(W<晶圆数>-M<makespan>).json`：`out_name` 经 `safe_name` 清洗后，
@@ -29,7 +33,7 @@ from tensordict.nn import TensorDictModule
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import MaskedCategorical, ProbabilisticActor
 
-from solutions.model.network import TripleHeadPolicyNet, MaskedPolicyHead
+from solutions.model.network import DualHeadPolicyNet, MaskedPolicyHead
 from solutions.A.rl_env import Env_PN_Concurrent, Env_PN_Single
 from results.paths import ACTION_SEQUENCES_DIR, ensure_results_dirs, model_output_path, safe_name
 
@@ -61,7 +65,7 @@ def _action_sequence_export_path(out_name: str, env: Env_PN_Single | Env_PN_Conc
 class _DualActionPolicyModule(nn.Module):
     """与 `ppo_trainer.DualActionPolicyModule` 同构，避免循环 import。"""
 
-    def __init__(self, backbone: TripleHeadPolicyNet):
+    def __init__(self, backbone: DualHeadPolicyNet):
         super().__init__()
         self.backbone = backbone
 
@@ -323,15 +327,13 @@ def _rollout_single_sequence_with_retry(
     return last_sequence, last_overrides, last_report, last_finished, last_env
 
 
-def _infer_dual_head_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, int, int, int, int]:
+def _infer_dual_head_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, int, int, int]:
     w0 = state_dict.get("backbone.backbone.0.weight")
     if w0 is None:
         raise KeyError("并发策略权重缺少 backbone.backbone.0.weight")
     n_hidden, n_obs = int(w0.shape[0]), int(w0.shape[1])
-    h1 = state_dict["backbone.head_tm1.weight"]
     h2 = state_dict["backbone.head_tm2.weight"]
     h3 = state_dict["backbone.head_tm3.weight"]
-    n_actions_tm1 = int(h1.shape[0])
     n_actions_tm2 = int(h2.shape[0])
     n_actions_tm3 = int(h3.shape[0])
     linear_count = 0
@@ -340,7 +342,7 @@ def _infer_dual_head_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, in
         if m and int(m.group(1)) % 2 == 0:
             linear_count += 1
     n_layers = linear_count + 1
-    return n_obs, n_hidden, n_actions_tm1, n_actions_tm2, n_actions_tm3, n_layers
+    return n_obs, n_hidden, n_actions_tm2, n_actions_tm3, n_layers
 
 
 def _build_concurrent_policy(
@@ -349,23 +351,17 @@ def _build_concurrent_policy(
     device: torch.device,
 ) -> _DualActionPolicyModule:
     raw_state_dict = torch.load(str(model_path), map_location=device, weights_only=True)
-    n_obs, n_hidden, n_actions_tm1, n_actions_tm2, n_actions_tm3, n_layers = _infer_dual_head_shape(raw_state_dict)
+    n_obs, n_hidden, n_actions_tm2, n_actions_tm3, n_layers = _infer_dual_head_shape(raw_state_dict)
     if n_obs != int(env.observation_spec["observation"].shape[0]):
         raise ValueError(f"权重 n_obs={n_obs} 与 Env 观测维 {env.observation_spec['observation'].shape[0]} 不一致")
-    if (
-        n_actions_tm1 != int(env.n_actions_tm1)
-        or n_actions_tm2 != int(env.n_actions_tm2)
-        or n_actions_tm3 != int(env.n_actions_tm3)
-    ):
+    if n_actions_tm2 != int(env.n_actions_tm2) or n_actions_tm3 != int(env.n_actions_tm3):
         raise ValueError(
-            "权重动作维 "
-            f"({n_actions_tm1},{n_actions_tm2},{n_actions_tm3}) 与 Env "
-            f"({env.n_actions_tm1},{env.n_actions_tm2},{env.n_actions_tm3}) 不一致"
+            f"权重动作维 ({n_actions_tm2},{n_actions_tm3}) 与 Env "
+            f"({env.n_actions_tm2},{env.n_actions_tm3}) 不一致"
         )
-    backbone = TripleHeadPolicyNet(
+    backbone = DualHeadPolicyNet(
         n_obs=n_obs,
         n_hidden=n_hidden,
-        n_actions_tm1=n_actions_tm1,
         n_actions_tm2=n_actions_tm2,
         n_actions_tm3=n_actions_tm3,
         n_layers=n_layers,
@@ -376,11 +372,18 @@ def _build_concurrent_policy(
     return policy_module
 
 
-def _decode_concurrent_actions(env: Env_PN_Concurrent, a_tm1: int, a_tm2: int, a_tm3: int) -> tuple[str, str, str]:
-    if int(a_tm1) == int(env.tm1_wait_action):
-        n1 = "WAIT"
-    else:
-        n1 = str(env.net.id2t_name[int(env.tm1_transition_indices[int(a_tm1)])])
+def _decode_tm1_rule_export(env: Env_PN_Concurrent, cached_t: int | None) -> tuple[str, int]:
+    """本步规则选中的 TM1：`(显示名, 局部 action_tm1 下标)`。`cached_t is None` 表示本步无 TM1 点火（WAIT）。"""
+    if cached_t is None:
+        return "WAIT", int(env.tm1_wait_action)
+    t_idx = int(cached_t)
+    for i, tid in enumerate(env.tm1_transition_indices):
+        if int(tid) == t_idx:
+            return str(env.net.id2t_name[t_idx]), i
+    raise RuntimeError(f"TM1 缓存变迁 {t_idx} 不在 tm1_transition_indices 中")
+
+
+def _decode_tm2_tm3_names(env: Env_PN_Concurrent, a_tm2: int, a_tm3: int) -> tuple[str, str]:
     if int(a_tm2) == int(env.tm2_wait_action):
         n2 = "WAIT"
     else:
@@ -389,7 +392,7 @@ def _decode_concurrent_actions(env: Env_PN_Concurrent, a_tm1: int, a_tm2: int, a
         n3 = "WAIT"
     else:
         n3 = str(env.net.id2t_name[int(env.tm3_transition_indices[int(a_tm3)])])
-    return n1, n2, n3
+    return n2, n3
 
 
 def _rollout_concurrent_sequence(
@@ -414,39 +417,34 @@ def _rollout_concurrent_sequence(
     with torch.no_grad():
         for step in range(1, MAX_STEPS + 1):
             obs_f = td["observation"].unsqueeze(0).to(device).float()
-            mask_tm1 = td["action_mask_tm1"].unsqueeze(0).to(device).bool()
             mask_tm2 = td["action_mask_tm2"].unsqueeze(0).to(device).bool()
             mask_tm3 = td["action_mask_tm3"].unsqueeze(0).to(device).bool()
 
             out = policy_module(obs_f)
-            logits_tm1 = out["logits_tm1"]
             logits_tm2 = out["logits_tm2"]
             logits_tm3 = out["logits_tm3"]
             if exploration == "mode":
-                m1 = logits_tm1.masked_fill(~mask_tm1, -1e9)
                 m2 = logits_tm2.masked_fill(~mask_tm2, -1e9)
                 m3 = logits_tm3.masked_fill(~mask_tm3, -1e9)
-                a_tm1 = torch.argmax(m1, dim=-1)
                 a_tm2 = torch.argmax(m2, dim=-1)
                 a_tm3 = torch.argmax(m3, dim=-1)
             else:
-                masked_logits_tm1 = logits_tm1.masked_fill(~mask_tm1, -1e9)
                 masked_logits_tm2 = logits_tm2.masked_fill(~mask_tm2, -1e9)
                 masked_logits_tm3 = logits_tm3.masked_fill(~mask_tm3, -1e9)
-                probs1 = torch.softmax(masked_logits_tm1, dim=-1)
                 probs2 = torch.softmax(masked_logits_tm2, dim=-1)
                 probs3 = torch.softmax(masked_logits_tm3, dim=-1)
-                a_tm1 = torch.multinomial(probs1, 1).squeeze(-1)
                 a_tm2 = torch.multinomial(probs2, 1).squeeze(-1)
                 a_tm3 = torch.multinomial(probs3, 1).squeeze(-1)
 
-            i1 = int(a_tm1.squeeze(0).item())
             i2 = int(a_tm2.squeeze(0).item())
             i3 = int(a_tm3.squeeze(0).item())
-            n1, n2, n3 = _decode_concurrent_actions(env, i1, i2, i3)
+
+            cached_t = getattr(env.net, "_cached_auto_tm1_action", None)
+            n1, i1 = _decode_tm1_rule_export(env, cached_t)
+            n2, n3 = _decode_tm2_tm3_names(env, i2, i3)
 
             step_td = td.clone()
-            step_td["action_tm1"] = torch.tensor(i1, dtype=torch.int64)
+            step_td["action_tm1"] = torch.tensor(int(env.tm1_wait_action), dtype=torch.int64)
             step_td["action_tm2"] = torch.tensor(i2, dtype=torch.int64)
             step_td["action_tm3"] = torch.tensor(i3, dtype=torch.int64)
             td_next = env.step(step_td)
@@ -616,7 +614,7 @@ def main() -> None:
     parser.add_argument(
         "--concurrent",
         action="store_true",
-        help="使用 TripleHeadPolicyNet（Env_PN_Concurrent）；默认使用级联 MaskedPolicyHead",
+        help="使用 DualHeadPolicyNet（Env_PN_Concurrent，仅 TM2/TM3 策略；TM1 规则自动）；默认级联 MaskedPolicyHead",
     )
     parser.add_argument(
         "--retry",

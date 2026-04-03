@@ -50,7 +50,7 @@
   - 训练档位只接受 `low` / `medium` / `high`，分别从 `config/training/low.yaml`、`medium.yaml`、`high.yaml` 读取
   - 统一训练时 `solutions.A.ppo_trainer` 不打印训练配置和逐 batch 指标，只显示一个 batch 进度条；最终汇总写入 `results/training_logs/validate_all_routes_summary.json`
 - 导出推理序列:
-  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `TripleHeadPolicyNet`；并发序列写 `actions=[tm1, tm2, tm3]`；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
+  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `DualHeadPolicyNet` 只决策 TM2/TM3；TM1 为 `ClusterTool` 规则自动执行，导出仍写 `actions=[tm1, tm2, tm3]` 且 `action_tm1` 为规则解码；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
   - `--model` 为已存在的 `.pt` 文件路径时直接使用；否则按 `results/models/<相对路径>` 解析。
 - 关键配置优先级:
   - cascade: `config/training/s_train.yaml` 作为基础，CLI 参数覆盖。
@@ -112,4 +112,4 @@
 - 2026-03-22: `train_single` 增加 `--artifact-dir`（训练 log、metrics、指标图、导出序列）；`export_inference_sequence` 按 `--out-name` 写入 `seq/<name>.json`，默认 `tmp`；`train_all` 批量路线暂缓。
 - 2026-03-21: single 训练路径下线，文档入口收敛为 cascade/concurrent；`train_single` 示例统一为 `--device cascade`。
 - 2026-03-19: 建立训练主文档，统一 single/cascade/concurrent 入口与产物说明。
-- 2026-04-03: A 方案并发训练升级为 `TM1/TM2/TM3` 三头：`Env_PN_Concurrent` 新增 `action_tm1/action_mask_tm1`，`solutions.model.network` 新增 `TripleHeadPolicyNet`，`solutions.A.ppo_trainer` 与 `solutions.A.eval.export_inference_sequence` 同步切到三头输入输出；旧双头并发 checkpoint 与当前环境动作维度不兼容；见 `docs/CHANGELOG.md`。
+- 2026-04-03: 并发环境保留三机械手掩码与导出字段 `action_tm1`/`action_tm2`/`action_tm3`，但 **TM1 由 `ClusterTool` 规则自动执行**；`ppo_trainer` / `export_inference_sequence --concurrent` / 可视化 Model A 使用 **`DualHeadPolicyNet`（仅 TM2/TM3）**；导出 `actions` 中 TM1 为规则解码；见 `docs/CHANGELOG.md`。

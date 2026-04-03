@@ -37,7 +37,7 @@ from solutions.A.rl_env import (
 )
 from solutions.A.eval.plot_train_metrics import plot_metrics
 from solutions.A.eval.export_inference_sequence import rollout_and_export
-from solutions.model.network import MaskedPolicyHead, TripleHeadPolicyNet
+from solutions.model.network import MaskedPolicyHead, DualHeadPolicyNet, TripleHeadPolicyNet
 
 
 class SingleActionPolicyModule(nn.Module):
@@ -56,10 +56,10 @@ class SingleActionPolicyModule(nn.Module):
 
 class DualActionPolicyModule(nn.Module):
     """
-    并发三动作策略模块包装器（TM1/TM2/TM3 三头）。
+    并发双动作策略模块包装器（TM2/TM3 双头，TM1 由规则引擎自动执行）。
     """
 
-    def __init__(self, backbone: TripleHeadPolicyNet):
+    def __init__(self, backbone: DualHeadPolicyNet):
         super().__init__()
         self.backbone = backbone
 
@@ -175,17 +175,14 @@ def _collect_rollout_concurrent(
     device: str,
 ) -> TensorDict:
     """
-    采集三动作并发 rollout。
+    采集双动作并发 rollout（TM2/TM3 由策略决策，TM1 自动执行）。
     """
     data = {
         "observation_f": [],
-        "action_mask_tm1": [],
         "action_mask_tm2": [],
         "action_mask_tm3": [],
-        "action_tm1": [],
         "action_tm2": [],
         "action_tm3": [],
-        "log_prob_tm1": [],
         "log_prob_tm2": [],
         "log_prob_tm3": [],
         "reward": [],
@@ -200,32 +197,25 @@ def _collect_rollout_concurrent(
     policy_module.eval()
     for _ in range(int(n_steps)):
         obs_f = td["observation"].unsqueeze(0).to(device).float()
-        mask_tm1 = td["action_mask_tm1"].unsqueeze(0).to(device).bool()
         mask_tm2 = td["action_mask_tm2"].unsqueeze(0).to(device).bool()
         mask_tm3 = td["action_mask_tm3"].unsqueeze(0).to(device).bool()
 
         with torch.no_grad():
             out = policy_module(obs_f)
-            logits_tm1 = out["logits_tm1"]
             logits_tm2 = out["logits_tm2"]
             logits_tm3 = out["logits_tm3"]
-            a_tm1, lp_tm1 = _sample_actions_masked(logits_tm1, mask_tm1)
             a_tm2, lp_tm2 = _sample_actions_masked(logits_tm2, mask_tm2)
             a_tm3, lp_tm3 = _sample_actions_masked(logits_tm3, mask_tm3)
 
         data["observation_f"].append(td["observation"].float())
-        data["action_mask_tm1"].append(td["action_mask_tm1"])
         data["action_mask_tm2"].append(td["action_mask_tm2"])
         data["action_mask_tm3"].append(td["action_mask_tm3"])
-        data["action_tm1"].append(a_tm1.squeeze(0).cpu())
         data["action_tm2"].append(a_tm2.squeeze(0).cpu())
         data["action_tm3"].append(a_tm3.squeeze(0).cpu())
-        data["log_prob_tm1"].append(lp_tm1.squeeze(0).cpu())
         data["log_prob_tm2"].append(lp_tm2.squeeze(0).cpu())
         data["log_prob_tm3"].append(lp_tm3.squeeze(0).cpu())
 
         step_td = td.clone()
-        step_td["action_tm1"] = a_tm1.squeeze(0).cpu()
         step_td["action_tm2"] = a_tm2.squeeze(0).cpu()
         step_td["action_tm3"] = a_tm3.squeeze(0).cpu()
         td_next = env.step(step_td)
@@ -326,32 +316,27 @@ def _train_concurrent(
     # 从一个探针环境读取动作/观测维度
     _probe_env = _build_concurrent_env(device="cpu", env_overrides=env_overrides)
     n_obs = _probe_env.observation_spec["observation"].shape[0]
-    n_actions_tm1 = int(_probe_env.n_actions_tm1)
     n_actions_tm2 = int(_probe_env.n_actions_tm2)
     n_actions_tm3 = int(_probe_env.n_actions_tm3)
     route_label = _artifact_route_label(_probe_env)
-    #if n_actions_tm2 < 2 or n_actions_tm3 < 2:
-    #    raise ValueError("并发动作空间非法：TM2/TM3 均需包含变迁+WAIT")
     del _probe_env
 
     if not batch_progress_only:
         print(f"  计算设备: {device}", flush=True)
-        print(f"  环境类型: Env_PN_Concurrent", flush=True)
+        print(f"  环境类型: Env_PN_Concurrent (TM1 自动执行)", flush=True)
         print(
             f"  Rollout Collector: ultra_concurrent "
             f"(n_envs={rollout_n_envs}, rollout_device={rollout_device})",
             flush=True,
         )
         print(f"  观测维度: {n_obs}", flush=True)
-        print(f"  TM1 动作空间: {n_actions_tm1}", flush=True)
         print(f"  TM2 动作空间: {n_actions_tm2}", flush=True)
         print(f"  TM3 动作空间: {n_actions_tm3}", flush=True)
         print("  并发 WAIT 规则: 单档 WAIT(5s)", flush=True)
 
-    backbone = TripleHeadPolicyNet(
+    backbone = DualHeadPolicyNet(
         n_obs=n_obs,
         n_hidden=config.n_hidden,
-        n_actions_tm1=n_actions_tm1,
         n_actions_tm2=n_actions_tm2,
         n_actions_tm3=n_actions_tm3,
         n_layers=config.n_layer,
@@ -426,7 +411,7 @@ def _train_concurrent(
 
         t_rollout_end = perf_counter()
 
-        available_frames = int(rollout_cpu["actions_tm1"].numel())
+        available_frames = int(rollout_cpu["actions_tm2"].numel())
         used_frames = min(int(config.frames_per_batch), available_frames)
         total_env_steps += used_frames
 
@@ -434,13 +419,10 @@ def _train_concurrent(
         rollout_dev = {
             "obs": rollout_cpu["obs"].to(device, non_blocking=non_blocking),
             "next_obs": rollout_cpu["next_obs"].to(device, non_blocking=non_blocking),
-            "mask_tm1": rollout_cpu["mask_tm1"].to(device, non_blocking=non_blocking),
             "mask_tm2": rollout_cpu["mask_tm2"].to(device, non_blocking=non_blocking),
             "mask_tm3": rollout_cpu["mask_tm3"].to(device, non_blocking=non_blocking),
-            "actions_tm1": rollout_cpu["actions_tm1"].to(device, non_blocking=non_blocking),
             "actions_tm2": rollout_cpu["actions_tm2"].to(device, non_blocking=non_blocking),
             "actions_tm3": rollout_cpu["actions_tm3"].to(device, non_blocking=non_blocking),
-            "log_probs_tm1": rollout_cpu["log_probs_tm1"].to(device, non_blocking=non_blocking),
             "log_probs_tm2": rollout_cpu["log_probs_tm2"].to(device, non_blocking=non_blocking),
             "log_probs_tm3": rollout_cpu["log_probs_tm3"].to(device, non_blocking=non_blocking),
             "rewards": rollout_cpu["rewards"].to(device, non_blocking=non_blocking),
@@ -630,7 +612,6 @@ def _alloc_rollout_buffers_concurrent(
     n_steps: int,
     n_envs: int,
     obs_dim: int,
-    n_tm1: int,
     n_tm2: int,
     n_tm3: int,
     pin_memory: bool,
@@ -639,13 +620,10 @@ def _alloc_rollout_buffers_concurrent(
     return {
         "obs": torch.empty((n_steps, n_envs, obs_dim), dtype=torch.float32, **alloc_kwargs),
         "next_obs": torch.empty((n_steps, n_envs, obs_dim), dtype=torch.float32, **alloc_kwargs),
-        "mask_tm1": torch.empty((n_steps, n_envs, n_tm1), dtype=torch.bool, **alloc_kwargs),
         "mask_tm2": torch.empty((n_steps, n_envs, n_tm2), dtype=torch.bool, **alloc_kwargs),
         "mask_tm3": torch.empty((n_steps, n_envs, n_tm3), dtype=torch.bool, **alloc_kwargs),
-        "actions_tm1": torch.empty((n_steps, n_envs), dtype=torch.int64, **alloc_kwargs),
         "actions_tm2": torch.empty((n_steps, n_envs), dtype=torch.int64, **alloc_kwargs),
         "actions_tm3": torch.empty((n_steps, n_envs), dtype=torch.int64, **alloc_kwargs),
-        "log_probs_tm1": torch.empty((n_steps, n_envs), dtype=torch.float32, **alloc_kwargs),
         "log_probs_tm2": torch.empty((n_steps, n_envs), dtype=torch.float32, **alloc_kwargs),
         "log_probs_tm3": torch.empty((n_steps, n_envs), dtype=torch.float32, **alloc_kwargs),
         "rewards": torch.empty((n_steps, n_envs), dtype=torch.float32, **alloc_kwargs),
@@ -667,7 +645,7 @@ def collect_rollout_ultra_concurrent(
     pin_memory: bool = False,
 ):
     """
-    并发三动作高速 rollout（镜像 collect_rollout_ultra）：
+    并发双动作高速 rollout（TM2/TM3 由策略决策，TM1 自动执行）：
     - 全程 CPU rollout + tensor buffer 预分配
     - 支持跨 batch 续采样（state 持有 env/obs/mask）
     - env_fn() 必须返回 Env_PN_Concurrent 实例
@@ -683,30 +661,25 @@ def collect_rollout_ultra_concurrent(
             env: FastEnvWrapper_Concurrent | VectorEnv_Concurrent = FastEnvWrapper_Concurrent(env_fn())
             obs_np, info = env.reset()
             obs = torch.from_numpy(np.asarray(obs_np, dtype=np.float32)).unsqueeze(0)
-            mask_tm1 = torch.from_numpy(np.asarray(info["action_mask_tm1"], dtype=np.bool_)).unsqueeze(0)
             mask_tm2 = torch.from_numpy(np.asarray(info["action_mask_tm2"], dtype=np.bool_)).unsqueeze(0)
             mask_tm3 = torch.from_numpy(np.asarray(info["action_mask_tm3"], dtype=np.bool_)).unsqueeze(0)
         else:
             env = VectorEnv_Concurrent(env_fn=env_fn, n_envs=n_envs)
             obs_np, info = env.reset()
             obs = torch.from_numpy(np.asarray(obs_np, dtype=np.float32))
-            mask_tm1 = torch.from_numpy(np.asarray(info["action_mask_tm1"], dtype=np.bool_))
             mask_tm2 = torch.from_numpy(np.asarray(info["action_mask_tm2"], dtype=np.bool_))
             mask_tm3 = torch.from_numpy(np.asarray(info["action_mask_tm3"], dtype=np.bool_))
         state["env"] = env
         state["obs"] = obs
-        state["mask_tm1"] = mask_tm1
         state["mask_tm2"] = mask_tm2
         state["mask_tm3"] = mask_tm3
         state["n_envs"] = n_envs
 
     env = state["env"]
     obs = state["obs"]
-    mask_tm1 = state["mask_tm1"]
     mask_tm2 = state["mask_tm2"]
     mask_tm3 = state["mask_tm3"]
     obs_dim = int(obs.shape[-1])
-    n_tm1 = int(mask_tm1.shape[-1])
     n_tm2 = int(mask_tm2.shape[-1])
     n_tm3 = int(mask_tm3.shape[-1])
 
@@ -714,36 +687,30 @@ def collect_rollout_ultra_concurrent(
         n_steps=int(n_steps),
         n_envs=n_envs,
         obs_dim=obs_dim,
-        n_tm1=n_tm1,
         n_tm2=n_tm2,
         n_tm3=n_tm3,
         pin_memory=pin_memory,
     )
 
     policy = policy.to("cpu").eval()
-    step_fn = env.step
+    step_fn = env.step_auto
 
     for t in range(int(n_steps)):
         buffers["obs"][t].copy_(obs)
-        buffers["mask_tm1"][t].copy_(mask_tm1)
         buffers["mask_tm2"][t].copy_(mask_tm2)
         buffers["mask_tm3"][t].copy_(mask_tm3)
 
         out = policy(obs)
-        actions_tm1, log_probs_tm1 = _sample_actions_masked(out["logits_tm1"], mask_tm1)
         actions_tm2, log_probs_tm2 = _sample_actions_masked(out["logits_tm2"], mask_tm2)
         actions_tm3, log_probs_tm3 = _sample_actions_masked(out["logits_tm3"], mask_tm3)
 
         if n_envs <= 1:
-            next_obs_np, rew, done, info = step_fn(int(actions_tm1[0].item()), int(actions_tm2[0].item()), int(actions_tm3[0].item()))
+            next_obs_np, rew, done, info = step_fn(int(actions_tm2[0].item()), int(actions_tm3[0].item()))
             next_obs = torch.from_numpy(np.asarray(next_obs_np, dtype=np.float32)).unsqueeze(0)
-            next_mask_tm1 = torch.from_numpy(np.asarray(info["action_mask_tm1"], dtype=np.bool_)).unsqueeze(0)
             next_mask_tm2 = torch.from_numpy(np.asarray(info["action_mask_tm2"], dtype=np.bool_)).unsqueeze(0)
             next_mask_tm3 = torch.from_numpy(np.asarray(info["action_mask_tm3"], dtype=np.bool_)).unsqueeze(0)
-            buffers["actions_tm1"][t, 0] = actions_tm1[0]
             buffers["actions_tm2"][t, 0] = actions_tm2[0]
             buffers["actions_tm3"][t, 0] = actions_tm3[0]
-            buffers["log_probs_tm1"][t, 0] = log_probs_tm1[0]
             buffers["log_probs_tm2"][t, 0] = log_probs_tm2[0]
             buffers["log_probs_tm3"][t, 0] = log_probs_tm3[0]
             buffers["rewards"][t, 0] = float(rew)
@@ -752,15 +719,12 @@ def collect_rollout_ultra_concurrent(
             buffers["scrap"][t, 0] = bool(info.get("scrap", False))
             buffers["time"][t, 0] = int(info.get("time", 0))
         else:
-            next_obs_np, rewards_np, dones_np, info = step_fn(actions_tm1.numpy(), actions_tm2.numpy(), actions_tm3.numpy())
+            next_obs_np, rewards_np, dones_np, info = step_fn(actions_tm2.numpy(), actions_tm3.numpy())
             next_obs = torch.from_numpy(np.asarray(next_obs_np, dtype=np.float32))
-            next_mask_tm1 = torch.from_numpy(np.asarray(info["action_mask_tm1"], dtype=np.bool_))
             next_mask_tm2 = torch.from_numpy(np.asarray(info["action_mask_tm2"], dtype=np.bool_))
             next_mask_tm3 = torch.from_numpy(np.asarray(info["action_mask_tm3"], dtype=np.bool_))
-            buffers["actions_tm1"][t].copy_(actions_tm1)
             buffers["actions_tm2"][t].copy_(actions_tm2)
             buffers["actions_tm3"][t].copy_(actions_tm3)
-            buffers["log_probs_tm1"][t].copy_(log_probs_tm1)
             buffers["log_probs_tm2"][t].copy_(log_probs_tm2)
             buffers["log_probs_tm3"][t].copy_(log_probs_tm3)
             buffers["rewards"][t].copy_(torch.from_numpy(np.asarray(rewards_np, dtype=np.float32)))
@@ -771,12 +735,10 @@ def collect_rollout_ultra_concurrent(
 
         buffers["next_obs"][t].copy_(next_obs)
         obs = next_obs
-        mask_tm1 = next_mask_tm1
         mask_tm2 = next_mask_tm2
         mask_tm3 = next_mask_tm3
 
     state["obs"] = obs
-    state["mask_tm1"] = mask_tm1
     state["mask_tm2"] = mask_tm2
     state["mask_tm3"] = mask_tm3
     for key, value in list(buffers.items()):
@@ -791,24 +753,21 @@ def _flatten_rollout_concurrent(
     returns: torch.Tensor,
     max_frames: int,
 ) -> dict[str, torch.Tensor]:
-    t_size, n_envs = rollout["actions_tm1"].shape
+    t_size, n_envs = rollout["actions_tm2"].shape
     flat = t_size * n_envs
     keep = min(int(max_frames), flat)
     obs_dim = rollout["obs"].shape[-1]
-    n_tm1 = rollout["mask_tm1"].shape[-1]
     n_tm2 = rollout["mask_tm2"].shape[-1]
     n_tm3 = rollout["mask_tm3"].shape[-1]
     return {
         "obs": rollout["obs"].reshape(flat, obs_dim)[:keep].contiguous(),
         "next_obs": rollout["next_obs"].reshape(flat, obs_dim)[:keep].contiguous(),
-        "mask_tm1": rollout["mask_tm1"].reshape(flat, n_tm1)[:keep].contiguous(),
         "mask_tm2": rollout["mask_tm2"].reshape(flat, n_tm2)[:keep].contiguous(),
         "mask_tm3": rollout["mask_tm3"].reshape(flat, n_tm3)[:keep].contiguous(),
-        "actions_tm1": rollout["actions_tm1"].reshape(flat)[:keep].contiguous(),
         "actions_tm2": rollout["actions_tm2"].reshape(flat)[:keep].contiguous(),
         "actions_tm3": rollout["actions_tm3"].reshape(flat)[:keep].contiguous(),
         "old_log_probs": (
-            rollout["log_probs_tm1"] + rollout["log_probs_tm2"] + rollout["log_probs_tm3"]
+            rollout["log_probs_tm2"] + rollout["log_probs_tm3"]
         ).reshape(flat)[:keep].contiguous(),
         "rewards": rollout["rewards"].reshape(flat)[:keep].contiguous(),
         "dones": rollout["dones"].reshape(flat)[:keep].contiguous(),
@@ -834,14 +793,12 @@ def _ppo_update_batched_concurrent(
     scaler: torch.cuda.amp.GradScaler | None,
 ) -> dict[str, float]:
     """
-    并发三动作 Batched PPO 更新：
-    联合 log_prob = log_prob_tm1 + log_prob_tm2 + log_prob_tm3，其余与单动作版本一致。
+    并发双动作 Batched PPO 更新：
+    联合 log_prob = log_prob_tm2 + log_prob_tm3，TM1 自动执行不参与梯度。
     """
     obs = batch["obs"]
-    mask_tm1 = batch["mask_tm1"].bool()
     mask_tm2 = batch["mask_tm2"].bool()
     mask_tm3 = batch["mask_tm3"].bool()
-    actions_tm1 = batch["actions_tm1"].long()
     actions_tm2 = batch["actions_tm2"].long()
     actions_tm3 = batch["actions_tm3"].long()
     old_log_probs = batch["old_log_probs"].to(torch.float32)
@@ -859,10 +816,8 @@ def _ppo_update_batched_concurrent(
     for _ in range(int(num_epochs)):
         perm = torch.randperm(obs.shape[0], device=obs.device)
         obs_e = obs.index_select(0, perm)
-        mask_tm1_e = mask_tm1.index_select(0, perm)
         mask_tm2_e = mask_tm2.index_select(0, perm)
         mask_tm3_e = mask_tm3.index_select(0, perm)
-        act_tm1_e = actions_tm1.index_select(0, perm)
         act_tm2_e = actions_tm2.index_select(0, perm)
         act_tm3_e = actions_tm3.index_select(0, perm)
         old_lp_e = old_log_probs.index_select(0, perm)
@@ -877,11 +832,10 @@ def _ppo_update_batched_concurrent(
             out = policy_backbone(obs_e)
             value_pred = value_net(obs_e).squeeze(-1)
 
-        new_lp_tm1, ent_tm1 = _masked_logprob_entropy(out["logits_tm1"].to(torch.float32), mask_tm1_e, act_tm1_e)
         new_lp_tm2, ent_tm2 = _masked_logprob_entropy(out["logits_tm2"].to(torch.float32), mask_tm2_e, act_tm2_e)
         new_lp_tm3, ent_tm3 = _masked_logprob_entropy(out["logits_tm3"].to(torch.float32), mask_tm3_e, act_tm3_e)
-        new_log_prob = new_lp_tm1 + new_lp_tm2 + new_lp_tm3
-        entropy = (ent_tm1 + ent_tm2 + ent_tm3).mean()
+        new_log_prob = new_lp_tm2 + new_lp_tm3
+        entropy = (ent_tm2 + ent_tm3).mean()
 
         ratio = torch.exp(new_log_prob - old_lp_e)
         surr1 = ratio * adv_e

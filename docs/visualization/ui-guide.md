@@ -23,7 +23,7 @@
 ## Architecture or Data Flow
 1. `visualization/main.py` 解析 CLI，创建 adapter/viewmodel/window。
 2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发三动作后端，且底层仍复用当前 `ClusterTool` 的路线配置。
-3. 选择含 `head_tm1/head_tm2/head_tm3` 的权重时，UI 会自动重建为并发 runtime。
+3. 选择含 `head_tm2` 与 `head_tm3` 的权重（`DualHeadPolicyNet`，当前 A 方案并发训练产物）时，UI 会自动重建为并发 runtime；可选兼容仍含 `head_tm1` 的旧键以识别并发类权重。
 4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
@@ -49,7 +49,7 @@
   - 顶层字段: `schema_version`, `device_mode`, `sequence`, `reward_report`, `replay_env_overrides`
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
   - `--concurrent` 下 `sequence[*].actions` 优先提供 `[tm1, tm2, tm3]`；旧格式 `[tm2, tm3]` 仅做兼容读取并按 `TM1=WAIT` 解释；WAIT 只支持 `WAIT` / `WAIT_5s`
-  - `sequence[*]` 建议同时写入 `action_tm1` / `action_tm2` / `action_tm3`；UI 可据此直接识别三头并发回放
+  - `sequence[*]` 建议同时写入 `action_tm1` / `action_tm2` / `action_tm3`；UI 可据此直接识别并发回放。**运行时 TM1 由 `ClusterTool` 规则执行**，Model B 推进仿真时仍只向 `step` 传 TM2/TM3；`actions[0]` 与 `action_tm1` 为记录/对齐用（与导出脚本规则解码一致）
   - `replay_env_overrides` 建议显式包含 `runtime_mode`；若缺失，UI 只会在序列显式带三头动作字段或同一步出现至少两个非 WAIT 动作时自动切到并发 runtime
   - `replay_env_overrides` 建议包含: `runtime_mode`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
   - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp(W<n_wafer>-M<time>).json`；其它名字同样追加 `(W-M)` 后缀
@@ -66,10 +66,12 @@
 9. `--concurrent` 下 Model A 默认权重路径是 `results/models/CT_concurrent_best.pt`；未显式传 `--model` 时会优先尝试该文件。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
-12. 只要权重 `state_dict` 含 `head_tm1/head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
+12. 只要权重 `state_dict` 含 `head_tm2` 与 `head_tm3`（当前 A 方案 `DualHeadPolicyNet`），Model A 加载必须自动切到并发 runtime；含 `head_tm1` 的旧三头键仍可识别为并发类权重。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
 14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。单动作级联 runtime 下，`LP1/LP2` 必须聚合显示为 `LP`，`LP_done` 必须保持 `LP_done` 名称，`TM1` 只通过 `TM1 ARM` 展示，不单独作为 chamber 渲染。
 15. `device=cascade` 且单臂模式下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 与 cascade 双臂布局禁止复用该缩放与自动扩距规则。
+16. 并发 runtime（`PetriAdapter`）下，`LP`/`LP_done` 聚合状态**只会**在主循环遍历库所时通过 `_merge_alias_state` 各合并一次；禁止先对 `_start_place_names()`/`_end_place_names()` 全量 `_build_alias_state` 再对同名库所合并，否则界面上的 `LP`/`LP_done` 晶圆条数与容量会变为真实值的 **2 倍**。
+17. 级联构网使用的 `config/cluster_tool/route_config.json` 中 **`source.capacity` 与 `sink.capacity` 必须 ≥ 当前 `PetriEnvConfig.n_wafer`（或 `n_wafer1+n_wafer2`）**；否则终点 `LP_done` 满仓后 `t_TM1_LP_done` 无法投片，晶圆会停在 TM1（用户易误判为「从 CL 出来后进不了 LP_done」）。
 
 ## Examples
 - 正例:
@@ -96,6 +98,8 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-03: `config/cluster_tool/route_config.json`：`source`/`sink` 容量由 `25` 提至 `100`，避免 `n_wafer`（如 `30`）大于旧 `sink.capacity` 时终点堵塞与 TM1 持片无法卸入 `LP_done`。
+- 2026-04-03: `petri_adapter.py`：修复并发级联下 `LP`/`LP_done` 聚合重复合并（先 `_build_alias_state(全量)` 再 `_merge_alias_state`）导致腔室晶圆数与容量显示翻倍；现以空壳 `_build_alias_state(..., [], ...)` 初始化，仅由主循环合并一次。
 - 2026-04-03: `center_canvas.py` 扩展级联单臂布局：在 `LLA/LLB` 下方新增 `AL/CL/LP/LP_done`，并增加 `TM1 ARM`；`petri_single_adapter.py` 现将 `LP1/LP2` 聚合为 `LP`、`LP_done` 直显为 `LP_done`，且 `TM1` 只通过 `TM1 ARM` 展示真实持片；该模式当前使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际步距会按缩放后卡片尺寸自动扩至最少留 `10px` 间隔，single 与级联双臂布局保持不变。
 - 2026-04-03: `wafer_item.py` / `chamber_widget.py` / `wafer_widget.py` 收敛 `time_to_scrap` 口径：`time_to_scrap < 0` 表示无 scrap 风险，不再把 `AL/CL/LLA/LLB` 这类正工时 buffer 渲染为红色或 `SCRAP`。
 - 2026-03-30: 移除 `route_code` / `--single-route-code`：回放与 CLI 仅以 `single_route_name` / `single_route_config` 对齐构网；`replay_env_overrides` 不再包含 `route_code`。
@@ -108,4 +112,4 @@
 - 2026-03-20: 回放环境重建新增透传 `single_route_name/single_route_config`；当序列来自配置驱动路线（如 `1-2`）时，UI 回放将按原路线构网，不再退化为仅 `route_code` 的默认拓扑。
 - 2026-03-19: 建立可视化主文档，统一入口参数、模型加载与回放数据契约。
 - 2026-03-19: 修复级联（`--device cascade`）模式下 `PM5/PM6` 被强制标记为 `disabled` 的问题；现在会按适配器状态展示（缺失时作为 `idle` 占位）。
-- 2026-04-03: 并发可视化升级为 `TM1/TM2/TM3` 三动作：`main.py` 改用 `TripleHeadPolicyNet`，并发模型检测键从 `head_tm2/head_tm3` 扩到 `head_tm1/head_tm2/head_tm3`；`main_window.py` 回放优先读取三头 `actions`/`action_tm*`；`petri_adapter.py` 与状态栏同步显示 `TM1`；单臂级联下 `AL/CL/LP/LP_done/TM1 ARM` 已接入真实状态，不再是固定 `idle` 占位；见 `docs/CHANGELOG.md`。
+- 2026-04-03: 并发可视化升级为 `TM1/TM2/TM3` 三动作：`main.py` 并发模型为 `DualHeadPolicyNet`（`head_tm2`/`head_tm3`）；`main_window.py` 回放读取 `actions`/`action_tm*`；`petri_adapter.py` 仅 `step(a2,a3)` 推进、`TM1` 文案来自规则缓存；单臂级联下 `AL/CL/LP/LP_done/TM1 ARM` 已接入真实状态；见 `docs/CHANGELOG.md`。

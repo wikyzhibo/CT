@@ -569,6 +569,37 @@ class FastEnvWrapper_Concurrent:
 
         return obs, reward, terminated, info
 
+    def step_auto(self, action_tm2: int, action_tm3: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+        """TM1 自动执行，只接受 TM2/TM3 动作。"""
+        env = self.env
+        a2 = None if action_tm2 == env.tm2_wait_action else env.tm2_transition_indices[int(action_tm2)]
+        a3 = None if action_tm3 == env.tm3_wait_action else env.tm3_transition_indices[int(action_tm3)]
+
+        done, reward_result, scrap, action_mask, obs = env.net.step(a2=a2, a3=a3)
+        reward = float(reward_result)
+        scrap = bool(scrap)
+        done = bool(done)
+        terminated = done or scrap
+        finish = done and not scrap
+
+        obs = np.asarray(obs, dtype=np.float32)
+        mask_tm1_arr, mask_tm2_arr, mask_tm3_arr = action_mask
+        info: Dict[str, Any] = {
+            "action_mask_tm1": mask_tm1_arr.astype(np.bool_),
+            "action_mask_tm2": mask_tm2_arr.astype(np.bool_),
+            "action_mask_tm3": mask_tm3_arr.astype(np.bool_),
+            "finish": finish,
+            "scrap": scrap,
+            "time": int(env.net.time),
+        }
+
+        if terminated:
+            obs, reset_info = self.reset()
+            info["action_mask_tm2"] = reset_info["action_mask_tm2"]
+            info["action_mask_tm3"] = reset_info["action_mask_tm3"]
+
+        return obs, reward, terminated, info
+
 
 class VectorEnv_Concurrent:
     """
@@ -638,6 +669,37 @@ class VectorEnv_Concurrent:
             time_arr[i] = int(info_i.get("time", 0))
         return self._obs.copy(), rewards, dones, {
             "action_mask_tm1": self._mask_tm1.copy(),
+            "action_mask_tm2": self._mask_tm2.copy(),
+            "action_mask_tm3": self._mask_tm3.copy(),
+            "finish": finish,
+            "scrap": scrap,
+            "time": time_arr,
+        }
+
+    def step_auto(
+        self,
+        actions_tm2: np.ndarray,
+        actions_tm3: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+        """TM1 自动执行，只接受 TM2/TM3 动作数组。"""
+        acts_tm2 = np.asarray(actions_tm2, dtype=np.int64)
+        acts_tm3 = np.asarray(actions_tm3, dtype=np.int64)
+        rewards = np.zeros((self.n_envs,), dtype=np.float32)
+        dones = np.zeros((self.n_envs,), dtype=np.bool_)
+        finish = np.zeros((self.n_envs,), dtype=np.bool_)
+        scrap = np.zeros((self.n_envs,), dtype=np.bool_)
+        time_arr = np.zeros((self.n_envs,), dtype=np.int64)
+        for i in range(self.n_envs):
+            obs_i, rew_i, done_i, info_i = self.envs[i].step_auto(int(acts_tm2[i]), int(acts_tm3[i]))
+            self._obs[i] = np.asarray(obs_i, dtype=np.float32)
+            self._mask_tm2[i] = np.asarray(info_i["action_mask_tm2"], dtype=np.bool_)
+            self._mask_tm3[i] = np.asarray(info_i["action_mask_tm3"], dtype=np.bool_)
+            rewards[i] = float(rew_i)
+            dones[i] = bool(done_i)
+            finish[i] = bool(info_i.get("finish", False))
+            scrap[i] = bool(info_i.get("scrap", False))
+            time_arr[i] = int(info_i.get("time", 0))
+        return self._obs.copy(), rewards, dones, {
             "action_mask_tm2": self._mask_tm2.copy(),
             "action_mask_tm3": self._mask_tm3.copy(),
             "finish": finish,

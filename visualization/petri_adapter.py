@@ -59,21 +59,24 @@ class PetriAdapter(AlgorithmAdapter):
         """
         支持单动作与并发动作。
         - int: 全局变迁索引或 WAIT
-        - `(a1, a2, a3)`: 并发动作，`-1` 表示 WAIT
+        - `(a1, a2, a3)`: 并发占位；**仿真仅消费 TM2/TM3**（`-1` 表示 WAIT），TM1 由 `ClusterTool` 规则自动执行。
+          History 与 verbose 中 TM1 文案来自 step 前 `_cached_auto_tm1_action`，与 `a1` 无关。
         """
         a1, a2, a3 = self._normalize_action(action)
-        tm1_action = None if a1 == -1 else int(a1)
         tm2_action = None if a2 == -1 else int(a2)
         tm3_action = None if a3 == -1 else int(a3)
 
+        cached_t = getattr(self.net, "_cached_auto_tm1_action", None)
+        disp_tm1 = -1 if cached_t is None else int(cached_t)
+
         if self.step_verbose:
             t = getattr(self.net, "time", 0)
-            a1_name = "WAIT" if a1 == -1 else self.get_action_name(a1)
+            a1_name = "WAIT" if disp_tm1 == -1 else self.get_action_name(disp_tm1)
             a2_name = "WAIT" if a2 == -1 else self.get_action_name(a2)
             a3_name = "WAIT" if a3 == -1 else self.get_action_name(a3)
             print(f"\n--- Step (t={t}) TM1:{a1_name} | TM2:{a2_name} | TM3:{a3_name} ---")
 
-        result = self._call_net_step(tm1_action, tm2_action, tm3_action)
+        result = self._call_net_step_tm2_tm3(tm2_action, tm3_action)
         done, reward_result, scrap, _action_mask, _obs = self._unpack_step_result(result)
 
         self._last_reward_detail = {}
@@ -88,7 +91,7 @@ class PetriAdapter(AlgorithmAdapter):
         self._last_action_history.append(
             {
                 "step": len(self._last_action_history) + 1,
-                "action": self._format_history_action(a1, a2, a3),
+                "action": self._format_history_action(disp_tm1, a2, a3),
                 "reward": reward,
                 "detail": dict(self._last_reward_detail),
             }
@@ -214,10 +217,8 @@ class PetriAdapter(AlgorithmAdapter):
             return -1, -1, raw
         return raw, -1, -1
 
-    def _call_net_step(self, a1: Optional[int], a2: Optional[int], a3: Optional[int]):
-        if a1 is None and a2 is None and a3 is None:
-            return self.net.step(wait_duration=5)
-        return self.net.step(a1=a1, a2=a2, a3=a3)
+    def _call_net_step_tm2_tm3(self, a2: Optional[int], a3: Optional[int]):
+        return self.net.step(a2=a2, a3=a3)
 
     @staticmethod
     def _unpack_step_result(result):
@@ -239,8 +240,9 @@ class PetriAdapter(AlgorithmAdapter):
         transport_states: Dict[str, ChamberState] = {}
         release_schedule: Dict[str, list] = {}
 
-        start_alias = self._build_alias_state("LP", self._start_place_names(), "start")
-        end_alias = self._build_alias_state("LP_done", self._end_place_names(), "end")
+        # 仅由下方循环 _merge_alias_state 填充；勿先 _build_alias_state(全量) 再合并，否则 LP/LP_done 晶圆与容量会翻倍。
+        start_alias = self._build_alias_state("LP", [], "start")
+        end_alias = self._build_alias_state("LP_done", [], "end")
 
         for idx, place in enumerate(self.net.marks):
             wafers = self._collect_wafers(idx, place)

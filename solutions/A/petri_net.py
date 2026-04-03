@@ -18,6 +18,7 @@ class ClusterTool:
         assert config is not None, "config must be provided"
         self.config = config
         self._concurrent = bool(concurrent)
+        self._cached_auto_tm1_action: Optional[int] = None
 
         # ====== 1) 运行边界与奖励超参 ======
         self.MAX_TIME = config.MAX_TIME
@@ -260,6 +261,10 @@ class ClusterTool:
         reward：标量 float。
         action_mask：非并发为全量 ndarray；并发为 (mask_tm1, mask_tm2, mask_tm3)。
         """
+        # 并发模式下，自动消费 get_action_mask 中缓存的 TM1 动作
+        if a1 is None and self._concurrent and self._cached_auto_tm1_action is not None:
+            a1 = self._cached_auto_tm1_action
+            self._cached_auto_tm1_action = None
         SCRAPE = False
         self._last_deadlock = False
         _mask_start = int(self.T)
@@ -385,78 +390,6 @@ class ClusterTool:
             obs,
         )
 
-    def _select_auto_tm1_transition(self) -> Optional[int]:
-        """
-        规则引擎为 TM1 自动选择变迁（基于当前 action mask 中已启用的 TM1 变迁）。
-
-        优先级（从高到低）：
-          1. TM1 已持有晶圆 → 投递到路由目的地（t_TM1_*）
-          2. LLB 头部晶圆完成 → u_LLB_TM1（防止堵塞 TM2）
-          3. CL 头部晶圆完成 → u_CL_TM1（及时送 LP_done）
-          4. AL 头部晶圆完成 且 LLA 未满 → u_AL_TM1
-          5. LP 有晶圆 且 AL 空 且 LLA 未满 → u_LP_TM1
-
-        所有具体条件（停留时间、容量、清洗、节拍、WIP 上限）已由 get_action_mask 处理。
-        """
-        full_mask = self.get_action_mask()
-        pbname = self._place_by_name
-        tm1_t_indices = self._t_transitions_by_transport.get("TM1", [])
-
-        # ── 1. TM1 持有晶圆 → 投递到路由目的地 ──────────────────────
-        tm1_place = pbname.get("TM1")
-        if tm1_place is not None and len(tm1_place.tokens) > 0:
-            for t_idx in tm1_t_indices:
-                if full_mask[t_idx]:
-                    return t_idx
-            return None  # 目的地暂不可用，等待
-
-        # ── 2. LLB 有完成晶圆 → 优先清空（防止 LLB 满阻塞 TM2） ────
-        u_llb = self._u_transition_by_source_transport.get(("LLB", "TM1"))
-        if u_llb is not None and full_mask[u_llb]:
-            return u_llb
-
-        # ── 3. CL 有完成晶圆 → 取走送 LP_done ───────────────────────
-        u_cl = self._u_transition_by_source_transport.get(("CL", "TM1"))
-        if u_cl is not None and full_mask[u_cl]:
-            return u_cl
-
-        # ── 4. AL 有完成晶圆 且 LLA 未满 → 送料到 LLA ───────────────
-        lla = pbname.get("LLA")
-        if lla is not None and len(lla.tokens) < lla.capacity:
-            u_al = self._u_transition_by_source_transport.get(("AL", "TM1"))
-            if u_al is not None and full_mask[u_al]:
-                return u_al
-
-        # ── 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料 ──────────
-        al = pbname.get("AL")
-        if (al is not None and len(al.tokens) == 0
-                and lla is not None and len(lla.tokens) < lla.capacity):
-            for lp_name in self._load_port_names:
-                u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
-                if u_lp is not None and full_mask[u_lp]:
-                    return u_lp
-
-        return None
-
-    def step_auto(
-        self,
-        a2=None,
-        a3=None,
-        wait_duration: Optional[int] = None,
-    ):
-        """
-        TM1 自动控制入口：TM1 由规则引擎决策，TM2/TM3 由外部传入（或 None）。
-
-        若 TM1 有可执行动作，与 a2/a3 并发执行；
-        否则按正常逻辑推进（WAIT 或仅 TM2/TM3 动作）。
-
-        返回与 step() 相同：(done, reward, scrap, action_mask, obs)。
-        """
-        a1 = self._select_auto_tm1_transition()
-        if a1 is not None:
-            return self.step(a1=a1, a2=a2, a3=a3)
-        return self.step(a2=a2, a3=a3, wait_duration=wait_duration)
-
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
@@ -476,6 +409,7 @@ class ClusterTool:
         self._consecutive_wait_time = 0
         self._place_use_count = {str(place.name): 0 for place in self.marks}
         self._last_deadlock = False
+        self._cached_auto_tm1_action = None
         self._init_cleaning_state()
         self._last_u_entry_fire_time = 0
         self._u_entry_release_count = 0
@@ -1377,6 +1311,47 @@ class ClusterTool:
     # TM1 在这些库所支持双臂 swap（AL：送新料同时带走旧料；CL：送入同时取出待送 LP_done 的料）
     _TM1_SWAP_PLACES: frozenset = frozenset({"AL", "CL"})
 
+    def _pick_tm1_from_mask(self, mask: np.ndarray) -> Optional[int]:
+        """从已计算的全量 mask 中按优先级选择 TM1 变迁（不再调用 get_action_mask）。"""
+        pbname = self._place_by_name
+        tm1_t_indices = self._t_transitions_by_transport.get("TM1", [])
+
+        # 1. TM1 持有晶圆 → 投递到路由目的地
+        tm1_place = pbname.get("TM1")
+        if tm1_place is not None and len(tm1_place.tokens) > 0:
+            for t_idx in tm1_t_indices:
+                if mask[t_idx]:
+                    return t_idx
+            return None  # 目的地暂不可用，等待
+
+        # 2. LLB 有完成晶圆 → 优先清空（防止 LLB 满阻塞 TM2）
+        u_llb = self._u_transition_by_source_transport.get(("LLB", "TM1"))
+        if u_llb is not None and mask[u_llb]:
+            return u_llb
+
+        # 3. CL 有完成晶圆 → 取走送 LP_done
+        u_cl = self._u_transition_by_source_transport.get(("CL", "TM1"))
+        if u_cl is not None and mask[u_cl]:
+            return u_cl
+
+        # 4. AL 有完成晶圆 且 LLA 未满 → 送料到 LLA
+        lla = pbname.get("LLA")
+        if lla is not None and len(lla.tokens) < lla.capacity:
+            u_al = self._u_transition_by_source_transport.get(("AL", "TM1"))
+            if u_al is not None and mask[u_al]:
+                return u_al
+
+        # 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料
+        al = pbname.get("AL")
+        if (al is not None and len(al.tokens) == 0
+                and lla is not None and len(lla.tokens) < lla.capacity):
+            for lp_name in self._load_port_names:
+                u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
+                if u_lp is not None and mask[u_lp]:
+                    return u_lp
+
+        return None
+
     def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         tm1_idx = self._tm1_transition_indices
         tm2_idx = self._tm2_transition_indices
@@ -1538,6 +1513,9 @@ class ClusterTool:
             idx = start + offset
             if 0 <= idx < total_actions:
                 mask[idx] = True
+
+        if self._concurrent:
+            self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask)
 
         if use_tm:
             return self._tm_masks_from_full(mask)
