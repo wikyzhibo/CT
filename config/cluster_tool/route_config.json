@@ -1,0 +1,2046 @@
+{
+  "version": 1,
+  "model": {
+    "name": "cascade_routes_1_star",
+    "time_unit": "s"
+  },
+  "source": {
+    "name": "LP",
+    "type": "source",
+    "capacity": 25,
+    "initial_tokens": 25
+  },
+  "sink": {
+    "name": "LP_done",
+    "type": "sink",
+    "capacity": 25,
+    "initial_tokens": 0
+  },
+  "chambers": {
+    "PM1": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 13
+    },
+    "PM2": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 13
+    },
+    "PM3": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 13
+    },
+    "PM4": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 13
+    },
+    "PM5": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "PM6": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "PM7": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "PM8": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "PM9": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "PM10": {
+      "kind": "process",
+      "class": "PM",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "LLC": {
+      "kind": "buffer",
+      "class": "LL",
+      "role": "loadlock",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    },
+    "LLD": {
+      "kind": "buffer",
+      "class": "LL",
+      "role": "loadlock",
+      "capacity": 1,
+      "cleaning_duration": 300,
+      "cleaning_trigger_wafers": 3
+    }
+  },
+  "robots": {
+    "TM2": {
+      "kind": "transport",
+      "transport_place": "d_TM2",
+      "managed_chambers": [
+        "LP",
+        "PM7",
+        "PM8",
+        "PM9",
+        "PM10",
+        "LLC",
+        "LLD",
+        "LP_done"
+      ],
+      "dwell_time": 5,
+      "capacity": 1,
+      "priority": 10
+    },
+    "TM3": {
+      "kind": "transport",
+      "transport_place": "d_TM3",
+      "managed_chambers": [
+        "LLC",
+        "LLD",
+        "PM1",
+        "PM2",
+        "PM3",
+        "PM4",
+        "PM5",
+        "PM6"
+      ],
+      "dwell_time": 5,
+      "capacity": 1,
+      "priority": 20
+    }
+  },
+  "routes": {
+    "1-1": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(78s)->LLC(0s)->PM3/PM4(110s)[88s/1片]->LLD(75s)->PM9/PM10(80)->LP_done",
+      "route_stage": [["PM7","PM8"],["PM3","PM4"],["LLD"],["PM9","PM10"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 78
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM3",
+              "PM4"
+            ],
+            "process_time": 110,
+            "cleaning_duration": 88,
+            "cleaning_trigger_wafers": 1
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 75
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 80
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "1-2": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(99s)->PM9/PM10(73s)->LLC(110s)->PM2(80s)[420s/20片]->PM1(128s)->PM3(126s)->LLD(75s)->LP_done",
+      "route_stage": [["PM7","PM8"],["PM9","PM10"],["LLC"],["PM2"],["PM1"],["PM3"],["LLD"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 99
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 73
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 110
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM2"
+            ],
+            "process_time": 80,
+            "cleaning_duration": 420,
+            "cleaning_trigger_wafers": 20
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1"
+            ],
+            "process_time": 128
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM3"
+            ],
+            "process_time": 126
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 75
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "1-3": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(87s)->LLC(41s)->PM1/PM6(60s)[339s/50片]->PM2/PM5(105s)->LLD(39s)->PM9/PM10(54.6s)->LP_done",
+      "route_stage": [["PM7","PM8"],["LLC"],["PM1","PM6"],["PM2","PM5"],["LLD"],["PM9","PM10"]],
+      "takt_cycle": [65],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 87
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 41
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1",
+              "PM6"
+            ],
+            "process_time": 60,
+            "cleaning_duration": 339,
+            "cleaning_trigger_wafers": 50
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM2",
+              "PM5"
+            ],
+            "process_time": 105
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 39
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 54.6
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "1-4": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(50s)->LLC(34s)->PM1/PM6(53s)[304s/50片]->PM2/PM3/PM5(107s)->LLD(34s)->LP_done",
+      "route_stage": [["PM7","PM8"],["LLC"],["PM1","PM6"],["PM2","PM3","PM5"],["LLD"]],
+      "takt_cycle": [30],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 50
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 34
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1",
+              "PM6"
+            ],
+            "process_time": 53,
+            "cleaning_duration": 304,
+            "cleaning_trigger_wafers": 50
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM2",
+              "PM3",
+              "PM5"
+            ],
+            "process_time": 107
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 34
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "1-5": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(50s)->LLC/LLD(37s)->PM9/PM10(56s)[352s/25片]->LP_done",
+      "route_stage": [["PM7","PM8"],["LLC","LLD"],["PM9","PM10"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 50
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC",
+              "LLD"
+            ],
+            "process_time": 37
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 56,
+            "cleaning_duration": 352,
+            "cleaning_trigger_wafers": 25
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "1-6": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(101s)->LLC(65s)->PM1(41s)[420s/20片]->PM3(93s)->LLD(65s)->PM6(55s)[335s/25片]->LLD(65s)->LP_done",
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 101
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 65
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1"
+            ],
+            "process_time": 41,
+            "cleaning_duration": 420,
+            "cleaning_trigger_wafers": 20
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM3"
+            ],
+            "process_time": 93
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 65
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM6"
+            ],
+            "process_time": 55,
+            "cleaning_duration": 335,
+            "cleaning_trigger_wafers": 25
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 65
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "2-1": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(70s)->LLC(0s)->PM1/PM2/PM3/PM4(600s)[300s/13片]->LLD(70s)->PM9/PM10(200s)->LP_done",
+      "max_wafer1_in_system": 12,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM7","PM8"],["PM1","PM2", "PM3","PM4"],["LLD"],["PM9","PM10"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 70,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 13
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1",
+              "PM2",
+              "PM3",
+              "PM4"
+            ],
+            "process_time": 600,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 13
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 70
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 200,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 13
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "2-2": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(70s)->LLC(0s)->PM1/PM2(300s)[300s/13片]->LLD(70s)->LP_done",
+      "max_wafer1_in_system": 12,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM7","PM8"],["PM1","PM2"],["LLD"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 70,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 3
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM1",
+              "PM2"
+            ],
+            "process_time": 300,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 13
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 70
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "2-3": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->[PM7(70s)->PM8(70s)->LLC(0s)->LLD(70s)]*5->LP_done",
+      "max_wafer1_in_system": 3,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM7"],["PM8"],["LLD"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "repeat": {
+            "count": 5,
+            "sequence": [
+              {
+                "stage": {
+                  "candidates": [
+                    "PM7"
+                  ],
+                  "process_time": 70,
+                  "cleaning_duration": 300,
+                  "cleaning_trigger_wafers": 3
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "PM8"
+                  ],
+                  "process_time": 70,
+                  "cleaning_duration": 300,
+                  "cleaning_trigger_wafers": 3
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "LLC"
+                  ],
+                  "process_time": 0
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "LLD"
+                  ],
+                  "process_time": 70
+                }
+              }
+            ]
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "2-4": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8(70s)->PM9/PM10(200s)->LP_done",
+      "route_stage": [["PM7","PM8"],["PM9","PM10"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8"
+            ],
+            "process_time": 70,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 3
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM9",
+              "PM10"
+            ],
+            "process_time": 200,
+            "cleaning_duration": 300,
+            "cleaning_trigger_wafers": 3
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "3-1": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7/PM8/PM9(267s)[320s/6片]->LP_done",
+      "route_stage": [["PM7","PM8","PM9"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7",
+              "PM8",
+              "PM9"
+            ],
+            "process_time": 267,
+            "cleaning_duration": 320,
+            "cleaning_trigger_wafers": 6
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "3-2": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7(267s)[320s/6片]->LP_done",
+      "route_stage": [["PM7"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7"
+            ],
+            "process_time": 267,
+            "cleaning_duration": 320,
+            "cleaning_trigger_wafers": 6
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "3-3": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->[PM8(267s)->PM10(267s)]*5->LP_done",
+      "route_stage": [["PM8"],["PM10"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "repeat": {
+            "count": 5,
+            "sequence": [
+              {
+                "stage": {
+                  "candidates": [
+                    "PM8"
+                  ],
+                  "process_time": 267
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "PM10"
+                  ],
+                  "process_time": 267
+                }
+              }
+            ]
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "4-1": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->LLC(0s)->PM2(3000s)->PM5(180s)->LLD(0s)->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM2"],["PM5"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM2"
+            ],
+            "process_time": 3000
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM5"
+            ],
+            "process_time": 180
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "4-2": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->PM7(270s)->LLC(0s)->PM5(160s)->LLD(0s)->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM7"],["PM5"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM7"
+            ],
+            "process_time": 270
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLC"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "PM5"
+            ],
+            "process_time": 160
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LLD"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "4-3": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "LP->[PM7(270s)->LLC(0s)->PM5(160s)->LLD(0s)]*5->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 0,
+      "ratio": [1,0],
+      "route_stage": [["PM7"],["PM5"]],
+      "sequence": [
+        {
+          "stage": {
+            "candidates": [
+              "LP"
+            ],
+            "process_time": 0
+          }
+        },
+        {
+          "repeat": {
+            "count": 2,
+            "sequence": [
+              {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 270
+              }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "LLC"
+                  ],
+                  "process_time": 0
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "PM5"
+                  ],
+                  "process_time": 160
+                }
+              },
+              {
+                "stage": {
+                  "candidates": [
+                    "LLD"
+                  ],
+                  "process_time": 0
+                }
+              }
+            ]
+          }
+        },
+        {
+          "stage": {
+            "candidates": [
+              "LP_done"
+            ],
+            "process_time": 0
+          }
+        }
+      ]
+    },
+    "4-8": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7(3000s)->PM10(180s)->LP_done; path2=LP->LLC(0s)->PM1/PM2/PM3/PM4(3000s)->LLD(0s)->PM10(180s)->LP_done",
+      "max_wafer1_in_system": 1,
+      "max_wafer2_in_system": 4,
+      "takt_policy": "shared",
+      "ratio": [1,4],
+      "takt_cycle": [600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600],
+      "route_stage": [["PM7","PM1","PM2","PM3","PM4"],["PM10"]],
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 3000
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM10"
+                ],
+                "process_time": 180
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 3000
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM10"
+                ],
+                "process_time": 180
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-9": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7(116s)->PM10(131s)->LP_done; path2=LP->LLC(0s)->PM1/PM6(116s)->PM2/PM5(131s)->LLD(0s)->LP_done",
+      "ratio": [1,2],
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 4,
+      "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
+      "takt_cycle": [65],
+      "takt_policy": "shared",
+      "wafer_type_alloc": {
+        "path1": 1,
+        "path2": 1
+      },
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 116
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM10"
+                ],
+                "process_time": 131
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM6"
+                ],
+                "process_time": 116
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM5"
+                ],
+                "process_time": 131
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-10": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7(105s)/PM10(105s)->LP_done; path2=LP->LLC(0s)->PM1/PM2/PM3/PM4(105s)->LLD(0s)->LP_done",
+      "ratio": [2,4],
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 4,
+      "route_stage": [["PM7","PM1","PM6","PM10","PM2","PM5"]],
+      "takt_cycle": [15,15,15,15,15,15],
+      "takt_policy": "shared",
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7",
+                  "PM10"
+                ],
+                "process_time": 105
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 105
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-11": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->[PM7(115s)->PM10(130s)]*2->PM7(115s)->LP_done; path2=LP->LLC(0s)->[PM1/PM6(115s)->PM2/PM5(130s)]*2->PM1/PM6(115s)->LLD(0s)->LP_done",
+      "ratio": [2,4],
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 4,
+      "takt_policy": "shared",
+      "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
+      "takt_cycle": [130,0,130,70,130,500,130,0,130,70,130,1000,130,0,130,70,130,500],
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "repeat": {
+                "count": 2,
+                "sequence": [
+                  {
+                    "stage": {
+                      "candidates": [
+                        "PM7"
+                      ],
+                      "process_time": 115
+                    }
+                  },
+                  {
+                    "stage": {
+                      "candidates": [
+                        "PM10"
+                      ],
+                      "process_time": 130
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "repeat": {
+                "count": 2,
+                "sequence": [
+                  {
+                    "stage": {
+                      "candidates": [
+                        "PM1",
+                        "PM6"
+                      ],
+                      "process_time": 115
+                    }
+                  },
+                  {
+                    "stage": {
+                      "candidates": [
+                        "PM2",
+                        "PM5"
+                      ],
+                      "process_time": 130
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM6"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-12": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7(115s)->PM10(130s)->PM7(115s)->LP_done; path2=LP->LLC(0s)->PM1/PM6(115s)->PM2/PM5(130s)->PM1/PM6(115s)->LLD(0s)->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 4,
+      "takt_policy": "shared",
+      "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
+      "ratio": [2,4],
+      "takt_cycle": [130,0,130,20,130,180],
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM10"
+                ],
+                "process_time": 130
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM6"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM5"
+                ],
+                "process_time": 130
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1",
+                  "PM6"
+                ],
+                "process_time": 115
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-13": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7/PM10(423s)->LLC(0s)->PM1(138s)->LLD(0s)->PM7/PM10(802s)->LP_done; path2=LP->LLC(0s)->PM2/PM3/PM4(423s)->PM1(138s)->PM2/PM3/PM4(802s)->LLD(0s)->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 3,
+      "ratio": [2,3],
+      "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],
+      "takt_policy": "shared",
+      "takt_cycle": [150],
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7",
+                  "PM10"
+                ],
+                "process_time": 423
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+          {
+            "stage": {
+              "candidates": [
+                "LLD"
+              ],
+              "process_time": 0
+            }
+          },
+          {
+            "stage": {
+              "candidates": [
+                "PM7",
+                "PM10"
+              ],
+              "process_time": 802
+            }
+          },
+          {
+            "stage": {
+              "candidates": [
+                "LP_done"
+              ],
+              "process_time": 0
+            }
+          }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 423
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 802
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    "4-14": {
+      "entry": "LP",
+      "exit": "LP_done",
+      "path": "dual-subpaths: path1=LP->PM7/PM10(423s)->LLC(0s)->PM1(138s)->LLD(0s)->PM7/PM10(102s)->LLC(0s)->PM1(762s)->LLD(0s)->LP_done; path2=LP->LLC(0s)->PM2/PM3/PM4(423s)->PM1(138s)->PM2/PM3/PM4(102s)->PM1(138s)->PM2/PM3/PM4(762s)->LLD(0s)->LP_done",
+      "max_wafer1_in_system": 2,
+      "max_wafer2_in_system": 2,
+      "ratio": [2,2],
+      "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],
+      "takt_policy": "shared",
+      "takt_cycle": [
+        150, 700, 150, 700, 150, 700, 150, 700, 150, 700, 150, 700, 150, 700, 150, 700
+      ],
+      "subpaths": {
+        "path1": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7",
+                  "PM10"
+                ],
+                "process_time": 423
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7",
+                  "PM10"
+                ],
+                "process_time": 102
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM7",
+                  "PM10"
+                ],
+                "process_time": 762
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        },
+        "path2": {
+          "sequence": [
+            {
+              "stage": {
+                "candidates": [
+                  "LP"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLC"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 423
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 102
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM1"
+                ],
+                "process_time": 138
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "PM2",
+                  "PM3",
+                  "PM4"
+                ],
+                "process_time": 762
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LLD"
+                ],
+                "process_time": 0
+              }
+            },
+            {
+              "stage": {
+                "candidates": [
+                  "LP_done"
+                ],
+                "process_time": 0
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "legacy": {
+    "route_code_alias": {
+      "cascade": {
+        "1": "1-1",
+        "2": "1-2",
+        "3": "1-3",
+        "4": "1-4",
+        "5": "1-5",
+        "6": "1-6"
+      }
+    },
+    "route_notes": {
+      "LLD": "LLD 晶圆可由 TM2 或 TM3 取出：目标为 PM9/PM10/LP_done 时由 TM2 取出，目标为 PM1-PM6 时由 TM3 取出",
+      "LLC": "LLC/LLD 进入后，取出由目标腔室决定：PM9/PM10 由 TM2，PM1-PM6 由 TM3"
+    }
+  }
+}
