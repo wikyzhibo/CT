@@ -27,7 +27,7 @@
 | 子类 | 库所 | 特征维度 | 构造参数 |
 |-----|------|---------|---------|
 | SR  | LP, LP_done | 1 / 0 | n_wafer |
-| TM  | d_TM1, d_TM2, d_TM3 | `4 + onehot_dim`（cascade 下 TM2/TM3 固定 `4+8`） | D_Residual_time, target_onehot_map, onehot_dim |
+| TM  | TM1, TM2, TM3 | `4 + onehot_dim`（cascade 下 `TM1=4+5`、`TM2=4+9`、`TM3=4+8`） | D_Residual_time, target_onehot_map, onehot_dim |
 | PM  | PM1, PM3, PM4... | 9 | P_Residual_time, cleaning_* |
 | LL  | LLC, LLD | 6（基础 4 维 + `in/out` 两维） | - |
 
@@ -49,9 +49,8 @@ Petri(
 
 **常用方法**
 - `reset()` 重置环境
-- `get_enable_t() -> Tuple[List[int], List[int]]` 获取当前可使能变迁（按 TM2/TM3 分组）
 - `next_enable_time() -> int` 估计下一可使能时间
-- `step(a1=None, a2=None, wait1=False, wait2=False, with_reward=False, detailed_reward=False, t=None, wait=None)` 执行一步（并发优先，t/wait 兼容）
+- `step(a1=None, a2=None, a3=None, wait_duration=None)` 执行一步（并发优先）
 - `render_gantt(out_path)` 输出甘特图
 
 **奖励计算**
@@ -130,11 +129,11 @@ class BasedToken:
 **主要接口**
 - `ClusterTool(config, concurrent=False)`：`concurrent` 不经 `PetriEnvConfig`；`Env_PN_Concurrent` 构造时传 `concurrent=True`，`Env_PN_Single` 使用默认 `False`。
 - `reset()`：重置网状态；返回 `(None, enabled_transition_indices)`，第二项为当前使能变迁索引的有序列表，由 `get_action_mask(..., concurrent=False)` 的前 `T` 维派生（与 RL 掩码中变迁段一致）。`Env_PN_Single` 等封装通常忽略该返回值，另行调用 `get_action_mask` 构建 `action_mask`。
-- `get_action_mask(wait_action_start=None, n_actions=None, concurrent=None)`：`concurrent` 为 `None` 时跟随构造参数 `concurrent`。`concurrent=False` 时返回完整离散动作掩码 `np.ndarray`（`transition + wait`）。`concurrent=True` 时返回 `(mask_tm2, mask_tm3)` 两段局部布尔向量（末维为各自 WAIT，恒为可执行）。使能与 wait 规则在完整掩码上统一完成后再投影到 TM。已移除 `get_enable_t()`。
-- `step(...)` 第四项 `action_mask`：非并发为 `np.ndarray`；并发为 `(mask_tm2, mask_tm3)`，与 `get_action_mask` 一致。
+- `get_action_mask(wait_action_start=None, n_actions=None, concurrent=None)`：`concurrent` 为 `None` 时跟随构造参数 `concurrent`。`concurrent=False` 时返回完整离散动作掩码 `np.ndarray`（`transition + wait`）。`concurrent=True` 时返回 `(mask_tm1, mask_tm2, mask_tm3)` 三段局部布尔向量（末维为各自 WAIT，恒为可执行）。使能与 wait 规则在完整掩码上统一完成后再投影到 TM。已移除 `get_enable_t()`。
+- `step(...)` 第四项 `action_mask`：非并发为 `np.ndarray`；并发为 `(mask_tm1, mask_tm2, mask_tm3)`，与 `get_action_mask` 一致。
 - `Env_PN_Single`：`eval_mode=True` 时仍调用 `net.eval()`；动作合法性仅通过 TensorDict 的 `action_mask`（及 `ClusterTool.step` 返回值中的 mask）表达，不在环境上缓存逐步使能列表。
-- `step(a1=None, a2=None, wait_duration=None)`：执行单步并返回 `(done, reward, scrap, action_mask, obs)`。第二项 `reward` **仅为**标量 `float`（无分项字典）。`_advance_and_compute_reward` 返回 `(float, scan_info)`，在 stay 推进后于方法内**内联**驻留 scrap 扫描（遍历 `CHAMBER`/类型 5 库所，阈值见 `docs/continuous-model/pn-single.md` 规则 22）写入驻留 `scrap` 至 `scan_info`。补充：非 WAIT 路径下，若本步 `u_*` 已取走与 `scrap_info` 同 `token_id` 且同源腔室的 resident wafer，则撤销本步 scrap（不终止、不追加 scrap 惩罚项到标量外部分）。`do_wait` 路径下，当 `wait_key_event_truncation_enabled=True` 且存在“加工完成待取片”或 “TM2/TM3 持片”任一条件时，`WAIT>5s` 会被强制截断为 `5s`；当 `stride=True` 且 `wait_durations=[5]` 时，`WAIT_5s` 将按 `get_next_event_delta()` 推进（无关键事件时仍推进 5s）。
-- `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。在**一次** `marks` 扫描中同步完成关键事件 delta 与重要任务标记；关键事件仅包含“加工完成”与“允许发片（LP 队首节拍到点）”，不再包含 TM 运输完成事件。用于 wait 时截断推进量，避免跨过取片或发片决策点。
+- `step(a1=None, a2=None, a3=None, wait_duration=None)`：执行单步并返回 `(done, reward, scrap, action_mask, obs)`。第二项 `reward` **仅为**标量 `float`（无分项字典）。`_advance_and_compute_reward` 返回 `(float, scan_info)`，在 stay 推进后于方法内**内联**驻留 scrap 扫描（遍历 `CHAMBER`/类型 5 库所，阈值见 `docs/continuous-model/pn-single.md` 规则 22）写入驻留 `scrap` 至 `scan_info`。补充：非 WAIT 路径下，若本步 `u_*` 已取走与 `scrap_info` 同 `token_id` 且同源腔室的 resident wafer，则撤销本步 scrap（不终止、不追加 scrap 惩罚项到标量外部分）。`do_wait` 路径下，当 `wait_key_event_truncation_enabled=True` 且存在“加工完成待取片”或 “TM1/TM2/TM3 持片”任一条件时，`WAIT>5s` 会被强制截断为 `5s`；当 `stride=True` 且 `wait_durations=[5]` 时，`WAIT_5s` 将按 `get_next_event_delta()` 推进（无关键事件时仍推进 5s）。
+- `get_next_event_delta() -> Optional[int]`：计算当前时刻到下一关键事件的时间差（秒）。在**一次** `marks` 扫描中同步完成关键事件 delta 与重要任务标记；关键事件仅包含“加工完成”与“允许发片（release_control_places 队首节拍到点）”，不再包含 TM 运输完成事件。用于 wait 时截断推进量，避免跨过取片或发片决策点。
 - `calc_reward(t1, t2, detailed=False)`：奖励计算（`detailed_reward=True` 时返回含 `total` 的字典）
 - `blame_release_violations() -> Dict[int, float]`：基于 `_chamber_timeline` 与 `fire_log` 中 `cleaning_start` 的单设备事后追责，输出 `fire_log_index -> penalty`。
   - **占用时间线**：晶圆加工区间（来自 `_chamber_timeline`）与腔室清洁区间（来自 `fire_log` 的 `cleaning_start`，`_cleaning_trigger_map` 中启用清洗的腔室）合并计算容量占用

@@ -248,7 +248,7 @@ class Env_PN_Single(EnvBase):
 
 class Env_PN_Concurrent(EnvBase):
     """
-    双机械手并发动作环境（TM2/TM3 双动作）。
+    三机械手并发动作环境（TM1/TM2/TM3 三动作）。
     WAIT 固定单档 5s。
     """
 
@@ -276,6 +276,9 @@ class Env_PN_Concurrent(EnvBase):
 
         self.net = ClusterTool(config=config, concurrent=True)
         self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
+        self.tm1_transition_indices = list(getattr(self.net, "_tm1_transition_indices", []))
+        self.n_actions_tm1 = len(self.tm1_transition_indices) + 1
+        self.tm1_wait_action = len(self.tm1_transition_indices)
         self.tm2_transition_indices = list(getattr(self.net, "_tm2_transition_indices", []))
         self.n_actions_tm2 = len(self.tm2_transition_indices) + 1
         self.tm2_wait_action = len(self.tm2_transition_indices)
@@ -283,6 +286,7 @@ class Env_PN_Concurrent(EnvBase):
         self.tm3_transition_indices = list(getattr(self.net, "_tm3_transition_indices", []))
         self.n_actions_tm3 = len(self.tm3_transition_indices) + 1
         self.tm3_wait_action = len(self.tm3_transition_indices)
+        self.tm1_transition_names = [self.net.id2t_name[idx] for idx in self.tm1_transition_indices]
         self.tm2_transition_names = [self.net.id2t_name[idx] for idx in self.tm2_transition_indices]
         self.tm3_transition_names = [self.net.id2t_name[idx] for idx in self.tm3_transition_indices]
 
@@ -296,12 +300,14 @@ class Env_PN_Concurrent(EnvBase):
         obs_dim = self.net.obs_dim
         self.observation_spec = Composite(
             observation=Unbounded(shape=(obs_dim,), dtype=torch.float32, device=self.device),
+            action_mask_tm1=Binary(n=self.n_actions_tm1, dtype=torch.bool),
             action_mask_tm2=Binary(n=self.n_actions_tm2, dtype=torch.bool),
             action_mask_tm3=Binary(n=self.n_actions_tm3, dtype=torch.bool),
             time=Unbounded(shape=(1,), dtype=torch.int64, device=self.device),
             shape=()
         )
         self.action_spec = Composite(
+            action_tm1=Categorical(n=self.n_actions_tm1, shape=(1,), dtype=torch.int64),
             action_tm2=Categorical(n=self.n_actions_tm2, shape=(1,), dtype=torch.int64),
             action_tm3=Categorical(n=self.n_actions_tm3, shape=(1,), dtype=torch.int64),
         )
@@ -319,36 +325,40 @@ class Env_PN_Concurrent(EnvBase):
     def _reset(self, td_params):
         self.net.reset()
         obs = self._build_obs()
-        mask_tm2, mask_tm3 = self.net.get_action_mask(
+        mask_tm1, mask_tm2, mask_tm3 = self.net.get_action_mask(
             wait_action_start=int(self.net.T),
             n_actions=int(self.net.T + len(self.wait_durations)),
         )
         return TensorDict({
             "observation": torch.as_tensor(obs, dtype=torch.float32),
+            "action_mask_tm1": torch.as_tensor(mask_tm1, dtype=torch.bool),
             "action_mask_tm2": torch.as_tensor(mask_tm2, dtype=torch.bool),
             "action_mask_tm3": torch.as_tensor(mask_tm3, dtype=torch.bool),
             "time": torch.tensor([self.net.time], dtype=torch.int64),
         })
 
     def _step(self, tensordict=None):
+        action_tm1 = tensordict["action_tm1"].item()
         action_tm2 = tensordict["action_tm2"].item()
         action_tm3 = tensordict["action_tm3"].item()
 
-        a1 = None if action_tm2 == self.tm2_wait_action else self.tm2_transition_indices[action_tm2]
-        a2 = None if action_tm3 == self.tm3_wait_action else self.tm3_transition_indices[action_tm3]
+        a1 = None if action_tm1 == self.tm1_wait_action else self.tm1_transition_indices[action_tm1]
+        a2 = None if action_tm2 == self.tm2_wait_action else self.tm2_transition_indices[action_tm2]
+        a3 = None if action_tm3 == self.tm3_wait_action else self.tm3_transition_indices[action_tm3]
 
         done, reward_result, scrap, action_mask, obs = self.net.step(
-            a1=a1, a2=a2,
+            a1=a1, a2=a2, a3=a3,
         )
 
         reward = float(reward_result)
-        mask_tm2, mask_tm3 = action_mask
+        mask_tm1, mask_tm2, mask_tm3 = action_mask
         time = self.net.time
         terminated = bool(done)
         finish = done and not scrap
 
         return TensorDict({
             "observation": torch.as_tensor(obs, dtype=torch.float32),
+            "action_mask_tm1": torch.as_tensor(mask_tm1, dtype=torch.bool),
             "action_mask_tm2": torch.as_tensor(mask_tm2, dtype=torch.bool),
             "action_mask_tm3": torch.as_tensor(mask_tm3, dtype=torch.bool),
             "time": torch.tensor([time], dtype=torch.int64),
@@ -499,10 +509,10 @@ class FastEnvWrapper:
 
 class FastEnvWrapper_Concurrent:
     """
-    并发双动作环境高性能 CPU rollout 适配器。
+    并发三动作环境高性能 CPU rollout 适配器。
     统一输出:
-      reset() -> (obs, info)  info 含 action_mask_tm2, action_mask_tm3, time
-      step(action_tm2, action_tm3) -> (obs, reward, done, info)
+      reset() -> (obs, info)  info 含 action_mask_tm1, action_mask_tm2, action_mask_tm3, time
+      step(action_tm1, action_tm2, action_tm3) -> (obs, reward, done, info)
     终止时自动 reset，info 中掩码反映 reset 后状态。
     """
 
@@ -512,24 +522,27 @@ class FastEnvWrapper_Concurrent:
     def reset(self) -> Tuple[np.ndarray, Dict[str, Any]]:
         self.env.net.reset()
         obs = np.asarray(self.env._build_obs(), dtype=np.float32)
-        mask_tm2, mask_tm3 = self.env.net.get_action_mask(
+        mask_tm1, mask_tm2, mask_tm3 = self.env.net.get_action_mask(
             wait_action_start=int(self.env.net.T),
             n_actions=int(self.env.net.T + len(self.env.wait_durations)),
         )
         return obs, {
+            "action_mask_tm1": mask_tm1.astype(np.bool_),
             "action_mask_tm2": mask_tm2.astype(np.bool_),
             "action_mask_tm3": mask_tm3.astype(np.bool_),
             "time": int(self.env.net.time),
         }
 
-    def step(self, action_tm2: int, action_tm3: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def step(self, action_tm1: int, action_tm2: int, action_tm3: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         env = self.env
-        a1 = None if action_tm2 == env.tm2_wait_action else env.tm2_transition_indices[int(action_tm2)]
-        a2 = None if action_tm3 == env.tm3_wait_action else env.tm3_transition_indices[int(action_tm3)]
+        a1 = None if action_tm1 == env.tm1_wait_action else env.tm1_transition_indices[int(action_tm1)]
+        a2 = None if action_tm2 == env.tm2_wait_action else env.tm2_transition_indices[int(action_tm2)]
+        a3 = None if action_tm3 == env.tm3_wait_action else env.tm3_transition_indices[int(action_tm3)]
 
         done, reward_result, scrap, action_mask, obs = env.net.step(
             a1=a1,
             a2=a2,
+            a3=a3,
         )
         reward = float(reward_result)
         scrap = bool(scrap)
@@ -538,8 +551,9 @@ class FastEnvWrapper_Concurrent:
         finish = done and not scrap
 
         obs = np.asarray(obs, dtype=np.float32)
-        mask_tm2_arr, mask_tm3_arr = action_mask
+        mask_tm1_arr, mask_tm2_arr, mask_tm3_arr = action_mask
         info: Dict[str, Any] = {
+            "action_mask_tm1": mask_tm1_arr.astype(np.bool_),
             "action_mask_tm2": mask_tm2_arr.astype(np.bool_),
             "action_mask_tm3": mask_tm3_arr.astype(np.bool_),
             "finish": finish,
@@ -549,6 +563,7 @@ class FastEnvWrapper_Concurrent:
 
         if terminated:
             obs, reset_info = self.reset()
+            info["action_mask_tm1"] = reset_info["action_mask_tm1"]
             info["action_mask_tm2"] = reset_info["action_mask_tm2"]
             info["action_mask_tm3"] = reset_info["action_mask_tm3"]
 
@@ -557,7 +572,7 @@ class FastEnvWrapper_Concurrent:
 
 class VectorEnv_Concurrent:
     """
-    并发双动作轻量级多环境并行容器（进程内，多实例）。
+    并发三动作轻量级多环境并行容器（进程内，多实例）。
     """
 
     def __init__(self, env_fn: Callable[[], Any], n_envs: int):
@@ -565,17 +580,21 @@ class VectorEnv_Concurrent:
         self.envs: List[FastEnvWrapper_Concurrent] = [FastEnvWrapper_Concurrent(env_fn()) for _ in range(self.n_envs)]
         obs0, info0 = self.envs[0].reset()
         self.obs_dim = int(np.asarray(obs0).shape[-1])
+        self.n_tm1 = int(np.asarray(info0["action_mask_tm1"]).shape[-1])
         self.n_tm2 = int(np.asarray(info0["action_mask_tm2"]).shape[-1])
         self.n_tm3 = int(np.asarray(info0["action_mask_tm3"]).shape[-1])
         self._obs = np.zeros((self.n_envs, self.obs_dim), dtype=np.float32)
+        self._mask_tm1 = np.zeros((self.n_envs, self.n_tm1), dtype=np.bool_)
         self._mask_tm2 = np.zeros((self.n_envs, self.n_tm2), dtype=np.bool_)
         self._mask_tm3 = np.zeros((self.n_envs, self.n_tm3), dtype=np.bool_)
         self._obs[0] = np.asarray(obs0, dtype=np.float32)
+        self._mask_tm1[0] = np.asarray(info0["action_mask_tm1"], dtype=np.bool_)
         self._mask_tm2[0] = np.asarray(info0["action_mask_tm2"], dtype=np.bool_)
         self._mask_tm3[0] = np.asarray(info0["action_mask_tm3"], dtype=np.bool_)
         for i in range(1, self.n_envs):
             obs_i, info_i = self.envs[i].reset()
             self._obs[i] = np.asarray(obs_i, dtype=np.float32)
+            self._mask_tm1[i] = np.asarray(info_i["action_mask_tm1"], dtype=np.bool_)
             self._mask_tm2[i] = np.asarray(info_i["action_mask_tm2"], dtype=np.bool_)
             self._mask_tm3[i] = np.asarray(info_i["action_mask_tm3"], dtype=np.bool_)
 
@@ -583,18 +602,22 @@ class VectorEnv_Concurrent:
         for i, env in enumerate(self.envs):
             obs, info = env.reset()
             self._obs[i] = np.asarray(obs, dtype=np.float32)
+            self._mask_tm1[i] = np.asarray(info["action_mask_tm1"], dtype=np.bool_)
             self._mask_tm2[i] = np.asarray(info["action_mask_tm2"], dtype=np.bool_)
             self._mask_tm3[i] = np.asarray(info["action_mask_tm3"], dtype=np.bool_)
         return self._obs.copy(), {
+            "action_mask_tm1": self._mask_tm1.copy(),
             "action_mask_tm2": self._mask_tm2.copy(),
             "action_mask_tm3": self._mask_tm3.copy(),
         }
 
     def step(
         self,
+        actions_tm1: np.ndarray,
         actions_tm2: np.ndarray,
         actions_tm3: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+        acts_tm1 = np.asarray(actions_tm1, dtype=np.int64)
         acts_tm2 = np.asarray(actions_tm2, dtype=np.int64)
         acts_tm3 = np.asarray(actions_tm3, dtype=np.int64)
         rewards = np.zeros((self.n_envs,), dtype=np.float32)
@@ -603,8 +626,9 @@ class VectorEnv_Concurrent:
         scrap = np.zeros((self.n_envs,), dtype=np.bool_)
         time_arr = np.zeros((self.n_envs,), dtype=np.int64)
         for i in range(self.n_envs):
-            obs_i, rew_i, done_i, info_i = self.envs[i].step(int(acts_tm2[i]), int(acts_tm3[i]))
+            obs_i, rew_i, done_i, info_i = self.envs[i].step(int(acts_tm1[i]), int(acts_tm2[i]), int(acts_tm3[i]))
             self._obs[i] = np.asarray(obs_i, dtype=np.float32)
+            self._mask_tm1[i] = np.asarray(info_i["action_mask_tm1"], dtype=np.bool_)
             self._mask_tm2[i] = np.asarray(info_i["action_mask_tm2"], dtype=np.bool_)
             self._mask_tm3[i] = np.asarray(info_i["action_mask_tm3"], dtype=np.bool_)
             rewards[i] = float(rew_i)
@@ -613,6 +637,7 @@ class VectorEnv_Concurrent:
             scrap[i] = bool(info_i.get("scrap", False))
             time_arr[i] = int(info_i.get("time", 0))
         return self._obs.copy(), rewards, dones, {
+            "action_mask_tm1": self._mask_tm1.copy(),
             "action_mask_tm2": self._mask_tm2.copy(),
             "action_mask_tm3": self._mask_tm3.copy(),
             "finish": finish,

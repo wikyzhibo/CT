@@ -1,5 +1,5 @@
 """
-并发双动作 Petri 可视化适配器。
+并发三动作 Petri 可视化适配器。
 """
 
 from __future__ import annotations
@@ -21,11 +21,13 @@ from .algorithm_interface import (
 
 
 def _is_transport_place_name(name: str) -> bool:
-    return str(name).startswith("d_TM") or str(name) in {"TM2", "TM3"}
+    return str(name).startswith("d_TM") or str(name) in {"TM1", "TM2", "TM3"}
 
 
 def _normalize_transport_name(name: str) -> str:
     raw = str(name)
+    if raw.endswith("TM1"):
+        return "TM1"
     if raw.endswith("TM2"):
         return "TM2"
     if raw.endswith("TM3"):
@@ -53,23 +55,25 @@ class PetriAdapter(AlgorithmAdapter):
         self._last_reward_detail = {}
         return self._collect_state_info()
 
-    def step(self, action: int | Tuple[int, int]) -> Tuple[StateInfo, float, bool, Dict]:
+    def step(self, action: int | Tuple[int, ...]) -> Tuple[StateInfo, float, bool, Dict]:
         """
         支持单动作与并发动作。
         - int: 全局变迁索引或 WAIT
-        - (a1, a2): 并发动作，-1 表示 WAIT
+        - `(a1, a2, a3)`: 并发动作，`-1` 表示 WAIT
         """
-        a1, a2 = self._normalize_action(action)
-        tm2_action = None if a1 == -1 else int(a1)
-        tm3_action = None if a2 == -1 else int(a2)
+        a1, a2, a3 = self._normalize_action(action)
+        tm1_action = None if a1 == -1 else int(a1)
+        tm2_action = None if a2 == -1 else int(a2)
+        tm3_action = None if a3 == -1 else int(a3)
 
         if self.step_verbose:
             t = getattr(self.net, "time", 0)
             a1_name = "WAIT" if a1 == -1 else self.get_action_name(a1)
             a2_name = "WAIT" if a2 == -1 else self.get_action_name(a2)
-            print(f"\n--- Step (t={t}) TM2:{a1_name} | TM3:{a2_name} ---")
+            a3_name = "WAIT" if a3 == -1 else self.get_action_name(a3)
+            print(f"\n--- Step (t={t}) TM1:{a1_name} | TM2:{a2_name} | TM3:{a3_name} ---")
 
-        result = self._call_net_step(tm2_action, tm3_action)
+        result = self._call_net_step(tm1_action, tm2_action, tm3_action)
         done, reward_result, scrap, _action_mask, _obs = self._unpack_step_result(result)
 
         self._last_reward_detail = {}
@@ -84,7 +88,7 @@ class PetriAdapter(AlgorithmAdapter):
         self._last_action_history.append(
             {
                 "step": len(self._last_action_history) + 1,
-                "action": self._format_history_action(a1, a2),
+                "action": self._format_history_action(a1, a2, a3),
                 "reward": reward,
                 "detail": dict(self._last_reward_detail),
             }
@@ -100,7 +104,7 @@ class PetriAdapter(AlgorithmAdapter):
 
     def get_enabled_actions(self) -> List[ActionInfo]:
         enabled_map = self._enabled_transition_indices_by_transport()
-        enabled_t = set(enabled_map["TM2"]) | set(enabled_map["TM3"])
+        enabled_t = set(enabled_map["TM1"]) | set(enabled_map["TM2"]) | set(enabled_map["TM3"])
         actions: List[ActionInfo] = []
         for t in range(self.action_space_size):
             enabled = t in enabled_t
@@ -122,21 +126,30 @@ class PetriAdapter(AlgorithmAdapter):
         )
         return actions
 
-    def get_enabled_actions_by_robot(self) -> Tuple[List[ActionInfo], List[ActionInfo]]:
-        """
-        返回 TM2 和 TM3 各自的可用动作列表。
-        action_id 保持全局变迁索引，WAIT 仍然使用 -1。
-        """
+    def get_enabled_actions_by_robot(self) -> Tuple[List[ActionInfo], List[ActionInfo], List[ActionInfo]]:
+        """返回 TM1/TM2/TM3 各自的可用动作列表。"""
         enabled_map = self._enabled_transition_indices_by_transport()
+        tm1_enabled = set(enabled_map["TM1"])
         tm2_enabled = set(enabled_map["TM2"])
         tm3_enabled = set(enabled_map["TM3"])
 
+        tm1_actions: List[ActionInfo] = []
         tm2_actions: List[ActionInfo] = []
         tm3_actions: List[ActionInfo] = []
 
         for t in range(self.action_space_size):
             transport = self._transition_transport_name(t)
-            if transport == "TM2":
+            if transport == "TM1":
+                enabled = t in tm1_enabled
+                tm1_actions.append(
+                    ActionInfo(
+                        action_id=t,
+                        action_name=self.get_action_name(t),
+                        enabled=enabled,
+                        description="" if enabled else "当前条件不满足",
+                    )
+                )
+            elif transport == "TM2":
                 enabled = t in tm2_enabled
                 tm2_actions.append(
                     ActionInfo(
@@ -157,9 +170,10 @@ class PetriAdapter(AlgorithmAdapter):
                     )
                 )
 
+        tm1_actions.append(ActionInfo(action_id=-1, action_name="WAIT_5s", enabled=True, description=""))
         tm2_actions.append(ActionInfo(action_id=-1, action_name="WAIT_5s", enabled=True, description=""))
         tm3_actions.append(ActionInfo(action_id=-1, action_name="WAIT_5s", enabled=True, description=""))
-        return tm2_actions, tm3_actions
+        return tm1_actions, tm2_actions, tm3_actions
 
     def get_reward_breakdown(self) -> Dict[str, float]:
         return dict(self._last_reward_detail or {})
@@ -181,26 +195,29 @@ class PetriAdapter(AlgorithmAdapter):
     def export_action_sequence(self) -> List[Dict[str, Any]]:
         return list(self._last_action_history)
 
-    def _normalize_action(self, action: int | Tuple[int, int]) -> Tuple[int, int]:
+    def _normalize_action(self, action: int | Tuple[int, ...]) -> Tuple[int, int, int]:
         if isinstance(action, tuple):
             a1 = int(action[0]) if len(action) > 0 else -1
             a2 = int(action[1]) if len(action) > 1 else -1
-            return a1, a2
+            a3 = int(action[2]) if len(action) > 2 else -1
+            return a1, a2, a3
 
         raw = int(action)
         if raw == self.action_space_size:
-            return -1, -1
+            return -1, -1, -1
         transport = self._transition_transport_name(raw)
+        if transport == "TM1":
+            return raw, -1, -1
         if transport == "TM2":
-            return raw, -1
+            return -1, raw, -1
         if transport == "TM3":
-            return -1, raw
-        return raw, -1
+            return -1, -1, raw
+        return raw, -1, -1
 
-    def _call_net_step(self, a1: Optional[int], a2: Optional[int]):
-        if a1 is None and a2 is None:
+    def _call_net_step(self, a1: Optional[int], a2: Optional[int], a3: Optional[int]):
+        if a1 is None and a2 is None and a3 is None:
             return self.net.step(wait_duration=5)
-        return self.net.step(a1=a1, a2=a2)
+        return self.net.step(a1=a1, a2=a2, a3=a3)
 
     @staticmethod
     def _unpack_step_result(result):
@@ -211,18 +228,19 @@ class PetriAdapter(AlgorithmAdapter):
             return done, reward_result, scrap, None, None
         raise TypeError(f"Unsupported step return type: {type(result)}")
 
-    def _format_history_action(self, a1: int, a2: int) -> str:
+    def _format_history_action(self, a1: int, a2: int, a3: int) -> str:
         a1_name = "WAIT" if a1 == -1 else self.get_action_name(a1)
         a2_name = "WAIT" if a2 == -1 else self.get_action_name(a2)
-        return f"TM2:{a1_name} | TM3:{a2_name}"
+        a3_name = "WAIT" if a3 == -1 else self.get_action_name(a3)
+        return f"TM1:{a1_name} | TM2:{a2_name} | TM3:{a3_name}"
 
     def _collect_state_info(self) -> StateInfo:
         place_states: Dict[str, ChamberState] = {}
         transport_states: Dict[str, ChamberState] = {}
         release_schedule: Dict[str, list] = {}
 
-        start_alias = self._build_alias_state("LLA", self._start_place_names(), "start")
-        end_alias = self._build_alias_state("LLB", self._end_place_names(), "end")
+        start_alias = self._build_alias_state("LP", self._start_place_names(), "start")
+        end_alias = self._build_alias_state("LP_done", self._end_place_names(), "end")
 
         for idx, place in enumerate(self.net.marks):
             wafers = self._collect_wafers(idx, place)
@@ -270,8 +288,12 @@ class PetriAdapter(AlgorithmAdapter):
         chambers = [c for c in chambers if c is not None]
         transport_buffers = list(transport_states.values())
         robot_states = {
-            "TM2": RobotState(name="TM2", busy=bool(transport_states.get("TM2", ChamberState("", -1, 0)).wafers), wafers=list(transport_states.get("TM2", ChamberState("", -1, 0)).wafers)),
-            "TM3": RobotState(name="TM3", busy=bool(transport_states.get("TM3", ChamberState("", -1, 0)).wafers), wafers=list(transport_states.get("TM3", ChamberState("", -1, 0)).wafers)),
+            name: RobotState(
+                name=name,
+                busy=bool(transport_states.get(name, ChamberState("", -1, 0)).wafers),
+                wafers=list(transport_states.get(name, ChamberState("", -1, 0)).wafers),
+            )
+            for name in ("TM1", "TM2", "TM3")
         }
 
         done_count = int(getattr(self.net, "done_count", 0))
@@ -388,7 +410,9 @@ class PetriAdapter(AlgorithmAdapter):
     def _collect_robot_states(self, transport_states: Dict[str, ChamberState]) -> Dict[str, RobotState]:
         tm2_wafers = list(transport_states.get("TM2", ChamberState("", -1, 0)).wafers)
         tm3_wafers = list(transport_states.get("TM3", ChamberState("", -1, 0)).wafers)
+        tm1_wafers = list(transport_states.get("TM1", ChamberState("", -1, 0)).wafers)
         return {
+            "TM1": RobotState(name="TM1", busy=bool(tm1_wafers), wafers=tm1_wafers),
             "TM2": RobotState(name="TM2", busy=bool(tm2_wafers), wafers=tm2_wafers),
             "TM3": RobotState(name="TM3", busy=bool(tm3_wafers), wafers=tm3_wafers),
         }
@@ -402,7 +426,7 @@ class PetriAdapter(AlgorithmAdapter):
             if transport not in names:
                 names.append(transport)
         if not names:
-            names = ["TM2", "TM3"]
+            names = ["TM1", "TM2", "TM3"]
         return names
 
     def _build_transition_transport_map(self) -> Dict[int, str]:
@@ -454,7 +478,7 @@ class PetriAdapter(AlgorithmAdapter):
         if place is None:
             return None
         name = _normalize_transport_name(getattr(place, "name", ""))
-        if name in {"TM2", "TM3"}:
+        if name in {"TM1", "TM2", "TM3"}:
             return name
         return None
 
@@ -473,7 +497,7 @@ class PetriAdapter(AlgorithmAdapter):
                 except Exception:
                     mask = None
 
-        enabled: Dict[str, List[int]] = {"TM2": [], "TM3": []}
+        enabled: Dict[str, List[int]] = {"TM1": [], "TM2": [], "TM3": []}
         if mask is None:
             return enabled
         for t_idx in range(min(self.action_space_size, len(mask))):

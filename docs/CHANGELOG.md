@@ -2,11 +2,23 @@
 
 ## 2026-04-03
 
+### A 方案：`2-*` 路线新增 `TM1/AL/LLA/LLB/CL` 外层链路，节拍入口迁到 `LLA`（2026-04-03）
+
+- **What changed**：`solutions/A/construct/build_topology.py` 的固定拓扑升到 v6，新增真实库所 `AL/LLA/LLB/CL/TM1`；`solutions/A/model_builder.py` 对 `2-1`~`2-4` 改为“逻辑路线 `LLA ... LLB` + 物理前后缀 `LP -> AL -> LLA` / `LLB -> CL -> LP_done`”的构网方式；`solutions/A/petri_net.py` 的 release/takt/WIP 入口由 `LP` 迁到 `route_meta.release_control_places`，`2-*` 上实际生效点为 `u_LLA_TM2`。`config/cluster_tool/route_config.json` 新增 `AL/LLA/LLB/CL` 与 `TM1`，并把 `2-*` 的 `entry/exit/path/sequence/route_stage` 同步切到新口径。`solutions/A/construct/build_marks.py`、`preprocess_config.py`、`model_builder.py` 同步放开逐库所真实容量，不再把所有非 source/sink 库所强制写成 1。
+- **Why**：`2-*` 的真实物理流转已变为 `LP -> AL -> LLA -> ... -> LLB -> CL -> LP_done`；继续把外层链路塞进逻辑路线或继续把节拍绑在 `LP`，都会让 transport、容量、甘特与实际设备口径错位。
+- **Impact**：`2-*` 的逻辑 `route_stage` 与节拍分析只看 `LLA ... LLB` 主工艺；`AL/CL/LP/LP_done` 不进入节拍主链，但会进入真实 Petri 拓扑和甘特泳道。旧 `topology_v5`/`transition_id_v5` 缓存不再兼容；回滚时只需恢复路线配置与拓扑版本，不需要清理训练产物。
+
+### A 方案：并发接口升级为 `TM1/TM2/TM3` 三头，训练/导出/可视化同步切换（2026-04-03）
+
+- **What changed**：`solutions/A/rl_env.py` 的 `Env_PN_Concurrent` 新增 `action_tm1/action_mask_tm1`，并把 `step` / `reset` / wrapper / vector env 全部扩到三头。`solutions/model/network.py` 新增 `TripleHeadPolicyNet`，`solutions/A/ppo_trainer.py`、`solutions/A/eval/export_inference_sequence.py` 同步改为 `TM1/TM2/TM3` 三头 rollout / PPO update / 序列导出；并发导出的 `sequence[*].actions` 现为 `[tm1, tm2, tm3]`。`visualization/main.py`、`main_window.py`、`petri_adapter.py`、`viewmodel.py` 同步切到三头模型加载、回放和状态展示。
+- **Why**：新增 `TM1` 后，继续保留旧双头并发接口会让外层 transport 永远无法在并发模式下被策略控制，也会让导出的动作序列与可视化回放口径不一致。
+- **Impact**：`ClusterTool.get_action_mask(concurrent=True)` 与 `step(...).action_mask` 从 `(mask_tm2, mask_tm3)` 变为 `(mask_tm1, mask_tm2, mask_tm3)`；`Env_PN_Concurrent` 的动作空间、观测 spec、导出序列格式和可视化权重识别都同步变更。旧双头并发 checkpoint 与当前三头环境动作维度不兼容，需重新训练或显式停留在旧代码版本。
+
 ### 可视化：级联单臂布局新增 LP/AL/CL/LP_done/TM1，并按缩放自动扩距（2026-04-03）
 
 - **What changed**：`visualization/widgets/center_canvas.py` 仅对 `device=cascade` 且单臂模式扩展下半区布局：在 `LLA/LLB` 下方新增 `AL`、`CL`、`LP`、`LP_done`，并增加 `TM1 ARM`。新增 4 个腔室与 `TM1 ARM` 仅为 UI 占位，不接状态层真实数据；`TM2/TM3` 继续使用现有映射。该模式当前基准参数为 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际布局步距会按缩放后腔室尺寸自动扩到最少留 `10px` 间隔。`docs/visualization/ui-guide.md` 同步补充行为规则与边界说明。
 - **Why**：新增下半区后，若继续允许手动调大 `scale` 而不抬高步距，腔室会直接发生重叠；步距跟随缩放自动扩张才是根因修复。
-- **Impact**：single 布局与级联双臂布局保持不变；级联单臂下 `AL/CL/LP/LP_done/TM1 ARM` 默认显示为 `idle` 占位，不代表运行时已存在同名真实状态。放大单臂级联卡片后，画布可能超过默认视口并出现滚动。
+- **Impact**：single 布局与级联双臂布局保持不变；当前代码已把 `AL/CL/LP/LP_done/TM1 ARM` 接到真实运行时状态。放大单臂级联卡片后，画布可能超过默认视口并出现滚动。
 
 ## 2026-04-02
 

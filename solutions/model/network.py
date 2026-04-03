@@ -55,3 +55,25 @@ class DualHeadPolicyNet(nn.Module):
         logits_tm2 = self.head_tm2(features)
         logits_tm3 = self.head_tm3(features)
         return {"logits_tm2": logits_tm2, "logits_tm3": logits_tm3}
+
+
+class TripleHeadPolicyNet(nn.Module):
+    """三输出头策略网络，分别输出 TM1/TM2/TM3 的动作概率。"""
+
+    def __init__(self, n_obs, n_hidden=256, n_actions_tm1=1, n_actions_tm2=11, n_actions_tm3=5, n_layers=4):
+        super().__init__()
+        backbone_layers = [nn.Linear(n_obs, n_hidden), nn.ReLU()]
+        for _ in range(n_layers - 2):
+            backbone_layers.extend([nn.Linear(n_hidden, n_hidden), nn.ReLU()])
+        self.backbone = nn.Sequential(*backbone_layers)
+        self.head_tm1 = nn.Linear(n_hidden, n_actions_tm1)
+        self.head_tm2 = nn.Linear(n_hidden, n_actions_tm2)
+        self.head_tm3 = nn.Linear(n_hidden, n_actions_tm3)
+
+    def forward(self, obs):
+        features = self.backbone(obs.to(torch.float32))
+        return {
+            "logits_tm1": self.head_tm1(features),
+            "logits_tm2": self.head_tm2(features),
+            "logits_tm3": self.head_tm3(features),
+        }

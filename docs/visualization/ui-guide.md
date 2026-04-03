@@ -22,8 +22,8 @@
 
 ## Architecture or Data Flow
 1. `visualization/main.py` 解析 CLI，创建 adapter/viewmodel/window。
-2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发双动作后端，且底层仍复用当前 `ClusterTool` 的路线配置。
-3. 选择含 `head_tm2/head_tm3` 的权重时，UI 会自动重建为并发 runtime。
+2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发三动作后端，且底层仍复用当前 `ClusterTool` 的路线配置。
+3. 选择含 `head_tm1/head_tm2/head_tm3` 的权重时，UI 会自动重建为并发 runtime。
 4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
@@ -37,7 +37,7 @@
 - 关键参数:
   - `--device {single,cascade}`
   - `--device-mode`（兼容参数，等价于 `--device`）
-  - `--concurrent`：启用并发双动作可视化；仅支持 `--device cascade`
+  - `--concurrent`：启用并发三动作可视化；仅支持 `--device cascade`
   - `--single-route-code {0,1}`（single）；cascade 下 legacy 代号见训练文档；配置驱动路线以 `single_route_name` 为准
   - `--model/-m`, `--no-model`, `--debug`, `--quiet`
 - 配置菜单（级联）:
@@ -48,10 +48,11 @@
 - 回放 JSON 契约（建议）:
   - 顶层字段: `schema_version`, `device_mode`, `sequence`, `reward_report`, `replay_env_overrides`
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
-  - `--concurrent` 下 `sequence[*].actions` 必须提供 `[tm2, tm3]` 两个动作名；WAIT 只支持 `WAIT` / `WAIT_5s`
-  - `replay_env_overrides` 建议显式包含 `runtime_mode`；若缺失，UI 只会在同一步检测到两个非 WAIT 动作时自动切到并发 runtime
+  - `--concurrent` 下 `sequence[*].actions` 优先提供 `[tm1, tm2, tm3]`；旧格式 `[tm2, tm3]` 仅做兼容读取并按 `TM1=WAIT` 解释；WAIT 只支持 `WAIT` / `WAIT_5s`
+  - `sequence[*]` 建议同时写入 `action_tm1` / `action_tm2` / `action_tm3`；UI 可据此直接识别三头并发回放
+  - `replay_env_overrides` 建议显式包含 `runtime_mode`；若缺失，UI 只会在序列显式带三头动作字段或同一步出现至少两个非 WAIT 动作时自动切到并发 runtime
   - `replay_env_overrides` 建议包含: `runtime_mode`, `single_route_name`, `single_route_config`（可选）以保证回放构网拓扑与导出时一致
-  - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp.json`；其它名字为 `results/action_sequences/<out_name>.json`
+  - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp(W<n_wafer>-M<time>).json`；其它名字同样追加 `(W-M)` 后缀
 
 ## Behavior Rules
 1. UI 设备模式与模型设备模式不一致时必须报错并阻止加载。
@@ -63,11 +64,11 @@
 7. 晶圆可视化口径：`LLC/LLD`（`place_type=5`）在 `proc_time>0` 时按加工腔渲染，显示外圈进度与加工完成橙色；其 scrap 判定阈值与 `pn_single` 一致为 `process_time + 3 * P_Residual_time`，超时显示红色。
 8. 手动导出（甘特图/统计/动作）必须强制写入 `results/` 规范目录：`results/gantt`、`results/training_logs`、`results/action_sequences`。
 9. `--concurrent` 下 Model A 默认权重路径是 `results/models/CT_concurrent_best.pt`；未显式传 `--model` 时会优先尝试该文件。
-10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，另一机械手固定执行 `WAIT_5s`。
+10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
-12. 只要权重 `state_dict` 含 `head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
-13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“双非 WAIT 同步动作”兜底识别并发。禁止继续把 `(a1, a2)` 压缩成单动作执行。
-14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这 4 个腔室与 `TM1 ARM` 当前只做 UI 占位，不消费运行时真实状态；`TM2/TM3` 仍按现有状态层驱动。
+12. 只要权重 `state_dict` 含 `head_tm1/head_tm2/head_tm3`，Model A 加载必须自动切到并发 runtime；禁止要求用户手动改代码路径才能加载当前 A 方案并发权重。
+13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
+14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。
 15. `device=cascade` 且单臂模式下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 与 cascade 双臂布局禁止复用该缩放与自动扩距规则。
 
 ## Examples
@@ -84,8 +85,7 @@
 - 未指定 `--model` 时，程序会尝试默认权重；不存在则进入手动模式。
 - `--concurrent` 依赖运行环境已安装 `PySide6`；缺失时入口会在导入 GUI 模块阶段失败。
 - 序列文件路径正确但字段不完整时，Model B 回放可能失败。
-- 由单动作导出脚本生成的 `actions=[<single_action>, "WAIT"]` 序列不会再被自动识别为并发 runtime。
-- 级联单臂新增的 `AL/CL/LP/LP_done/TM1 ARM` 在未接入状态层前会固定显示为 `idle` 占位；这是预期行为，不代表运行时存在同名真实库所或机械手。
+- 由单动作导出脚本生成的 `actions=[<single_action>, "WAIT", "WAIT"]` 序列不会再被自动识别为并发 runtime。
 - 级联单臂若手动调大 `chamber_scale` / `robot_scale`，画布会优先自动扩距避免腔室重叠，而不是强制压回旧尺寸；超出视口时由 `QGraphicsView` 自身滚动显示。
 
 ## Related Docs
@@ -107,3 +107,4 @@
 - 2026-03-20: 回放环境重建新增透传 `single_route_name/single_route_config`；当序列来自配置驱动路线（如 `1-2`）时，UI 回放将按原路线构网，不再退化为仅 `route_code` 的默认拓扑。
 - 2026-03-19: 建立可视化主文档，统一入口参数、模型加载与回放数据契约。
 - 2026-03-19: 修复级联（`--device cascade`）模式下 `PM5/PM6` 被强制标记为 `disabled` 的问题；现在会按适配器状态展示（缺失时作为 `idle` 占位）。
+- 2026-04-03: 并发可视化升级为 `TM1/TM2/TM3` 三动作：`main.py` 改用 `TripleHeadPolicyNet`，并发模型检测键从 `head_tm2/head_tm3` 扩到 `head_tm1/head_tm2/head_tm3`；`main_window.py` 回放优先读取三头 `actions`/`action_tm*`；`petri_adapter.py` 与状态栏同步显示 `TM1`；单臂级联下 `AL/CL/LP/LP_done/TM1 ARM` 已接入真实状态，不再是固定 `idle` 占位；见 `docs/CHANGELOG.md`。

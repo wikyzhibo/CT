@@ -64,16 +64,23 @@ def build_adapter(
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
     env_overrides = dict(env_overrides or {})
+    process_time_map = env_overrides.get("process_time_map", env_overrides.get("single_process_time_map"))
     runtime_mode = str(env_overrides.get("runtime_mode", "concurrent" if concurrent else "single")).lower()
     if runtime_mode == "concurrent":
         if str(device_mode).lower() != "cascade":
             raise ValueError("并发可视化仅支持 cascade 设备模式")
-        env = Env_PN_Concurrent(device="cpu")
+        env = Env_PN_Concurrent(
+            device="cpu",
+            n_wafer=env_overrides.get("n_wafer"),
+            single_route_config=env_overrides.get("single_route_config"),
+            single_route_name=env_overrides.get("single_route_name"),
+            process_time_map=process_time_map,
+        )
         return PetriAdapter(env, step_verbose=step_verbose)
     effective_robot_capacity = int(env_overrides.get("single_robot_capacity", robot_capacity))
     env = Env_PN_Single(single_route_config=env_overrides.get("single_route_config"),
                         single_route_name=env_overrides.get("single_route_name"),
-                        process_time_map=env_overrides.get("single_process_time_map"))
+                        process_time_map=process_time_map)
     return PetriSingleAdapter(env, step_verbose=step_verbose)
 
 
@@ -86,7 +93,7 @@ def _load_raw_state_dict(model_path: str):
 def _detect_model_kind(state_dict: dict[str, object]) -> str:
     for key in state_dict.keys():
         key_str = str(key)
-        if "head_tm2" in key_str or "head_tm3" in key_str:
+        if "head_tm1" in key_str or "head_tm2" in key_str or "head_tm3" in key_str:
             return "concurrent"
     return "single"
 
@@ -123,19 +130,20 @@ def _iter_concurrent_candidate_state_dicts(state_dict: dict):
     ]
 
 
-def _infer_concurrent_model_shape(state_dict: dict) -> tuple[int, int, int, int]:
+def _infer_concurrent_model_shape(state_dict: dict) -> tuple[int, int, int, int, int]:
     first_linear = state_dict.get("backbone.0.weight")
+    head_tm1 = state_dict.get("head_tm1.weight")
     head_tm2 = state_dict.get("head_tm2.weight")
     head_tm3 = state_dict.get("head_tm3.weight")
-    if first_linear is None or head_tm2 is None or head_tm3 is None:
-        raise KeyError("权重缺少并发模型关键层，无法推断 DualHeadPolicyNet 结构")
+    if first_linear is None or head_tm1 is None or head_tm2 is None or head_tm3 is None:
+        raise KeyError("权重缺少并发模型关键层，无法推断 TripleHeadPolicyNet 结构")
     hidden = int(first_linear.shape[0])
     linear_key_pattern = re.compile(r"^backbone\.(\d+)\.weight$")
     backbone_linear_count = sum(1 for k in state_dict.keys() if linear_key_pattern.match(str(k)))
     if backbone_linear_count < 1:
         raise ValueError("并发策略 backbone 线性层数量异常，无法推断 n_layers")
     n_layers = backbone_linear_count + 1
-    return hidden, n_layers, int(head_tm2.shape[0]), int(head_tm3.shape[0])
+    return hidden, n_layers, int(head_tm1.shape[0]), int(head_tm2.shape[0]), int(head_tm3.shape[0])
 
 
 def _ensure_runtime_adapter(
@@ -287,12 +295,10 @@ def load_model(model_path: str, adapter: PetriSingleAdapter):
 
 def load_concurrent_model(model_path: str, adapter: PetriAdapter):
     """
-    加载双机械手并发动作模型。
-    
-    返回一个函数，调用时返回 (a1, a2) 双动作。
+    加载三机械手并发动作模型。
     """
     import torch
-    from solutions.model.network import DualHeadPolicyNet
+    from solutions.model.network import TripleHeadPolicyNet
 
     try:
         env = adapter.env
@@ -300,32 +306,43 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
             raise TypeError("并发模型要求 Env_PN_Concurrent 适配器")
 
         n_obs = env.observation_spec["observation"].shape[0]
+        n_actions_tm1 = int(env.n_actions_tm1)
         n_actions_tm2 = int(env.n_actions_tm2)
         n_actions_tm3 = int(env.n_actions_tm3)
         raw_state_dict = _load_raw_state_dict(model_path)
         hidden = 256
         n_layers = 4
+        inferred_tm1 = n_actions_tm1
         inferred_tm2 = n_actions_tm2
         inferred_tm3 = n_actions_tm3
         for cand in _iter_concurrent_candidate_state_dicts(raw_state_dict):
             if not cand:
                 continue
             try:
-                hidden, n_layers, inferred_tm2, inferred_tm3 = _infer_concurrent_model_shape(cand)
+                hidden, n_layers, inferred_tm1, inferred_tm2, inferred_tm3 = _infer_concurrent_model_shape(cand)
                 break
             except Exception:
                 continue
-        if inferred_tm2 != n_actions_tm2 or inferred_tm3 != n_actions_tm3:
+        if (
+            inferred_tm1 != n_actions_tm1
+            or inferred_tm2 != n_actions_tm2
+            or inferred_tm3 != n_actions_tm3
+        ):
             raise ValueError(
                 f"并发模型动作空间与当前环境不匹配: "
-                f"weights=({inferred_tm2}, {inferred_tm3}) env=({n_actions_tm2}, {n_actions_tm3})"
+                f"weights=({inferred_tm1}, {inferred_tm2}, {inferred_tm3}) "
+                f"env=({n_actions_tm1}, {n_actions_tm2}, {n_actions_tm3})"
             )
 
-        print(f"[Concurrent Model] n_obs={n_obs}, TM2={n_actions_tm2}, TM3={n_actions_tm3}")
+        print(
+            f"[Concurrent Model] n_obs={n_obs}, TM1={n_actions_tm1}, "
+            f"TM2={n_actions_tm2}, TM3={n_actions_tm3}"
+        )
 
-        backbone = DualHeadPolicyNet(
+        backbone = TripleHeadPolicyNet(
             n_obs=n_obs,
             n_hidden=hidden,
+            n_actions_tm1=n_actions_tm1,
             n_actions_tm2=n_actions_tm2,
             n_actions_tm3=n_actions_tm3,
             n_layers=n_layers,
@@ -348,32 +365,36 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
         print(f"✓ 并发模型加载成功: {model_path}")
         
         def get_model_actions():
-            """返回 (a1, a2) 双动作（Petri 网变迁索引，-1 表示 WAIT）"""
+            """返回 `(a1, a2, a3)` 三动作（Petri 网变迁索引，-1 表示 WAIT）。"""
             try:
                 obs_f = torch.as_tensor(env._build_obs(), dtype=torch.float32).unsqueeze(0)
-                mask_tm2_np, mask_tm3_np = env.net.get_action_mask(
+                mask_tm1_np, mask_tm2_np, mask_tm3_np = env.net.get_action_mask(
                     wait_action_start=int(env.net.T),
                     n_actions=int(env.net.T + len(env.wait_durations)),
                 )
+                mask_tm1 = torch.as_tensor(mask_tm1_np, dtype=torch.bool).unsqueeze(0)
                 mask_tm2 = torch.as_tensor(mask_tm2_np, dtype=torch.bool).unsqueeze(0)
                 mask_tm3 = torch.as_tensor(mask_tm3_np, dtype=torch.bool).unsqueeze(0)
                 
                 with torch.no_grad():
                     out = backbone(obs_f)
+                    logits_tm1 = out["logits_tm1"].masked_fill(~mask_tm1, -1e9)
                     logits_tm2 = out["logits_tm2"].masked_fill(~mask_tm2, -1e9)
                     logits_tm3 = out["logits_tm3"].masked_fill(~mask_tm3, -1e9)
-                    a1_idx = int(logits_tm2.argmax(dim=-1).item())
-                    a2_idx = int(logits_tm3.argmax(dim=-1).item())
+                    a1_idx = int(logits_tm1.argmax(dim=-1).item())
+                    a2_idx = int(logits_tm2.argmax(dim=-1).item())
+                    a3_idx = int(logits_tm3.argmax(dim=-1).item())
 
-                a1 = -1 if a1_idx == env.tm2_wait_action else int(env.tm2_transition_indices[a1_idx])
-                a2 = -1 if a2_idx == env.tm3_wait_action else int(env.tm3_transition_indices[a2_idx])
+                a1 = -1 if a1_idx == env.tm1_wait_action else int(env.tm1_transition_indices[a1_idx])
+                a2 = -1 if a2_idx == env.tm2_wait_action else int(env.tm2_transition_indices[a2_idx])
+                a3 = -1 if a3_idx == env.tm3_wait_action else int(env.tm3_transition_indices[a3_idx])
                 
-                return (a1, a2)
+                return (a1, a2, a3)
             except Exception as e:
                 print(f"[ERROR] Concurrent Inference Failed: {e}")
                 import traceback
                 traceback.print_exc()
-                return (-1, -1)  # 都等待
+                return (-1, -1, -1)
         
         return get_model_actions
         
@@ -428,7 +449,7 @@ def main() -> int:
     parser.add_argument("--device", type=str, default="cascade", choices=["single", "cascade"], help="设备模式")
     parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
-    parser.add_argument("--concurrent", action="store_true", help="启用并发双动作可视化（仅支持 cascade）")
+    parser.add_argument("--concurrent", action="store_true", help="启用并发三动作可视化（仅支持 cascade）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
     parser.add_argument("--debug", action="store_true", help="显示变迁按钮（用于调试）")
     parser.add_argument("--quiet", "-q", action="store_true", help="关闭每步使能/奖励的后台打印")

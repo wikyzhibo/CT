@@ -3,10 +3,12 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from results.paths import topology_cache_path
 
 
-_FIXED_CASCADE_TOPOLOGY_VERSION = 4
+_FIXED_CASCADE_TOPOLOGY_VERSION = 6
 _FIXED_CASCADE_PLACE_ORDER: Tuple[str, ...] = (
     "LP1",
     "LP2",
+    "AL",
+    "LLA",
     "PM1",
     "PM2",
     "PM3",
@@ -19,13 +21,18 @@ _FIXED_CASCADE_PLACE_ORDER: Tuple[str, ...] = (
     "PM10",
     "LLC",
     "LLD",
+    "LLB",
+    "CL",
     "LP_done",
+    "TM1",
     "TM2",
     "TM3",
 )
 _FIXED_CASCADE_SOURCES: Tuple[str, ...] = (
     "LP1",
     "LP2",
+    "AL",
+    "LLA",
     "PM1",
     "PM2",
     "PM3",
@@ -38,22 +45,37 @@ _FIXED_CASCADE_SOURCES: Tuple[str, ...] = (
     "PM10",
     "LLC",
     "LLD",
+    "LLB",
+    "CL",
 )
 _FIXED_CASCADE_TARGETS: Tuple[str, ...] = (
+    "AL",
+    "LLA",
     "PM1","PM2","PM3","PM4","PM5",
     "PM6","PM7","PM8","PM9","PM10",
-    "LLC","LLD","LP_done",
+    "LLC","LLD","LLB","CL","LP_done",
 )
-_FIXED_CASCADE_TRANSPORTS: Tuple[str, ...] = ("TM2", "TM3")
+_FIXED_CASCADE_TRANSPORTS: Tuple[str, ...] = ("TM1", "TM2", "TM3")
+_TM1_SCOPE: frozenset[str] = frozenset({
+    "LP1",
+    "LP2",
+    "AL",
+    "LLA",
+    "LLB",
+    "CL",
+    "LP_done",
+})
 _TM2_SCOPE: frozenset[str] = frozenset({
     "LP1",
     "LP2",
+    "LLA",
     "PM7",
     "PM8",
     "PM9",
     "PM10",
     "LLC",
     "LLD",
+    "LLB",
     "LP_done",
 })
 _TM3_SCOPE: frozenset[str] = frozenset({
@@ -65,29 +87,31 @@ def infer_cascade_transport_by_scope(
     from_candidates: Sequence[str],
     to_candidates: Sequence[str],
 ) -> str:
-    """级联 hop：左、右 stage 的 candidate 集合须同时落在某一机械手 scope 内；双覆盖时取 TM3。"""
+    """级联 hop：左、右 stage 的 candidate 集合须同时落在某一机械手 scope 内。"""
     from_set = frozenset(from_candidates)
     to_set = frozenset(to_candidates)
+    tm1_ok = from_set.issubset(_TM1_SCOPE) and to_set.issubset(_TM1_SCOPE)
     tm2_ok = from_set.issubset(_TM2_SCOPE) and to_set.issubset(_TM2_SCOPE)
     tm3_ok = from_set.issubset(_TM3_SCOPE) and to_set.issubset(_TM3_SCOPE)
-    if tm2_ok and tm3_ok:
+    if tm3_ok:
         return "TM3"
     if tm2_ok:
         return "TM2"
-    if tm3_ok:
-        return "TM3"
+    if tm1_ok:
+        return "TM1"
     raise ValueError(
-        f"no TM2/TM3 scope covers hop {tuple(from_candidates)} -> {tuple(to_candidates)}"
+        f"no TM1/TM2/TM3 scope covers hop {tuple(from_candidates)} -> {tuple(to_candidates)}"
     )
 
 
 def _build_topology() -> Dict[str, object]:
-    """构建级联固定拓扑（按 TM2/TM3 作用域生成白名单弧）。"""
+    """构建级联固定拓扑（按 TM1/TM2/TM3 作用域生成白名单弧）。"""
     id2p_name = list(_FIXED_CASCADE_PLACE_ORDER)
     id2t_name: List[str] = []
     u_edges: List[Tuple[str, str, str]] = []
     t_edges: List[Tuple[str, str, str]] = []
     transport_scope: Dict[str, frozenset[str]] = {
+        "TM1": _TM1_SCOPE,
         "TM2": _TM2_SCOPE,
         "TM3": _TM3_SCOPE,
     }
@@ -198,7 +222,9 @@ def _load_transition_id() -> Optional[Dict[Tuple[str, str], str]]:
 def _derive_transition_id_from_t_target(t_target_place: Mapping[str, str]) -> Dict[Tuple[str, str], str]:
     out: Dict[Tuple[str, str], str] = {}
     for t_name, dst in t_target_place.items():
-        if t_name.startswith("t_TM2_"):
+        if t_name.startswith("t_TM1_"):
+            out[("TM1", str(dst))] = t_name
+        elif t_name.startswith("t_TM2_"):
             out[("TM2", str(dst))] = t_name
         elif t_name.startswith("t_TM3_"):
             out[("TM3", str(dst))] = t_name

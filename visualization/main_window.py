@@ -81,7 +81,7 @@ class PetriMainWindow(QMainWindow):
         self.viewmodel = viewmodel
         self.theme = ColorTheme()
         self._model_handler = None
-        self._concurrent_model_handler = None  # 双动作模型处理器
+        self._concurrent_model_handler = None  # 三动作模型处理器
         
         # 验证模式状态
         self._verification_active = False
@@ -175,10 +175,7 @@ class PetriMainWindow(QMainWindow):
         self._update_model_buttons_state()
 
     def set_concurrent_model_handler(self, handler) -> None:
-        """设置并发模型动作获取器（双动作模型）
-        
-        handler: 调用时返回 (a1, a2) 的函数
-        """
+        """设置并发模型动作获取器。"""
         self._concurrent_model_handler = handler
         self._model_handler = None  # 清除单动作处理器
         
@@ -186,8 +183,8 @@ class PetriMainWindow(QMainWindow):
         def concurrent_callback():
             if self._concurrent_model_handler is None:
                 return None
-            a1, a2 = self._concurrent_model_handler()
-            self.viewmodel.execute_concurrent_action(a1, a2)
+            actions = tuple(self._concurrent_model_handler())
+            self.viewmodel.execute_concurrent_action(*actions)
             return None  # 已经执行，不需要返回动作
         
         self.viewmodel.set_agent_callback(concurrent_callback)
@@ -544,7 +541,7 @@ class PetriMainWindow(QMainWindow):
 
     def _refresh_status_message(self) -> None:
         mode_text = "级联设备" if self._device_mode == "cascade" else "单设备"
-        runtime_text = "并发双动作" if self._concurrent_runtime else "单动作"
+        runtime_text = "并发三动作" if self._concurrent_runtime else "单动作"
         if self._wafer_count_route1 is None or self._wafer_count_route2 is None:
             wafers_text = "未设置"
         else:
@@ -674,8 +671,8 @@ class PetriMainWindow(QMainWindow):
 
         # 优先使用并发模型
         if self._concurrent_model_handler is not None:
-            a1, a2 = self._concurrent_model_handler()
-            self.viewmodel.execute_concurrent_action(a1, a2)
+            actions = tuple(self._concurrent_model_handler())
+            self.viewmodel.execute_concurrent_action(*actions)
             return
         # 降级到单动作模型
         if self._model_handler is not None:
@@ -1002,12 +999,14 @@ class PetriMainWindow(QMainWindow):
         for item in sequence[:5]:
             if not isinstance(item, dict):
                 continue
+            if any(key in item for key in ("action_tm1", "action_tm2", "action_tm3")):
+                return True
             actions = item.get("actions", None)
             if not isinstance(actions, list) or len(actions) < 2:
                 continue
             non_wait = [
                 str(name)
-                for name in actions[:2]
+                for name in actions[:3]
                 if isinstance(name, str) and not str(name).upper().startswith("WAIT")
             ]
             if len(non_wait) >= 2:
@@ -1109,16 +1108,18 @@ class PetriMainWindow(QMainWindow):
 
             actions = item.get("actions", None)
             if not isinstance(actions, list) or len(actions) < 2:
-                raise ValueError("当前为级联设备模式，序列需提供 actions=[tm2, tm3]")
+                raise ValueError("当前为级联设备模式，序列需提供 actions=[tm1, tm2, tm3] 或旧格式 [tm2, tm3]")
 
-            tm2_name, tm3_name = actions[:2]
-            # 兼容 "WAIT"、"WAIT_5s"、"WAIT_10s" 等格式。WAIT_Xs 需解析为正确 action 索引，
-            # 否则 a1=-1 会被 adapter 映射为 action_space_size（固定 5s），导致 WAIT_50s 等被错误执行为 WAIT_5s。
-            a1 = self._resolve_wait_or_transition(tm2_name, all_transitions)
-            a2 = self._resolve_wait_or_transition(tm3_name, all_transitions)
+            if len(actions) >= 3:
+                tm1_name, tm2_name, tm3_name = actions[:3]
+            else:
+                tm1_name, tm2_name, tm3_name = "WAIT", actions[0], actions[1]
+            a1 = self._resolve_wait_or_transition(tm1_name, all_transitions)
+            a2 = self._resolve_wait_or_transition(tm2_name, all_transitions)
+            a3 = self._resolve_wait_or_transition(tm3_name, all_transitions)
 
             self._verification_index += 1
-            return (a1, a2)
+            return (a1, a2, a3)
 
         except ValueError as e:
             QMessageBox.warning(self, "回放序列不匹配", str(e))

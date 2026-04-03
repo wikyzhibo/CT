@@ -85,30 +85,27 @@ class PetriViewModel(QObject):
             self.done_changed.emit(True)
             self.set_auto_mode(False)
 
-    @Slot(int, int)
-    def execute_concurrent_action(self, a1: int, a2: int) -> None:
-        """执行双机械手并发动作。
-        
-        Args:
-            a1: TM2 的变迁索引，-1 表示 WAIT
-            a2: TM3 的变迁索引，-1 表示 WAIT
-        """
+    @Slot(int, int, int)
+    def execute_concurrent_action(self, a1: int, a2: int, a3: int = -1) -> None:
+        """执行并发动作。"""
         if self.done:
             return
 
-        state, reward, done, _info = self.adapter.step((a1, a2))
+        actions = (int(a1), int(a2), int(a3))
+        state, reward, done, _info = self.adapter.step(actions)
 
         self.step_count += 1
         self.total_reward += reward
         self.last_reward = reward
         self.done = done
 
-        # 记录双动作历史
-        a1_name = "WAIT" if a1 == -1 else self.adapter.get_action_name(a1)
-        a2_name = "WAIT" if a2 == -1 else self.adapter.get_action_name(a2)
+        action_labels = []
+        for idx, action_id in enumerate(actions, start=1):
+            action_name = "WAIT" if action_id == -1 else self.adapter.get_action_name(action_id)
+            action_labels.append(f"TM{idx}:{action_name}")
         self.action_history.append({
             "step": self.step_count,
-            "action": f"TM2:{a1_name} | TM3:{a2_name}",
+            "action": " | ".join(action_labels),
             "reward": reward,
             "detail": self.adapter.get_reward_breakdown(),
         })

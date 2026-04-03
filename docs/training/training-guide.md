@@ -41,7 +41,7 @@
   - 并发关闭（回退单动作）: `python -m solutions.A.ppo_trainer --no-concurrent --device cascade`
   - 参数: `--concurrent`(默认开启), `--no-concurrent`, `--checkpoint`, `--compute-device`, `--rollout-n-envs`, `--artifact-dir`
   - `--rollout-n-envs` 对并发模式同样生效（使用 `VectorEnv_Concurrent` 并行采样）
-  - 并发环境 `Env_PN_Concurrent` 直接消费 `config/cluster_tool/cascade.yaml + ClusterTool` 当前级联运行时；观测维度与 TM2/TM3 动作维度由真实 net 探针动态读取，不再依赖 legacy 动作名表
+  - 并发环境 `Env_PN_Concurrent` 直接消费当前 `ClusterTool` 级联运行时；观测维度与 `TM1/TM2/TM3` 三头动作维度由真实 net 探针动态读取，不再依赖 legacy 动作名表
   - 训练结束若存在 `results/models/CT_concurrent_best.pt`，与单动作路径相同会调用 `export_inference_sequence.rollout_and_export(..., concurrent=True)` 写出 `results/action_sequences/` 下 JSON 与 `results/gantt/` 下甘特 PNG（`run_name` 为 `train_concurrent` 或 `--artifact-dir` 安全名前缀；需 `render_gantt` 成功则见 `docs/gantt.md`）
 - A 方案多路线批量训练 + 评估（固定并发）:
   - `python -m solutions.A.eval.validate_all_routes`
@@ -50,7 +50,7 @@
   - 训练档位只接受 `low` / `medium` / `high`，分别从 `config/training/low.yaml`、`medium.yaml`、`high.yaml` 读取
   - 统一训练时 `solutions.A.ppo_trainer` 不打印训练配置和逐 batch 指标，只显示一个 batch 进度条；最终汇总写入 `results/training_logs/validate_all_routes_summary.json`
 - 导出推理序列:
-  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `DualHeadPolicyNet`；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
+  - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `TripleHeadPolicyNet`；并发序列写 `actions=[tm1, tm2, tm3]`；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
   - `--model` 为已存在的 `.pt` 文件路径时直接使用；否则按 `results/models/<相对路径>` 解析。
 - 关键配置优先级:
   - cascade: `config/training/s_train.yaml` 作为基础，CLI 参数覆盖。
@@ -61,9 +61,9 @@
 2. 产物说明必须区分“公共 best 路径”和“时间戳备份目录”。
 3. 未传 `--artifact-dir` 时输出前缀固定为 `train_single`；传入 `--artifact-dir` 时将其作为输出文件名前缀，产物仍统一写入 `results/` 规范目录。
 4. 禁止继续在主文档中引用已移除的旧观测切换参数。
-5. `solutions.A.ppo_trainer` 默认走双动作并发训练；仅在显式传 `--no-concurrent` 时回退单动作路径。
-6. 并发模式下 WAIT 只保留单档 `5s`（TM2/TM3 各一个 WAIT 动作）。
-7. 并发模式由训练入口选用 `Env_PN_Concurrent`，对应 `ClusterTool(..., concurrent=True)`；TM2/TM3 掩码以 `ClusterTool.get_action_mask`（并发实例返回两段局部掩码）与当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
+5. `solutions.A.ppo_trainer` 默认走三动作并发训练；仅在显式传 `--no-concurrent` 时回退单动作路径。
+6. 并发模式下 WAIT 只保留单档 `5s`（`TM1/TM2/TM3` 各一个 WAIT 动作）。
+7. 并发模式由训练入口选用 `Env_PN_Concurrent`，对应 `ClusterTool(..., concurrent=True)`；`TM1/TM2/TM3` 掩码以 `ClusterTool.get_action_mask`（并发实例返回三段局部掩码）与当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
 8. 多路线批量训练只接受 `single_route_name + single_route_config` 作为路线真源；禁止恢复 `route_code` 口径。
 9. `validate_all_routes` 中训练 makespan 取 best batch 指标；评估 makespan 取 best 权重在评估晶圆数上的 rollout 结果。
 
@@ -112,3 +112,4 @@
 - 2026-03-22: `train_single` 增加 `--artifact-dir`（训练 log、metrics、指标图、导出序列）；`export_inference_sequence` 按 `--out-name` 写入 `seq/<name>.json`，默认 `tmp`；`train_all` 批量路线暂缓。
 - 2026-03-21: single 训练路径下线，文档入口收敛为 cascade/concurrent；`train_single` 示例统一为 `--device cascade`。
 - 2026-03-19: 建立训练主文档，统一 single/cascade/concurrent 入口与产物说明。
+- 2026-04-03: A 方案并发训练升级为 `TM1/TM2/TM3` 三头：`Env_PN_Concurrent` 新增 `action_tm1/action_mask_tm1`，`solutions.model.network` 新增 `TripleHeadPolicyNet`，`solutions.A.ppo_trainer` 与 `solutions.A.eval.export_inference_sequence` 同步切到三头输入输出；旧双头并发 checkpoint 与当前环境动作维度不兼容；见 `docs/CHANGELOG.md`。

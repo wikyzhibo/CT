@@ -193,6 +193,17 @@ def first_load_port_name(route_ir: RouteIR) -> str:
     raise ValueError(f"route {route_ir.route_name} first stage has no LP/LP1/LP2 candidate")
 
 
+def first_entry_place_name(route_ir: RouteIR) -> str:
+    """首段 stage 的首个库所名；LP 占位统一映射为 LP1。"""
+    if not route_ir.stages:
+        raise ValueError(f"route {route_ir.route_name} has no stages")
+    first_stage = route_ir.stages[0].candidates
+    if not first_stage:
+        raise ValueError(f"route {route_ir.route_name} first stage is empty")
+    first = str(first_stage[0])
+    return "LP1" if first == "LP" else first
+
+
 def _normalize_sequence(
     route_cfg: Mapping[str, Any]
 ) -> List[Tuple[Tuple[str, ...], Optional[str], int, Mapping[str, Any]]]:
@@ -433,6 +444,7 @@ def build_route_meta_from_route_ir(
     buffer_set = set(buffer_names)
     full_stage_candidates: List[Tuple[str, ...]] = [tuple(s.candidates) for s in route_ir.stages]
     inner_stages: List[Tuple[str, ...]] = full_stage_candidates[1:-1]
+    sink_key = str(full_stage_candidates[-1][0]) if full_stage_candidates and full_stage_candidates[-1] else "LP_done"
 
     release_station_aliases: Dict[str, List[str]] = {}
     for i, stage in enumerate(inner_stages):
@@ -447,7 +459,7 @@ def build_route_meta_from_route_ir(
         stage[0] for stage in inner_stages if len(stage) == 1 and stage[0] in buffer_set
     )
 
-    step_map: Dict[str, int] = {"LP_done": len(inner_stages) + 1}
+    step_map: Dict[str, int] = {sink_key: len(inner_stages) + 1}
     step = 1
     for stage in inner_stages:
         for place in stage:
@@ -467,12 +479,12 @@ def build_route_meta_from_route_ir(
 
     system_entry_places = set(inner_stages[0]) if inner_stages else set()
 
-    lp_key = first_load_port_name(route_ir)
-    u_lp = f"u_{lp_key}"
+    entry_key = first_entry_place_name(route_ir)
+    u_entry = f"u_{entry_key}"
 
     release_chain_by_u: Dict[str, List[str]] = {}
     if inner_stages:
-        release_chain_by_u[u_lp] = [f"s{k}" for k in range(1, len(inner_stages) + 1)]
+        release_chain_by_u[u_entry] = [f"s{k}" for k in range(1, len(inner_stages) + 1)]
     for i, stage in enumerate(inner_stages):
         if len(stage) == 1 and stage[0] in buffer_set:
             u_name = f"u_{stage[0]}"
@@ -482,7 +494,7 @@ def build_route_meta_from_route_ir(
 
     # 兼容既有 release-chain 口径
     if len(inner_stages) >= 2 and len(inner_stages[1]) == 1 and inner_stages[1][0] in buffer_set:
-        release_chain_by_u[u_lp] = ["s1", "s2"]
+        release_chain_by_u[u_entry] = ["s1", "s2"]
     if len(inner_stages) >= 4 and len(inner_stages[1]) == 1 and inner_stages[1][0] in buffer_set:
         release_chain_by_u["u_LLC"] = ["s3", "s4"]
     if len(inner_stages) >= 5:

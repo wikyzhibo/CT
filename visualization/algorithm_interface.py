@@ -81,12 +81,12 @@ class AlgorithmAdapter(ABC):
         pass
     
     @abstractmethod
-    def step(self, action: int | Tuple[int, int]) -> Tuple[StateInfo, float, bool, Dict]:
+    def step(self, action: int | Tuple[int, ...]) -> Tuple[StateInfo, float, bool, Dict]:
         """
         执行动作,返回(新状态, 奖励, 是否结束, 额外信息)
         
         Args:
-            action: 动作 ID，或并发动作 (a1, a2)
+            action: 动作 ID，或并发动作 `(a1, a2, ...)`
             
         Returns:
             state_info: 新状态信息

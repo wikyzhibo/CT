@@ -11,7 +11,7 @@ from solutions.A.utils import _preprocess_process_time_map as _hf_preprocess_pro
 from solutions.A.construct.route_compiler_single import RouteIR
 
 FIXED_TIMELINE_CHAMBERS: Tuple[str, ...] = tuple(
-    [*(f"PM{i}" for i in range(1, 11)), "LLC", "LLD"]
+    ["AL", "LLA", *(f"PM{i}" for i in range(1, 11)), "LLC", "LLD", "LLB", "CL"]
 )
 
 
@@ -20,6 +20,7 @@ class ChamberRuntimeBlock:
     name: str
     kind: str
     process_time: int
+    capacity: int
     cleaning_duration: int
     cleaning_trigger_wafers: int
 
@@ -145,9 +146,10 @@ def preprocess_chamber_runtime_blocks(
         if name in chambers_cfg:
             kind = str(cfg_dict.get("kind", "process"))
         else:
-            kind = "buffer" if name in {"LLC", "LLD"} else "process"
+            kind = "buffer" if name in {"AL", "LLA", "LLC", "LLD", "LLB", "CL"} else "process"
 
         process_time = int(processed_pt.get(name, 0))
+        capacity = int(cfg_dict.get("capacity", 1))
         c_dur = int(route_stage_clean_dur.get(name) or 0)
         c_trig = int(route_stage_clean_trig.get(name) or 0)
 
@@ -155,6 +157,7 @@ def preprocess_chamber_runtime_blocks(
             name=name,
             kind=kind,
             process_time=process_time,
+            capacity=capacity,
             cleaning_duration=c_dur,
             cleaning_trigger_wafers=c_trig,
         )

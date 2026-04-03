@@ -16,16 +16,23 @@ SOURCE = 3
 ROBOT = 2
 CHAMBER = 1
 
+CASCADE_TM1_TARGET_ORDER: Tuple[str, ...] = (
+    "AL",
+    "LLA",
+    "LLB",
+    "CL",
+    "LP_done",
+)
 CASCADE_TM2_TARGET_ORDER: Tuple[str, ...] = (
+    "LLA",
     "PM7",
     "PM8",
     "PM9",
     "PM10",
     "LLC",
     "LLD",
+    "LLB",
     "LP_done",
-    "LP1",
-    "LP2",
 )
 CASCADE_TM3_TARGET_ORDER: Tuple[str, ...] = (
     "PM1",
@@ -37,6 +44,9 @@ CASCADE_TM3_TARGET_ORDER: Tuple[str, ...] = (
     "LLC",
     "LLD",
 )
+CASCADE_TM1_TARGET_ONEHOT: Dict[str, int] = {
+    name: idx for idx, name in enumerate(CASCADE_TM1_TARGET_ORDER)
+}
 CASCADE_TM2_TARGET_ONEHOT: Dict[str, int] = {
     name: idx for idx, name in enumerate(CASCADE_TM2_TARGET_ORDER)
 }
@@ -44,6 +54,7 @@ CASCADE_TM3_TARGET_ONEHOT: Dict[str, int] = {
     name: idx for idx, name in enumerate(CASCADE_TM3_TARGET_ORDER)
 }
 
+CASCADE_TM1_ONEHOT_DIM: int = len(CASCADE_TM1_TARGET_ORDER)
 CASCADE_TM2_ONEHOT_DIM: int = len(CASCADE_TM2_TARGET_ORDER)
 CASCADE_TM3_ONEHOT_DIM: int = len(CASCADE_TM3_TARGET_ORDER)
 
@@ -143,6 +154,9 @@ def build_marks_for_single_net(
     token_proc_time_queue_by_type: Optional[Mapping[int, Tuple[int, ...]]] = None,
     token_route_type_sequence: Optional[Sequence[int]] = None,
     lp_per_token: Optional[Sequence[str]] = None,
+    source_capacity: int = 100,
+    sink_capacity: int = 100,
+    transport_capacities: Optional[Mapping[str, int]] = None,
     p_residual_time: int = 15,
     d_residual_time: int = 10,
     scrap_clip_threshold: float = 20.0,
@@ -152,8 +166,9 @@ def build_marks_for_single_net(
     p_res = p_residual_time
     d_res = d_residual_time
     scrap_clip = scrap_clip_threshold
+    tm_caps = {str(k): int(v) for k, v in dict(transport_capacities or {}).items()}
 
-    load_ports = ("LP1", "LP2")
+    load_ports = tuple(name for name in ("LP1", "LP2") if name in p_idx)
     if lp_per_token is None:
         lp_per_token = tuple(source_name for _ in range(int(n_wafer)))
     counts: Dict[str, int] = {}
@@ -165,16 +180,24 @@ def build_marks_for_single_net(
     for name in id2p_name:
         if name in load_ports or name == sink_name:
             ptype = SOURCE
-        elif name in {"TM2", "TM3"}:
+        elif name in {"TM1", "TM2", "TM3"}:
             ptype = ROBOT
         else:
             kind = chamber_blocks.get(name).kind if name in chamber_blocks else "process"
             ptype = 5 if kind in {"buffer", "loadlock"} else CHAMBER
 
-        place_capacity = 100 if name in load_ports or name == sink_name else 1
+        if name in load_ports:
+            place_capacity = int(source_capacity)
+        elif name == sink_name:
+            place_capacity = int(sink_capacity)
+        elif name in {"TM1", "TM2", "TM3"}:
+            place_capacity = int(tm_caps.get(name, 1))
+        else:
+            block = chamber_blocks.get(name)
+            place_capacity = int(block.capacity) if block is not None else 1
         if name in load_ports or name == sink_name:
             proc_time = 0
-        elif name in {"TM2", "TM3"}:
+        elif name in {"TM1", "TM2", "TM3"}:
             proc_time = int(ttime)
         else:
             proc_time = int(chamber_blocks.get(name).process_time if name in chamber_blocks else 0)
@@ -184,13 +207,24 @@ def build_marks_for_single_net(
             n_here = int(counts.get(name, 0))
             place = SR(
                 name=name,
-                capacity=100,
+                capacity=place_capacity,
                 processing_time=0,
                 type=SOURCE,
                 n_wafer=max(1, n_here),
             )
         elif name == sink_name:
-            place = SR(name=name, capacity=100, processing_time=0, type=SOURCE)
+            place = SR(name=name, capacity=place_capacity, processing_time=0, type=SOURCE)
+        elif name == "TM1":
+            tm_map = dict(CASCADE_TM1_TARGET_ONEHOT)
+            place = TM(
+                name=name,
+                capacity=place_capacity,
+                processing_time=proc_time,
+                type=ROBOT,
+                D_Residual_time=d_res,
+                target_onehot_map=tm_map,
+                onehot_dim=CASCADE_TM1_ONEHOT_DIM,
+            )
         elif name == "TM2":
             tm_map = dict(CASCADE_TM2_TARGET_ONEHOT)
             place = TM(
@@ -257,7 +291,7 @@ def build_marks_for_single_net(
 
     timeline_names = [
         name for name in id2p_name
-        if (str(name).startswith("PM") or str(name) in {"LLC", "LLD"})
+        if name in chamber_blocks and name not in set(load_ports) | {sink_name}
     ]
     process_time_map_out = {
         name: int(chamber_blocks[name].process_time)

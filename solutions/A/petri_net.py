@@ -4,6 +4,7 @@ from solutions.A.utils import _normalize_wait_durations
 import numpy as np
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.construct import BasedToken
+from solutions.A.construct.build_topology import infer_cascade_transport_by_scope
 from solutions.A.model_builder import build_net
 from solutions.A.deprecated.pn import Place
 
@@ -87,7 +88,7 @@ class ClusterTool:
         # ====== 7) route_meta：阶段/拓扑/类型映射 ======
         route_stages = list(route_meta.get("route_stages") or [])
         self._route_stages = [list(stage) for stage in route_stages]
-        self.chambers = tuple(route_meta.get("chambers", ()))
+        self.chambers = tuple(route_meta.get("timeline_chambers") or route_meta.get("chambers", ()))
         self._u_targets = dict(route_meta.get("u_targets", {}))
         self._step_map = dict(route_meta.get("step_map", {}))
         self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
@@ -107,8 +108,10 @@ class ClusterTool:
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
         self._wafer_type_to_load_port: Dict[int, str] = route_meta.get("wafer_type_to_load_port")
         self._load_port_names: Tuple[str, ...] = route_meta.get("load_port_names")
-        self._mask_skip_places: frozenset[str] = frozenset(self._load_port_names) | {"LP_done"}
-        self._ready_chambers = route_meta.get("chambers")
+        self._wafer_type_to_release_place: Dict[int, str] = route_meta.get("wafer_type_to_release_place") or {}
+        self._release_control_places: Tuple[str, ...] = tuple(route_meta.get("release_control_places") or self._load_port_names)
+        self._mask_skip_places: frozenset[str] = frozenset({"LP_done"})
+        self._ready_chambers = route_meta.get("ready_chambers") or route_meta.get("chambers")
         self._single_process_chambers = self.chambers
         self._shared_ratio_cycle_enabled: bool = False
         self._shared_ratio_cycle_types: Tuple[int, ...] = ()
@@ -119,6 +122,7 @@ class ClusterTool:
         self.m0: np.ndarray = info["m0"]
         self.m: np.ndarray = self.m0.copy()
         self.k: np.ndarray = info["capacity"]
+        self._initial_capacity: np.ndarray = np.array(info["capacity"], dtype=int)
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
@@ -170,13 +174,15 @@ class ClusterTool:
         self._place_use_count: Dict[str, int] = {
             str(place.name): 0 for place in self.marks
         }
-        self._eval_gantt_place_to_sm: Dict[str, Tuple[int, int]] = {}
+        self._eval_gantt_place_to_sm: Dict[str, Tuple[int, int, int]] = {}
+        self._eval_gantt_lane_cursor: Dict[str, int] = {}
         self._eval_gantt_slots: Dict[str, Dict[int, Dict[str, Any]]] = {}
         self._eval_gantt_closed_ops: List[Dict[str, Any]] = []
         self._reset_eval_gantt_records()
         self._u_transition_by_source: Dict[str, int] = {}
         self._u_transition_by_source_transport: Dict[Tuple[str, str], int] = {}
         self._t_transitions_by_transport: Dict[str, List[int]] = {}
+        self._tm1_transition_indices: List[int] = []
         self._tm2_transition_indices: List[int] = []
         self._tm3_transition_indices: List[int] = []
 
@@ -193,13 +199,15 @@ class ClusterTool:
             self._takt_result = self._takt_result_by_type.get(1)
         if self._takt_result is None and self._takt_result_by_type:
             self._takt_result = next(iter(self._takt_result_by_type.values()))
-        self._last_u_LP_fire_time: int = 0
-        self._u_LP_release_count: int = 0
+        self._last_u_entry_fire_time: int = 0
+        self._u_entry_release_count: int = 0
         all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
         if not all_types:
             all_types = {1}
-        self._u_LP_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
+        self._u_entry_release_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
+        self._entry_release_ready_time_shared: int = 0
+        self._entry_release_ready_time_by_type: Dict[int, int] = {int(t): 0 for t in sorted(all_types)}
         # ====== 11) 训练/性能与奖励开关 ======
         self._training = True
         self._last_state_scan: Dict[str, Any] = {}
@@ -213,7 +221,7 @@ class ClusterTool:
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
         self._lp_done = self._place_by_name.get("LP_done")
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
-        order = list(self._load_port_names) + ["TM2", "TM3"] + list(self.chambers)
+        order = list(self._load_port_names) + ["TM1", "TM2", "TM3"] + list(self.chambers)
         obs_names = [name for name in order if name in self._place_by_name]
         self._obs_place_names = obs_names
         self._obs_places = [self._place_by_name[name] for name in obs_names]
@@ -226,6 +234,7 @@ class ClusterTool:
         self._obs_offsets = offsets
         self.obs_dim = int(cursor)
         self._obs_buffer = np.zeros(self.obs_dim, dtype=np.float32)
+        self._reset_eval_gantt_records()
         self._build_transition_index()
         if not self._training:
             print(self._takt_result)
@@ -242,13 +251,14 @@ class ClusterTool:
         self,
         a1=None,
         a2=None,
+        a3=None,
         wait_duration: Optional[int] = None,
     ):
         """
         单设备 / 并发一步推进入口。
         返回：(done, reward, scrap, action_mask, obs)。
         reward：标量 float。
-        action_mask：非并发为全量 ndarray；并发为 (mask_tm2, mask_tm3)。
+        action_mask：非并发为全量 ndarray；并发为 (mask_tm1, mask_tm2, mask_tm3)。
         """
         SCRAPE = False
         self._last_deadlock = False
@@ -272,6 +282,8 @@ class ClusterTool:
             transitions.append(int(a1))
         if a2 is not None:
             transitions.append(int(a2))
+        if a3 is not None:
+            transitions.append(int(a3))
         do_wait = (wait_duration is not None) or (len(transitions) == 0)
         scan_info: Dict[str, Any] = {}
         log_entry: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None
@@ -393,20 +405,21 @@ class ClusterTool:
         self._place_use_count = {str(place.name): 0 for place in self.marks}
         self._last_deadlock = False
         self._init_cleaning_state()
-        self._last_u_LP_fire_time = 0
-        self._u_LP_release_count = 0
+        self._last_u_entry_fire_time = 0
+        self._u_entry_release_count = 0
         all_types = set(self._wafer_type_to_subpath.keys()) | set(self._takt_result_by_type.keys())
         if not all_types:
             all_types = {1}
-        self._u_LP_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
+        self._u_entry_release_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
+        self._entry_release_ready_time_shared = 0
+        self._entry_release_ready_time_by_type = {int(t): 0 for t in sorted(all_types)}
         self._shared_ratio_cycle_idx = 0
         self._reset_eval_gantt_records()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
-            if p.name not in self._mask_skip_places:
-                p.capacity = 1
-                self.k[idx] = 1
+            p.capacity = int(self._initial_capacity[idx])
+            self.k[idx] = int(self._initial_capacity[idx])
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._last_state_scan = {}
         T = int(self.T)
@@ -525,15 +538,22 @@ class ClusterTool:
 
     def _reset_eval_gantt_records(self) -> None:
         route_stages = [list(stage) for stage in self._gantt_route_stages]
-        place_to_sm: Dict[str, Tuple[int, int]] = {}
+        place_to_sm: Dict[str, Tuple[int, int, int]] = {}
+        lane_cursor: Dict[str, int] = {}
         for si, stage in enumerate(route_stages):
             stage_idx = si + 1
-            for mi, pname in enumerate(stage):
+            base_machine = 0
+            for pname in stage:
                 chamber = str(pname)
                 if chamber in place_to_sm:
                     continue
-                place_to_sm[chamber] = (stage_idx, int(mi))
+                place = getattr(self, "_place_by_name", {}).get(chamber) if hasattr(self, "_place_by_name") else None
+                lane_count = max(1, int(getattr(place, "capacity", 1) or 1))
+                place_to_sm[chamber] = (stage_idx, int(base_machine), int(lane_count))
+                lane_cursor[chamber] = -1
+                base_machine += lane_count
         self._eval_gantt_place_to_sm = place_to_sm
+        self._eval_gantt_lane_cursor = lane_cursor
         self._eval_gantt_slots = {name: {} for name in place_to_sm.keys()}
         self._eval_gantt_closed_ops = []
 
@@ -542,7 +562,11 @@ class ClusterTool:
             return
         if chamber not in self._eval_gantt_place_to_sm:
             return
-        stage, machine = self._eval_gantt_place_to_sm[chamber]
+        stage, base_machine, lane_count = self._eval_gantt_place_to_sm[chamber]
+        cursor = int(self._eval_gantt_lane_cursor.get(chamber, -1))
+        cursor = (cursor + 1) % max(1, int(lane_count))
+        self._eval_gantt_lane_cursor[chamber] = cursor
+        machine = int(base_machine + cursor)
         chamber_slots = self._eval_gantt_slots.setdefault(chamber, {})
         chamber_slots[int(token_id)] = {
             "job": int(token_id),
@@ -584,11 +608,13 @@ class ClusterTool:
 
         def _transport_order(idx: int) -> int:
             transport = self._transition_transport_place(int(idx))
-            if transport == "TM2":
+            if transport == "TM1":
                 return 0
-            if transport == "TM3":
+            if transport == "TM2":
                 return 1
-            return 2
+            if transport == "TM3":
+                return 2
+            return 3
 
         transitions.sort(key=_transport_order)
         log_entries: List[Dict[str, Any]] = []
@@ -622,9 +648,8 @@ class ClusterTool:
                 src = pre_place.name
                 tok._dst_level_targets = tuple(self._u_targets.get(src, []))
                 tok.last_u_source = str(src)
-                tok.machine = 1
-                transport = pst_place.name if pst_place.name in {"TM2", "TM3"} else "TM2"
-                tok.machine = 2 if transport == "TM3" else 1
+                transport = pst_place.name if pst_place.name in {"TM1", "TM2", "TM3"} else "TM1"
+                tok.machine = {"TM1": 1, "TM2": 2, "TM3": 3}.get(transport, 1)
                 self._on_processing_unload(src)
             elif t_name.startswith("t_"):
                 target = pst_place.name
@@ -681,6 +706,8 @@ class ClusterTool:
                     self._per_wafer_reward += float(self.done_event_reward)
 
             tok.route_head_idx += 1
+            if t_name.startswith("t_") and pst_place.name in self._release_control_places:
+                self._apply_entry_release_delay(tok)
             pst_place.append(tok)
             tok._place_idx = pst_place_idx
             if t_name.startswith("t_"):
@@ -690,19 +717,19 @@ class ClusterTool:
                 self._record_eval_gantt_exit(pre_place.name, wafer_id, int(start_time))
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
-            if t_name.startswith("u_") and pre_place.name in self._load_port_names:
+            if t_name.startswith("u_") and pre_place.name in self._release_control_places:
                 released_type = int(getattr(tok, "route_type", 1) or 1)
                 self.entered_wafer_count += 1
                 self._entered_wafer_count_by_type[released_type] = (
                     int(self._entered_wafer_count_by_type.get(released_type, 0)) + 1
                 )
-                self._last_u_LP_fire_time = int(start_time)
-                self._u_LP_release_count += 1
-                self._u_LP_release_count_by_type[released_type] = (
-                    int(self._u_LP_release_count_by_type.get(released_type, 0)) + 1
+                self._last_u_entry_fire_time = int(start_time)
+                self._u_entry_release_count += 1
+                self._u_entry_release_count_by_type[released_type] = (
+                    int(self._u_entry_release_count_by_type.get(released_type, 0)) + 1
                 )
                 self._advance_release_ratio_cycle()
-                self._arm_lp_head_with_takt_delay(released_type)
+                self._arm_entry_head_with_takt_delay(released_type)
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -886,16 +913,16 @@ class ClusterTool:
             return False
         return str(target_name) == str(selected)
 
-    def _lp_type_head_tokens(self) -> Dict[int, BasedToken]:
+    def _entry_type_head_tokens(self) -> Dict[int, BasedToken]:
         heads: Dict[int, BasedToken] = {}
-        for lp_name in self._load_port_names:
-            lp_place = self._place_by_name.get(lp_name)
-            if lp_place is None:
+        for place_name in self._release_control_places:
+            place = self._place_by_name.get(place_name)
+            if place is None or len(place.tokens) == 0:
                 continue
-            for tok in lp_place.tokens:
-                t_id = int(getattr(tok, "route_type", 1) or 1)
-                if t_id not in heads:
-                    heads[t_id] = tok
+            tok = place.tokens[0]
+            t_id = int(getattr(tok, "route_type", 1) or 1)
+            if t_id not in heads:
+                heads[t_id] = tok
         return heads
 
     def _allow_start_for_route_type(self, route_type: int) -> bool:
@@ -953,14 +980,14 @@ class ClusterTool:
         idx = int(self._shared_ratio_cycle_idx) % len(cycle)
         return int(cycle[idx])
 
-    def _resolve_required_release_type_for_lp_heads(self) -> Optional[int]:
+    def _resolve_required_release_type_for_entry_heads(self) -> Optional[int]:
         required = self._required_release_type()
         if required is None:
             return None
         cycle = self._shared_ratio_cycle_types
         if not cycle:
             return required
-        heads = self._lp_type_head_tokens()
+        heads = self._entry_type_head_tokens()
         available_types = set(int(t) for t in heads.keys())
         if not available_types or int(required) in available_types:
             return required
@@ -984,7 +1011,7 @@ class ClusterTool:
 
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
-        返回下一次允许 u_LP 发片的最小间隔（秒）。
+        返回下一次允许 release_control_places 发片的最小间隔（秒）。
 
         口径：
         - 首片（release_count=0）不门控，返回 None
@@ -995,13 +1022,13 @@ class ClusterTool:
         policy = str(self._takt_policy or "").strip().lower()
         if policy == "split_by_subpath":
             takt = self._takt_result_by_type.get(type_id)
-            release_count = int(self._u_LP_release_count_by_type.get(type_id, 0))
+            release_count = int(self._u_entry_release_count_by_type.get(type_id, 0))
         else:
             # shared / 默认：所有类型共用同一条 takt_cycle，索引按全局发片计数推进。
             takt = self._takt_result_by_type.get(type_id)
             if takt is None and self._takt_result_by_type:
                 takt = next(iter(self._takt_result_by_type.values()))
-            release_count = int(self._u_LP_release_count)
+            release_count = int(self._u_entry_release_count)
         if not takt:
             return None
         if release_count <= 0:
@@ -1028,35 +1055,58 @@ class ClusterTool:
             required = 0
         return required
 
-    def _arm_lp_head_with_takt_delay(self, route_type: Optional[int]) -> None:
+    def _entry_delay_remaining(self, route_type: Optional[int] = None) -> int:
+        type_id = int(route_type if route_type is not None else 1)
+        policy = str(self._takt_policy or "").strip().lower()
+        if policy == "shared":
+            ready_at = int(self._entry_release_ready_time_shared)
+        else:
+            ready_at = int(self._entry_release_ready_time_by_type.get(type_id, 0))
+        return max(0, ready_at - int(self.time))
+
+    def _apply_entry_release_delay(self, tok: BasedToken) -> None:
+        route_type = int(getattr(tok, "route_type", 1) or 1)
+        remaining = self._entry_delay_remaining(route_type)
+        if remaining > 0:
+            tok.stay_time = -int(remaining)
+        elif int(tok.stay_time) < 0:
+            tok.stay_time = 0
+
+    def _arm_entry_head_with_takt_delay(self, route_type: Optional[int]) -> None:
         """
-        每次 u_LP 发射后，仅给新的 LP 队首 token 写入节拍倒计时（负 stay_time）。
-        这样下一片的等待起点是“上一片实际发射时刻”，可严格保证发片间隔。
+        每次 release_control_places 发射后，更新下一次允许发射的绝对时刻。
         """
         type_id = int(route_type if route_type is not None else 1)
         required = self._takt_required_interval(type_id)
+        now = int(self.time)
+        policy = str(self._takt_policy or "").strip().lower()
         if required is None:
-            heads = self._lp_type_head_tokens()
+            self._entry_release_ready_time_shared = now
+            self._entry_release_ready_time_by_type[type_id] = now
+            heads = self._entry_type_head_tokens()
             for head in heads.values():
-                if int(head.stay_time) < 0:
-                    head.stay_time = 0
+                self._apply_entry_release_delay(head)
             return
         required_int = max(0, int(required))
-        policy = str(self._takt_policy or "").strip().lower()
-        heads = self._lp_type_head_tokens()
+        if policy == "shared":
+            self._entry_release_ready_time_shared = now + required_int
+        else:
+            self._entry_release_ready_time_by_type[type_id] = now + required_int
+        heads = self._entry_type_head_tokens()
         if policy == "shared":
             for head in heads.values():
-                head.stay_time = -required_int
+                self._apply_entry_release_delay(head)
         else:
             head = heads.get(type_id)
             if head is None:
                 return
-            head.stay_time = -required_int
+            self._apply_entry_release_delay(head)
 
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
         self._u_transition_by_source_transport = {}
         self._t_transitions_by_transport = {}
+        self._tm1_transition_indices = []
         self._tm2_transition_indices = []
         self._tm3_transition_indices = []
         for t_idx, t_name in enumerate(self.id2t_name):
@@ -1067,7 +1117,7 @@ class ClusterTool:
                 if pre_idx.size >= 1 and pst_idx.size >= 1:
                     src = self.id2p_name[int(pre_idx[0])]
                     dst = self.id2p_name[int(pst_idx[0])]
-                    if dst in {"TM2", "TM3"}:
+                    if dst in {"TM1", "TM2", "TM3"}:
                         self._u_transition_by_source_transport[(src, dst)] = int(t_idx)
                         transport_name = str(dst)
                     self._u_transition_by_source[src] = int(t_idx)
@@ -1077,7 +1127,9 @@ class ClusterTool:
                     continue
                 self._t_transitions_by_transport.setdefault(transport, []).append(int(t_idx))
                 transport_name = str(transport)
-            if transport_name == "TM2":
+            if transport_name == "TM1":
+                self._tm1_transition_indices.append(int(t_idx))
+            elif transport_name == "TM2":
                 self._tm2_transition_indices.append(int(t_idx))
             elif transport_name == "TM3":
                 self._tm3_transition_indices.append(int(t_idx))
@@ -1106,7 +1158,7 @@ class ClusterTool:
         pre_idx = self._pre_place_indices[int(t_idx)]
         for p_i in pre_idx:
             p_name = str(self.id2p_name[int(p_i)])
-            if p_name in {"TM2", "TM3"}:
+            if p_name in {"TM1", "TM2", "TM3"}:
                 return p_name
         return None
 
@@ -1115,9 +1167,7 @@ class ClusterTool:
         mapped = self._route_source_target_transport.get((str(source), str(target)))
         if mapped:
             return str(mapped)
-        if target in {"PM1", "PM2", "PM3", "PM4", "PM5", "PM6"}:
-            return "TM3"
-        return "TM2"
+        return infer_cascade_transport_by_scope((str(source),), (str(target),))
 
     def _init_cleaning_state(self) -> None:
         for p in self.marks:
@@ -1142,7 +1192,7 @@ class ClusterTool:
             tokens = place.tokens
             if len(tokens) == 0:
                 continue
-            if place.is_dtm or place.name in {"TM2", "TM3"}:
+            if place.is_dtm or place.name in {"TM1", "TM2", "TM3"}:
                 has_important_task = True
             elif place.type in _CHAMBER_TYPES:
                 ptime = place.processing_time
@@ -1155,14 +1205,12 @@ class ClusterTool:
                         best = delta
                     if head.stay_time >= ptime:
                         has_important_task = True
-        lp_heads = self._lp_type_head_tokens()
-        if lp_heads:
-            deltas: List[int] = []
-            for tok in lp_heads.values():
-                if int(tok.stay_time) < 0:
-                    deltas.append(-int(tok.stay_time))
-                else:
-                    deltas.append(0)
+        entry_heads = self._entry_type_head_tokens()
+        if entry_heads:
+            deltas = [
+                int(self._entry_delay_remaining(int(getattr(tok, "route_type", 1) or 1)))
+                for tok in entry_heads.values()
+            ]
             if deltas:
                 delta_takt = min(deltas)
                 if best is None or delta_takt < best:
@@ -1249,9 +1297,14 @@ class ClusterTool:
 
     _MASK_TIMED_TYPES = frozenset((CHAMBER, 5, DELIVERY_ROBOT))
 
-    def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        tm1_idx = self._tm1_transition_indices
         tm2_idx = self._tm2_transition_indices
         tm3_idx = self._tm3_transition_indices
+        mask_tm1 = np.zeros(len(tm1_idx) + 1, dtype=bool)
+        for i, t_idx in enumerate(tm1_idx):
+            mask_tm1[i] = bool(full_mask[t_idx])
+        mask_tm1[-1] = True
         mask_tm2 = np.zeros(len(tm2_idx) + 1, dtype=bool)
         for i, t_idx in enumerate(tm2_idx):
             mask_tm2[i] = bool(full_mask[t_idx])
@@ -1260,18 +1313,18 @@ class ClusterTool:
         for i, t_idx in enumerate(tm3_idx):
             mask_tm3[i] = bool(full_mask[t_idx])
         mask_tm3[-1] = True
-        return mask_tm2, mask_tm3
+        return mask_tm1, mask_tm2, mask_tm3
 
     def get_action_mask(
         self,
         wait_action_start: Optional[int] = None,
         n_actions: Optional[int] = None,
         concurrent: Optional[bool] = None,
-    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """
         返回离散动作掩码。concurrent 为 None 时跟随 self._concurrent。
         concurrent=False：完整 transition + wait 向量。
-        concurrent=True：TM2/TM3 局部动作空间两段掩码（末维为各自 WAIT，恒 True）。
+        concurrent=True：TM1/TM2/TM3 局部动作空间三段掩码（末维为各自 WAIT，恒 True）。
         """
         use_tm = self._concurrent if concurrent is None else bool(concurrent)
         start = int(self.T if wait_action_start is None else wait_action_start)
@@ -1292,33 +1345,36 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
-        # LP 出片：单路线用全局 WIP（max_wafers1）；双子路径仅按类型上限（_allow_start_for_route_type）+ 队首节拍就绪；可同时允许多条 u_LP*。
-        required_release_type = self._resolve_required_release_type_for_lp_heads()
+        # release_control_places：单路线用全局 WIP；双子路径按类型上限；节拍入口由 route_meta 指定。
+        required_release_type = self._resolve_required_release_type_for_entry_heads()
         if self._multi_subpath or int(self.entered_wafer_count) < int(self.max_wafers1_in_system):
-            for lp_name in self._load_port_names:
-                lp_place = self._place_by_name.get(lp_name)
-                if lp_place is None or len(lp_place.tokens) == 0:
+            for place_name in self._release_control_places:
+                control_place = self._place_by_name.get(place_name)
+                if control_place is None or len(control_place.tokens) == 0:
                     continue
-                head = lp_place.tokens[0]
-                if int(head.stay_time) < 0:
-                    continue
+                head = control_place.tokens[0]
                 route_type = int(getattr(head, "route_type", 1) or 1)
                 if required_release_type is not None and route_type != required_release_type:
                     continue
-                expected_lp = self._wafer_type_to_load_port.get(route_type, "LP1")
-                if expected_lp != lp_name:
+                if int(self._entry_delay_remaining(route_type)) > 0:
+                    continue
+                expected_place = self._wafer_type_to_release_place.get(
+                    route_type,
+                    str(self._release_control_places[0]) if self._release_control_places else str(place_name),
+                )
+                if expected_place != place_name:
                     raise RuntimeError(
-                        f"wafer_type {route_type} maps to load port {expected_lp} but queue head is on {lp_name}"
+                        f"wafer_type {route_type} maps to release place {expected_place} but queue head is on {place_name}"
                     )
                 if not self._allow_start_for_route_type(route_type):
                     continue
-                lp_target = self._token_next_target(head)
-                if lp_target is None:
+                release_target = self._token_next_target(head)
+                if release_target is None:
                     continue
-                lp_transport = self._transport_for_t_target(lp_name, str(lp_target))
-                u_lp_idx = self._u_transition_by_source_transport.get((lp_name, lp_transport))
-                if u_lp_idx is not None and _is_struct_enabled(int(u_lp_idx)):
-                    t_idx = int(u_lp_idx)
+                release_transport = self._transport_for_t_target(place_name, str(release_target))
+                u_idx = self._u_transition_by_source_transport.get((place_name, release_transport))
+                if u_idx is not None and _is_struct_enabled(int(u_idx)):
+                    t_idx = int(u_idx)
                     if 0 <= t_idx < total_actions:
                         mask[t_idx] = True
 
@@ -1337,14 +1393,14 @@ class ClusterTool:
             if len(tokens) == 0:
                 continue
             pname = place.name
-            if pname in skip:
+            if pname in skip or pname in self._release_control_places:
                 continue
             p_type = place.type
             proc_time = place.processing_time
 
             is_timed = p_type in timed
 
-            if place.is_dtm or place.name in {"TM2", "TM3"}:
+            if place.is_dtm or place.name in {"TM1", "TM2", "TM3"}:
                 for tok in tokens:
                     if is_timed and proc_time > 0 and tok.stay_time < proc_time:
                         continue
@@ -1434,7 +1490,10 @@ class ClusterTool:
             proc_time[s] = float(
                 max(int(self._base_proc_time_map.get(str(n), 0)) for n in names),
             )
-            capacity[s] = len(names)
+            capacity[s] = sum(
+                max(1, int(getattr(self._place_by_name.get(str(n)), "capacity", 1) or 1))
+                for n in names
+            )
             stage_module_names[s] = [str(x) for x in names]
 
         ops: List[Op] = []

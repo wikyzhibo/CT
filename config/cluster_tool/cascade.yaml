@@ -12,5 +12,5 @@ wait_durations:
 cleaning_enabled: false
 stride: true
 single_route_config_path: route_config.json
-single_route_name: "4-1"
+single_route_name: "2-2"
 dual_arm: true

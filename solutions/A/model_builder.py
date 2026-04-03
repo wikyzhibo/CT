@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 import numpy as np
 from solutions.A.construct.build_marks import build_marks_for_single_net
 from solutions.A.construct.build_takt import build_takt_payload
-from solutions.A.construct.build_topology import get_topology
+from solutions.A.construct.build_topology import get_topology, infer_cascade_transport_by_scope
 from solutions.A.construct.preprocess_config import preprocess_chamber_runtime_blocks
 from solutions.A.construct.build_route_queue import (
     build_token_route_queue,
@@ -19,12 +19,14 @@ from solutions.A.construct.build_route_queue import (
 from solutions.A.construct.route_compiler_single import (
     RobotSpec as CompiledRobotSpec,
     RouteIR,
+    StageIR,
+    TransportIR,
     build_route_meta_from_route_ir,
     compile_route_stages,
     first_load_port_name,
 )
 
-BUFFER_NAMES: Set[str] = {"LLC", "LLD"}
+BUFFER_NAMES: Set[str] = {"AL", "LLA", "LLC", "LLD", "LLB", "CL"}
 
 
 
@@ -72,6 +74,106 @@ def _build_token_type_sequence(n_wafer1: int, n_wafer2: int) -> List[int]:
     if n_wafer <= 0:
         return []
     return [1] * int(n_wafer1) + [2] * int(n_wafer2)
+
+
+def _normalize_place_name(name: object) -> str:
+    raw = str(name or "").strip()
+    return "LP1" if raw == "LP" else raw
+
+
+def _logical_stage_slice(route_ir: RouteIR, include_entry_exit: bool) -> Tuple[StageIR, ...]:
+    if include_entry_exit:
+        return route_ir.stages
+    return route_ir.stages[1:-1]
+
+
+def _wrap_route_ir_with_tm1_prefix_suffix(
+    *,
+    route_ir: RouteIR,
+    load_port_name: str,
+    chamber_kind_map: Mapping[str, str],
+    chamber_process_time_map: Mapping[str, int],
+    sink_name: str,
+) -> RouteIR:
+    def _make_stage(
+        stage_idx: int,
+        candidates: Sequence[str],
+        stage_type: str,
+        process_time: Optional[int],
+    ) -> StageIR:
+        cands = tuple(str(x) for x in candidates)
+        return StageIR(
+            stage_idx=stage_idx,
+            candidates=cands,
+            stage_type=str(stage_type),
+            label="/".join(cands),
+            repeat_origin=None,
+            repeat_iter=0,
+            stage_process_time=(None if process_time is None else float(process_time)),
+            stage_cleaning_duration=None,
+            stage_cleaning_trigger_wafers=None,
+        )
+
+    wrapped_stages: List[StageIR] = [
+        _make_stage(0, (load_port_name,), "source", 0),
+        _make_stage(
+            1,
+            ("AL",),
+            str(chamber_kind_map.get("AL", "buffer")),
+            int(chamber_process_time_map.get("AL", 0)),
+        ),
+    ]
+    for offset, stage in enumerate(route_ir.stages, start=2):
+        stage_type = str(stage.stage_type)
+        if offset == 2:
+            stage_type = str(chamber_kind_map.get(stage.candidates[0], stage_type))
+        elif offset == len(route_ir.stages) + 1:
+            stage_type = str(chamber_kind_map.get(stage.candidates[0], stage_type))
+        wrapped_stages.append(
+            StageIR(
+                stage_idx=offset,
+                candidates=tuple(stage.candidates),
+                stage_type=stage_type,
+                label=str(stage.label),
+                repeat_origin=stage.repeat_origin,
+                repeat_iter=int(stage.repeat_iter),
+                stage_process_time=stage.stage_process_time,
+                stage_cleaning_duration=stage.stage_cleaning_duration,
+                stage_cleaning_trigger_wafers=stage.stage_cleaning_trigger_wafers,
+            )
+        )
+    wrapped_stages.extend(
+        [
+            _make_stage(
+                len(wrapped_stages),
+                ("CL",),
+                str(chamber_kind_map.get("CL", "buffer")),
+                int(chamber_process_time_map.get("CL", 0)),
+            ),
+            _make_stage(len(wrapped_stages) + 1, (sink_name,), "sink", 0),
+        ]
+    )
+
+    transports: List[TransportIR] = []
+    for hop_idx in range(len(wrapped_stages) - 1):
+        left = wrapped_stages[hop_idx]
+        right = wrapped_stages[hop_idx + 1]
+        transport_place = infer_cascade_transport_by_scope(left.candidates, right.candidates)
+        transports.append(
+            TransportIR(
+                hop_idx=hop_idx,
+                from_stage_idx=left.stage_idx,
+                to_stage_idx=right.stage_idx,
+                robot_name=transport_place,
+                transport_place=transport_place,
+            )
+        )
+    return RouteIR(
+        route_name=str(route_ir.route_name),
+        raw_expr=str(route_ir.raw_expr),
+        stages=tuple(wrapped_stages),
+        transports=tuple(transports),
+    )
 
 
 
@@ -205,28 +307,32 @@ def build_net(n_wafer1: int,
     """
     source_cfg = dict(route_config.get("source") or {"name": "LP1"})
     sink_cfg = dict(route_config.get("sink") or {"name": "LP_done"})
-    source_name = str(source_cfg.get("name", "LP1"))
-    if source_name == "LP":
-        source_name = "LP1"
+    source_name = _normalize_place_name(source_cfg.get("name", "LP1"))
     sink_name = str(sink_cfg.get("name", "LP_done"))
     if sink_name != "LP_done":
         raise ValueError("cascade fixed topology requires sink=LP_done")
     if source_name not in ("LP1", "LP2"):
         raise ValueError("cascade fixed topology requires source.name LP/LP1/LP2")
+    source_capacity = int(source_cfg.get("capacity", 100))
+    sink_capacity = int(sink_cfg.get("capacity", 100))
     selected_route_name = route_name
 
     chambers_cfg = dict(route_config.get("chambers") or {})
     chamber_kind_map: Dict[str, str] = {}
+    chamber_process_time_map: Dict[str, int] = {}
     for cname, cfg in chambers_cfg.items():
         chamber_kind_map[str(cname)] = str((cfg or {}).get("kind", "process"))
+        chamber_process_time_map[str(cname)] = int((cfg or {}).get("process_time", 0))
 
     robots_cfg_raw = dict(route_config.get("robots") or {})
     robots_cfg: Dict[str, CompiledRobotSpec] = {}
+    transport_capacities: Dict[str, int] = {}
     for rb_name, rb in robots_cfg_raw.items():
         managed = tuple(
             "LP1" if str(x) == "LP" else str(x) for x in (rb or {}).get("managed_chambers", ())
         )
         transport_place = str((rb or {}).get("transport_place", str(rb_name))).replace("d_", "")
+        transport_capacities[str(transport_place)] = int((rb or {}).get("capacity", 1))
         robots_cfg[str(rb_name)] = CompiledRobotSpec(
             name=str(rb_name),
             managed_chambers=managed,
@@ -235,8 +341,17 @@ def build_net(n_wafer1: int,
         )
 
     route_entry = dict((route_config.get("routes") or {}).get(selected_route_name) or {})
+    logical_entry_name = _normalize_place_name(route_entry.get("entry", source_name))
+    logical_exit_name = _normalize_place_name(route_entry.get("exit", sink_name))
+    wrap_tm1_prefix_suffix = (
+        logical_entry_name == "LLA"
+        and logical_exit_name == "LLB"
+        and source_name in ("LP1", "LP2")
+        and sink_name == "LP_done"
+    )
     subpaths_cfg_raw = route_entry.get("subpaths")
     route_irs_by_name: Dict[str, RouteIR] = {}
+    build_route_irs_by_name: Dict[str, RouteIR] = {}
     if isinstance(subpaths_cfg_raw, Mapping) and subpaths_cfg_raw:
         subpath_items = list(subpaths_cfg_raw.items())
         for idx, (subpath_name, subpath_cfg) in enumerate(subpath_items):
@@ -248,27 +363,53 @@ def build_net(n_wafer1: int,
                     sub_source = "LP1" if idx == 0 else "LP2"
                 else:
                     sub_source = source_name
-            if sub_source == "LP":
-                sub_source = "LP1"
-            route_irs_by_name[name] = compile_route_stages(
+            sub_source = _normalize_place_name(sub_source)
+            logical_source = logical_entry_name if wrap_tm1_prefix_suffix else sub_source
+            logical_sink = logical_exit_name if wrap_tm1_prefix_suffix else sink_name
+            logical_ir = compile_route_stages(
                 route_name=f"{selected_route_name}:{name}",
                 route_cfg=sub_raw,
-                source_name=sub_source,
-                sink_name=sink_name,
+                source_name=logical_source,
+                sink_name=logical_sink,
                 chamber_kind_map=chamber_kind_map,
                 robots=robots_cfg,
             )
+            route_irs_by_name[name] = logical_ir
+            build_route_irs_by_name[name] = (
+                _wrap_route_ir_with_tm1_prefix_suffix(
+                    route_ir=logical_ir,
+                    load_port_name=sub_source,
+                    chamber_kind_map=chamber_kind_map,
+                    chamber_process_time_map=chamber_process_time_map,
+                    sink_name=sink_name,
+                )
+                if wrap_tm1_prefix_suffix
+                else logical_ir
+            )
     else:
-        route_irs_by_name["default"] = compile_route_stages(
+        logical_ir = compile_route_stages(
             route_name=selected_route_name,
             route_cfg=route_entry,
-            source_name=source_name,
-            sink_name=sink_name,
+            source_name=(logical_entry_name if wrap_tm1_prefix_suffix else source_name),
+            sink_name=(logical_exit_name if wrap_tm1_prefix_suffix else sink_name),
             chamber_kind_map=chamber_kind_map,
             robots=robots_cfg,
         )
+        route_irs_by_name["default"] = logical_ir
+        build_route_irs_by_name["default"] = (
+            _wrap_route_ir_with_tm1_prefix_suffix(
+                route_ir=logical_ir,
+                load_port_name=source_name,
+                chamber_kind_map=chamber_kind_map,
+                chamber_process_time_map=chamber_process_time_map,
+                sink_name=sink_name,
+            )
+            if wrap_tm1_prefix_suffix
+            else logical_ir
+        )
     default_subpath_name = next(iter(route_irs_by_name.keys()))
     route_ir = route_irs_by_name[default_subpath_name]
+    build_route_ir = build_route_irs_by_name[default_subpath_name]
 
     n_wafer1_i = int(n_wafer1)
     n_wafer2_i = int(n_wafer2)
@@ -277,7 +418,7 @@ def build_net(n_wafer1: int,
         raise ValueError("single-subpath route requires n_wafer2==0")
 
     preprocess_result = preprocess_chamber_runtime_blocks(
-        route_ir=route_ir,
+        route_ir=build_route_ir,
         route_config=route_config,
         source_name=source_name,
         sink_name=sink_name,
@@ -285,8 +426,8 @@ def build_net(n_wafer1: int,
     )
     chamber_blocks = preprocess_result.chamber_blocks
     buffer_names = preprocess_result.buffer_names
-    if len(route_irs_by_name) >= 2:
-        for subpath_name, subpath_ir in route_irs_by_name.items():
+    if len(build_route_irs_by_name) >= 2:
+        for subpath_name, subpath_ir in build_route_irs_by_name.items():
             for stage in subpath_ir.stages:
                 is_process_stage = str(stage.stage_type) == "process"
                 for chamber_name in stage.candidates:
@@ -315,7 +456,7 @@ def build_net(n_wafer1: int,
     transition_id: Dict[Tuple[str, str], str] = dict(static_topology["transition_id"])
 
     # ===== 根据路径信息动态选择变迁 =====
-    route_ir_list = list(route_irs_by_name.values())
+    route_ir_list = list(build_route_irs_by_name.values())
     route_source_target_transport = _merge_route_source_target_transport(route_ir_list)
     active_u_names: Set[str] = set()
     active_t_names: Set[str] = set()
@@ -357,7 +498,7 @@ def build_net(n_wafer1: int,
     wafer_type_to_subpath: Dict[int, str] = {1: default_subpath_name}
     if len(route_irs_by_name) >= 2:
         multi_payload = build_token_route_queue_multi(
-            route_irs=route_irs_by_name,
+            route_irs=build_route_irs_by_name,
             id2t_name=id2t_name,
             t_target_place=t_target_place,
         )
@@ -384,7 +525,7 @@ def build_net(n_wafer1: int,
         )
     else:
         _, t_route_code_map, token_route_queue, token_proc_time_queue, token_plan = build_token_route_queue(
-            route_ir=route_ir,
+            route_ir=build_route_ir,
             id2t_name=id2t_name,
             t_target_place=t_target_place,
         )
@@ -397,7 +538,7 @@ def build_net(n_wafer1: int,
     lp_per_token = _lp_per_token_for_route(
         token_route_type_sequence=token_route_type_sequence,
         wafer_type_to_subpath=wafer_type_to_subpath,
-        route_irs_by_name=route_irs_by_name,
+        route_irs_by_name=build_route_irs_by_name,
     )
     c_lp = Counter(lp_per_token)
     if c_lp.get("LP1", 0) != n_wafer1_i or c_lp.get("LP2", 0) != n_wafer2_i:
@@ -420,6 +561,9 @@ def build_net(n_wafer1: int,
         token_proc_time_queue_by_type=token_proc_time_queue_by_type,
         token_route_type_sequence=token_route_type_sequence,
         lp_per_token=lp_per_token,
+        source_capacity=source_capacity,
+        sink_capacity=sink_capacity,
+        transport_capacities=transport_capacities,
         p_residual_time = p_residual_time,
         d_residual_time = d_residual_time,
         scrap_clip_threshold = scrap_clip_threshold,
@@ -434,22 +578,31 @@ def build_net(n_wafer1: int,
     ttime_arr = np.array([ttime for _ in range(t_count)], dtype=int)
 
     route_meta = build_route_meta_from_route_ir(route_ir, buffer_names=buffer_names or BUFFER_NAMES)
-    route_meta["route_stages"] = [list(stage.candidates) for stage in route_ir.stages[1:-1]]
+    build_route_meta = build_route_meta_from_route_ir(build_route_ir, buffer_names=buffer_names or BUFFER_NAMES)
+    route_meta["u_targets"] = dict(build_route_meta.get("u_targets") or {})
+    route_meta["step_map"] = dict(build_route_meta.get("step_map") or route_meta.get("step_map") or {})
+    route_meta["system_entry_places"] = set(build_route_meta.get("system_entry_places") or ())
+    logical_stage_slice = _logical_stage_slice(route_ir, include_entry_exit=wrap_tm1_prefix_suffix)
+    route_meta["route_stages"] = [list(stage.candidates) for stage in logical_stage_slice]
     route_meta["route_stage_process_times"] = [
         int(round(float(stage.stage_process_time)))
         if stage.stage_process_time is not None
         else 0
-        for stage in route_ir.stages[1:-1]
+        for stage in logical_stage_slice
     ]
     if len(route_irs_by_name) >= 2:
         for subpath_name, subpath_ir in route_irs_by_name.items():
-            sub_meta = build_route_meta_from_route_ir(subpath_ir, buffer_names=buffer_names or BUFFER_NAMES)
-            for src, tgts in (sub_meta.get("u_targets") or {}).items():
+            sub_logic_meta = build_route_meta_from_route_ir(subpath_ir, buffer_names=buffer_names or BUFFER_NAMES)
+            sub_build_meta = build_route_meta_from_route_ir(
+                build_route_irs_by_name[subpath_name],
+                buffer_names=buffer_names or BUFFER_NAMES,
+            )
+            for src, tgts in (sub_build_meta.get("u_targets") or {}).items():
                 arr = route_meta["u_targets"].setdefault(str(src), [])
                 for dst in list(tgts):
                     if dst not in arr:
                         arr.append(dst)
-            rcb = sub_meta.get("release_chain_by_u") or {}
+            rcb = sub_logic_meta.get("release_chain_by_u") or {}
             for k, v in rcb.items():
                 route_meta["release_chain_by_u"][k] = list(v)
         route_meta["multi_subpath"] = True
@@ -464,7 +617,10 @@ def build_net(n_wafer1: int,
     route_meta["takt_cycle"] = route_entry.get("takt_cycle")
     route_meta["default_subpath"] = str(default_subpath_name)
     route_meta["subpath_route_stages"] = {
-        str(name): [list(stage.candidates) for stage in ir.stages[1:-1]]
+        str(name): [
+            list(stage.candidates)
+            for stage in _logical_stage_slice(ir, include_entry_exit=wrap_tm1_prefix_suffix)
+        ]
         for name, ir in route_irs_by_name.items()
     }
     route_meta["subpath_route_stage_process_times"] = {
@@ -472,20 +628,32 @@ def build_net(n_wafer1: int,
             int(round(float(stage.stage_process_time)))
             if stage.stage_process_time is not None
             else 0
-            for stage in ir.stages[1:-1]
+            for stage in _logical_stage_slice(ir, include_entry_exit=wrap_tm1_prefix_suffix)
         ]
         for name, ir in route_irs_by_name.items()
     }
     full_timeline_chambers = tuple(
         name for name in id2p_name
-        if (name.startswith("PM") or name in {"LLC", "LLD"})
+        if name not in {"LP1", "LP2", "LP_done", "TM1", "TM2", "TM3"}
     )
     route_meta["chambers"] = full_timeline_chambers
     route_meta["timeline_chambers"] = full_timeline_chambers
+    route_meta["ready_chambers"] = full_timeline_chambers
     route_meta["wafer_type_to_load_port"] = {
-        int(tid): first_load_port_name(route_irs_by_name[sp])
+        int(tid): first_load_port_name(build_route_irs_by_name[sp])
         for tid, sp in wafer_type_to_subpath.items()
     }
+    route_meta["wafer_type_to_release_place"] = {
+        int(tid): (
+            str(route_irs_by_name[sp].stages[0].candidates[0])
+            if wrap_tm1_prefix_suffix
+            else first_load_port_name(build_route_irs_by_name[sp])
+        )
+        for tid, sp in wafer_type_to_subpath.items()
+    }
+    route_meta["release_control_places"] = tuple(
+        dict.fromkeys(route_meta["wafer_type_to_release_place"].values()).keys()
+    )
     route_meta["cleaning_duration_map"] = {
         str(name): int(block.cleaning_duration) for name, block in chamber_blocks.items()
     }
@@ -493,12 +661,7 @@ def build_net(n_wafer1: int,
         str(name): int(block.cleaning_trigger_wafers) for name, block in chamber_blocks.items()
     }
     route_meta["load_port_names"] = ("LP1", "LP2")
-    aliases = dict(route_meta.get("release_station_aliases") or {})
-    ordered_keys = sorted(
-        [k for k in aliases.keys() if str(k).startswith("s")],
-        key=lambda x: int(str(x)[1:]) if str(x)[1:].isdigit() else 0,
-    )
-    route_stages = [list(aliases[k]) for k in ordered_keys]
+    route_stages = [list(stage) for stage in list(route_meta.get("route_stages") or [])]
     takt_payload = build_takt_payload(
         route_stages=route_stages,
         route_stage_process_times=list(route_meta.get("route_stage_process_times") or []),
@@ -519,7 +682,7 @@ def build_net(n_wafer1: int,
     transport_pre_place_idx: List[int] = []
     for t in range(t_count):
         found = next(
-            (int(idx) for idx in pre_place_indices[t] if id2p_name[int(idx)] in {"TM2", "TM3"}),
+            (int(idx) for idx in pre_place_indices[t] if id2p_name[int(idx)] in {"TM1", "TM2", "TM3"}),
             -1,
         )
         transport_pre_place_idx.append(int(found))

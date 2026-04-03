@@ -131,7 +131,7 @@ class StatsPanel(QWidget):
         # 3. System 单行显示
         self._create_system_section()
         
-        # 4. RESIDUAL TIME (was Chambers) + TM2/TM3
+        # 4. RESIDUAL TIME (was Chambers) + TM1/TM2/TM3
         self._create_chambers_section()
         
         # 5. Robots 摘要 (已移除，合并入 RESIDUAL TIME)
@@ -278,9 +278,10 @@ class StatsPanel(QWidget):
         self.main_layout.addWidget(self.pm1234_row)
         self.main_layout.addWidget(self.pm910_row)
         
-        # 新增 TM2 / TM3 统计
+        self.tm1_row = MetricRow(self.theme)
         self.tm2_row = MetricRow(self.theme)
         self.tm3_row = MetricRow(self.theme)
+        self.main_layout.addWidget(self.tm1_row)
         self.main_layout.addWidget(self.tm2_row)
         self.main_layout.addWidget(self.tm3_row)
         
@@ -583,11 +584,13 @@ class StatsPanel(QWidget):
         self.pm1234_row.set_data("PM1-4", format_chamber(pm1234))
         self.pm910_row.set_data("PM9/10", format_chamber(pm910))
         
-        # Robot stats now split into TM2 / TM3
+        # Robot stats now split into TM1 / TM2 / TM3
         transports_result = state.stats.get("transports", {})
+        tm1_stats = transports_result.get("TM1", {})
         tm2_stats = transports_result.get("TM2", {})
         tm3_stats = transports_result.get("TM3", {})
         
+        self.tm1_row.set_data("TM1", format_chamber(tm1_stats))
         self.tm2_row.set_data("TM2", format_chamber(tm2_stats))
         self.tm3_row.set_data("TM3", format_chamber(tm3_stats))
 
