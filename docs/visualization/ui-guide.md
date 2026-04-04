@@ -98,6 +98,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-04: `visualization/main.py` 的环境构造收敛到 `solutions.A.rl_env.make_env(...)`，与 `solutions.A.eval.export_inference_sequence.py` 共享同一套 `runtime_mode/device_mode + n_wafer/single_route_name/single_route_config/process_time_map` 过滤与校验；保留 `single_process_time_map` 兼容别名；CLI 与运行时行为不变。
 - 2026-04-03: `config/cluster_tool/route_config.json`：`source`/`sink` 容量由 `25` 提至 `100`，避免 `n_wafer`（如 `30`）大于旧 `sink.capacity` 时终点堵塞与 TM1 持片无法卸入 `LP_done`。
 - 2026-04-03: `petri_adapter.py`：修复并发级联下 `LP`/`LP_done` 聚合重复合并（先 `_build_alias_state(全量)` 再 `_merge_alias_state`）导致腔室晶圆数与容量显示翻倍；现以空壳 `_build_alias_state(..., [], ...)` 初始化，仅由主循环合并一次。
 - 2026-04-03: `center_canvas.py` 扩展级联单臂布局：在 `LLA/LLB` 下方新增 `AL/CL/LP/LP_done`，并增加 `TM1 ARM`；`petri_single_adapter.py` 现将 `LP1/LP2` 聚合为 `LP`、`LP_done` 直显为 `LP_done`，且 `TM1` 只通过 `TM1 ARM` 展示真实持片；该模式当前使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8`，实际步距会按缩放后卡片尺寸自动扩至最少留 `10px` 间隔，single 与级联双臂布局保持不变。

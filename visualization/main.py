@@ -17,7 +17,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from solutions.A.rl_env import Env_PN_Single, Env_PN_Concurrent
+from solutions.A.rl_env import Env_PN_Single, Env_PN_Concurrent, make_env
 
 from .petri_single_adapter import PetriSingleAdapter
 from .petri_adapter import PetriAdapter
@@ -64,24 +64,18 @@ def build_adapter(
     if adapter_name != "petri":
         raise ValueError(f"不支持的适配器: {adapter_name}")
     env_overrides = dict(env_overrides or {})
-    process_time_map = env_overrides.get("process_time_map", env_overrides.get("single_process_time_map"))
     runtime_mode = str(env_overrides.get("runtime_mode", "concurrent" if concurrent else "single")).lower()
-    if runtime_mode == "concurrent":
-        if str(device_mode).lower() != "cascade":
-            raise ValueError("并发可视化仅支持 cascade 设备模式")
-        env = Env_PN_Concurrent(
-            device="cpu",
-            n_wafer=env_overrides.get("n_wafer"),
-            single_route_config=env_overrides.get("single_route_config"),
-            single_route_name=env_overrides.get("single_route_name"),
-            process_time_map=process_time_map,
-        )
+    env = make_env(
+        runtime_mode=runtime_mode,
+        device_mode=device_mode,
+        device="cpu",
+        env_overrides=env_overrides,
+    )
+    if isinstance(env, Env_PN_Concurrent):
         return PetriAdapter(env, step_verbose=step_verbose)
-    effective_robot_capacity = int(env_overrides.get("single_robot_capacity", robot_capacity))
-    env = Env_PN_Single(single_route_config=env_overrides.get("single_route_config"),
-                        single_route_name=env_overrides.get("single_route_name"),
-                        process_time_map=process_time_map)
-    return PetriSingleAdapter(env, step_verbose=step_verbose)
+    if isinstance(env, Env_PN_Single):
+        return PetriSingleAdapter(env, step_verbose=step_verbose)
+    raise TypeError(f"不支持的环境类型: {type(env)}")
 
 
 def _load_raw_state_dict(model_path: str):

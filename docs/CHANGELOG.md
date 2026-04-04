@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-04-04
+
+### A 方案：可视化与导出统一复用 `make_env`（2026-04-04）
+
+- **What changed**：`solutions/A/rl_env.py` 新增 `make_env(...)` 与共享 override 过滤；`visualization/main.py` 的 `build_adapter(...)` 与 `solutions/A/eval/export_inference_sequence.py` 的 single/concurrent rollout 均改为复用该工厂。共享口径仅透传 `n_wafer`、`single_route_config`、`single_route_name`、`process_time_map`，并保留 `single_process_time_map` 兼容别名；并发继续强制 `device_mode=cascade`。
+- **Why**：此前 UI 和导出脚本各自维护一份环境构造与 override 过滤逻辑，容易在 `runtime_mode` 校验、路线参数透传和工艺时长兼容上漂移。
+- **Impact**：本次只收敛内部实现，**不修改** CLI 参数、默认值、导出 JSON 字段或可视化适配器外部接口；新增 `tests/test_make_env.py` 覆盖 `make_env` 返回类型、并发设备约束、`single_process_time_map` 兼容分支以及 `build_adapter` 适配器类型回归。
+
 ## 2026-04-03
 
 ### A 方案：`ClusterTool._pick_tm1_from_mask` 与 mask / shared+ratio 发片对齐（2026-04-03）

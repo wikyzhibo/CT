@@ -34,21 +34,10 @@ from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import MaskedCategorical, ProbabilisticActor
 
 from solutions.model.network import DualHeadPolicyNet, MaskedPolicyHead
-from solutions.A.rl_env import Env_PN_Concurrent, Env_PN_Single
+from solutions.A.rl_env import Env_PN_Concurrent, Env_PN_Single, make_env
 from results.paths import ACTION_SEQUENCES_DIR, ensure_results_dirs, model_output_path, safe_name
 
 MAX_STEPS = 10000
-
-
-def _env_override_kwargs(env_overrides: dict[str, Any] | None) -> dict[str, Any]:
-    if not env_overrides:
-        return {}
-    allowed_keys = ("n_wafer", "single_route_config", "single_route_name", "process_time_map")
-    return {
-        key: env_overrides[key]
-        for key in allowed_keys
-        if key in env_overrides and env_overrides[key] is not None
-    }
 
 
 def _action_sequence_export_path(out_name: str, env: Env_PN_Single | Env_PN_Concurrent) -> Path:
@@ -212,7 +201,15 @@ def _rollout_single_sequence(
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Single]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Single(seed=seed, eval_mode=True, **_env_override_kwargs(env_overrides))
+    env = make_env(
+        runtime_mode="single",
+        device="cpu",
+        seed=seed,
+        eval_mode=True,
+        env_overrides=env_overrides,
+    )
+    if not isinstance(env, Env_PN_Single):
+        raise TypeError(f"期望 Env_PN_Single，实际为 {type(env)}")
     policy = _build_single_policy(env, model_path=model_path, device=device)
 
     td = env.reset()
@@ -403,7 +400,15 @@ def _rollout_concurrent_sequence(
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any], dict[str, Any], Env_PN_Concurrent]:
     device = torch.device("cpu")
     torch.manual_seed(seed)
-    env = Env_PN_Concurrent(device="cpu", **_env_override_kwargs(env_overrides))
+    env = make_env(
+        runtime_mode="concurrent",
+        device_mode="cascade",
+        device="cpu",
+        seed=seed,
+        env_overrides=env_overrides,
+    )
+    if not isinstance(env, Env_PN_Concurrent):
+        raise TypeError(f"期望 Env_PN_Concurrent，实际为 {type(env)}")
     env.net.eval()
     policy_module = _build_concurrent_policy(env, model_path=model_path, device=device)
 

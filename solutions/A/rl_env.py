@@ -95,6 +95,54 @@ def _load_cascade_runtime_config(
     return PetriEnvConfig.model_validate(payload)
 
 
+def _filter_env_override_kwargs(env_overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not env_overrides:
+        return {}
+    normalized = dict(env_overrides)
+    process_time_map = normalized.get("process_time_map")
+    if process_time_map is None and normalized.get("single_process_time_map") is not None:
+        process_time_map = normalized["single_process_time_map"]
+    allowed_keys = ("n_wafer", "single_route_config", "single_route_name")
+    filtered = {
+        key: normalized[key]
+        for key in allowed_keys
+        if key in normalized and normalized[key] is not None
+    }
+    if process_time_map is not None:
+        filtered["process_time_map"] = process_time_map
+    return filtered
+
+
+def make_env(
+    *,
+    runtime_mode: str = "single",
+    device_mode: str = "cascade",
+    device: str = "cpu",
+    seed=None,
+    eval_mode: bool = False,
+    env_overrides: Optional[Dict[str, Any]] = None,
+) -> "Env_PN_Single | Env_PN_Concurrent":
+    runtime_mode = str(runtime_mode).lower()
+    if runtime_mode not in {"single", "concurrent"}:
+        raise ValueError(f"不支持的 runtime_mode: {runtime_mode}")
+    device_mode = str(device_mode).lower()
+    override_kwargs = _filter_env_override_kwargs(env_overrides)
+    if runtime_mode == "concurrent":
+        if device_mode != "cascade":
+            raise ValueError("并发环境仅支持 cascade 设备模式")
+        return Env_PN_Concurrent(
+            device=device,
+            seed=seed,
+            **override_kwargs,
+        )
+    return Env_PN_Single(
+        device=device,
+        seed=seed,
+        eval_mode=eval_mode,
+        **override_kwargs,
+    )
+
+
 class Env_PN_Single(EnvBase):
     """
     单设备 Petri 网 RL 环境。训练时应传入 device="cpu"（与 train_single 约定一致）。

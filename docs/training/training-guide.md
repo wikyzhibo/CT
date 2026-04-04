@@ -98,6 +98,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-04-04: `solutions/A/eval/export_inference_sequence.py` 与 `visualization/main.py` 的环境创建统一复用 `solutions.A.rl_env.make_env(...)`；共享 `runtime_mode` 校验、并发仅 `cascade`、以及 `n_wafer/single_route_name/single_route_config/process_time_map` override 过滤；保留 `single_process_time_map` 兼容别名；CLI、导出字段与默认行为不变。
 - 2026-04-02: `solutions/A/eval/validate_all_routes.py` 将 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE` 合并为单一 `ROUTE_PLAN`；路线配置统一写 `train` / `eval` / `profile`；训练档位固定读取 `config/training/low.yaml` / `medium.yaml` / `high.yaml`；统一训练时 `ppo_trainer` 改为单进度条输出并返回结构化 summary；summary 写入 `results/training_logs/validate_all_routes_summary.json`；见 `docs/CHANGELOG.md`。
 - 2026-04-02: `solutions/A/eval/export_inference_sequence.py`：CLI 收敛为默认级联、`--concurrent` 选双头模型；移除 `--device`、`--max-steps`、`--robot-capacity`、`--force-overwrite-planb`；`--single-retries` 改为 `--retry`；`rollout_and_export` 使用 `concurrent`/`retry`；`ppo_trainer` 训练产物导出步数与 `MAX_STEPS=10000` 对齐；序列文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。
 - 2026-03-31: `solutions.A.ppo_trainer` 并发训练结束与单动作一致：存在 `CT_concurrent_best.pt` 时 `rollout_and_export(..., concurrent=True)` 导出动作序列与甘特；见 `solutions/A/eval/export_inference_sequence.py`。
