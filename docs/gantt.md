@@ -2,7 +2,7 @@
 
 ## 概述
 
-本规范描述用于可视化 Petri 网调度结果的甘特图绘制工具。该工具基于 matplotlib 实现，支持多阶段、多机器的调度可视化，并可选显示机械手占用情况。
+本规范描述用于可视化 Petri 网调度结果的甘特图绘制工具。该工具基于 matplotlib 实现，支持多阶段、多机器的调度可视化，仅展示工艺腔室与 wafer 工序。
 
 ## 核心数据结构
 
@@ -19,10 +19,10 @@ class Op:
     start: float       # 开始时间
     proc_end: float    # 加工结束时间
     end: float         # 占用结束时间（包含驻留时间）
-    is_arm: bool = False      # 是否为机械手动作
-    kind: int = -1            # 动作类型（0=取，1=放）
-    from_loc: str = ""        # 取的位置
-    to_loc: str = ""          # 放的位置
+    is_arm: bool = False      # 兼容字段：标记是否机械手动作
+    kind: int = -1            # 兼容字段：历史动作类型（0=取，1=放）
+    from_loc: str = ""        # 兼容字段：历史取的位置
+    to_loc: str = ""          # 兼容字段：历史放的位置
 ```
 
 #### Scenario: 标准工序操作
@@ -33,13 +33,12 @@ class Op:
 - **AND** `start` < `proc_end` <= `end`
 - **AND** `proc_end` 到 `end` 之间表示驻留时间
 
-#### Scenario: 机械手操作
+#### Scenario: 机械手字段兼容
 
-- **GIVEN** 一个机械手搬运操作
-- **WHEN** 创建 Op 实例时
-- **THEN** `is_arm` 应为 `True`
-- **AND** 应设置 `from_loc` 和 `to_loc` 表示搬运路径
-- **AND** `kind` 为 0 表示"取"，1 表示"放"
+- **GIVEN** 一个历史机械手操作记录
+- **WHEN** 创建 Op 实例且 `is_arm=True` 时
+- **THEN** 数据结构应允许保留该记录
+- **AND** 绘图函数应忽略该记录，不在图中绘制
 
 ## 甘特图绘制功能
 
@@ -57,9 +56,9 @@ def plot_gantt_hatched_residence(
     capacity: Dict[int, int],                # 各阶段机器数量
     n_jobs: int,                             # 作业总数
     out_path: str,                           # 输出路径
-    arm_info: dict,                          # 机械手信息
+    arm_info: dict,                          # 兼容参数（不参与绘图）
     with_label: bool = True,                 # 是否显示作业标签
-    no_arm: bool = True,                     # 是否隐藏机械手泳道
+    no_arm: bool = True,                     # 兼容参数（不影响绘图）
     policy: int = None,                      # 调度策略编号
     stage_module_names: Dict[int, List[str]] = None,  # 阶段到模块名称映射
     title_suffix: str | None = None            # 追加到标题，例如「路径 1-4」
@@ -131,44 +130,16 @@ def plot_gantt_hatched_residence(
 - **AND** 外边框包裹整个区间，使加工段和驻留段看起来像一个统一的整体
 - **AND** 在 `proc_end` 处不绘制分隔线，实现无缝连接
 
-### Requirement: 机械手动作可视化
+### Requirement: ARM 信息忽略策略
 
-系统 SHALL 使用不同颜色表示机械手的取放路径。
+系统 SHALL 在绘图时忽略所有机械手相关信息（`op.is_arm=True` 的记录、`arm_info`、`no_arm`）。
 
-#### Scenario: 机械手路径颜色分配
+#### Scenario: 输入混合工序与机械手记录
 
-- **GIVEN** 一组机械手操作
-- **WHEN** 绘制机械手动作时
-- **THEN** 应收集所有唯一的 `(from_loc, to_loc)` 路径
-- **AND** 为每条路径分配唯一颜色（tab20 色谱）
-- **AND** 在图例中显示路径标签（格式：`from_loc → to_loc`）
-
-#### Scenario: 机械手动作矩形
-
-- **GIVEN** 一个机械手操作 `op` 且 `op.is_arm = True`
-- **WHEN** 绘制该操作时
-- **THEN** 应使用路径对应的颜色
-- **AND** alpha=1.0（不透明）
-- **AND** 不添加作业标签
-
-### Requirement: 机械手占用泳道（可选）
-
-系统 SHALL 支持显示机械手占用情况的额外泳道（当 `no_arm=False` 时）。
-
-#### Scenario: 机械手占用区间计算
-
-- **GIVEN** 一个作业的相邻工序 A 和 B
-- **WHEN** 计算机械手占用区间时
-- **THEN** 占用区间为 `[A.end, B.start)`
-- **AND** 区间分配给对应的机械手（ARM1 或 ARM2）
-
-#### Scenario: 机械手占用颜色
-
-- **GIVEN** 某个时刻 t 的机械手占用数量 occ
-- **WHEN** 绘制该时刻的机械手泳道时
-- **THEN** occ=1 时使用绿色
-- **AND** occ=2 时使用蓝色
-- **AND** occ>=3 时使用红色（表示冲突）
+- **GIVEN** `ops` 同时包含工艺工序和机械手记录
+- **WHEN** 调用绘图函数
+- **THEN** 只绘制工艺工序
+- **AND** 不绘制机械手矩形、机械手图例、机械手占用泳道
 
 ### Requirement: 图表元数据
 
@@ -197,8 +168,7 @@ def plot_gantt_hatched_residence(
 
 - **GIVEN** 生成的甘特图
 - **WHEN** 保存为 PNG 文件时
-- **THEN** 应使用 300 DPI（无机械手泳道）
-- **OR** 使用 400 DPI（包含机械手泳道）
+- **THEN** 应使用 300 DPI
 - **AND** 使用 `bbox_inches='tight'` 自动裁剪空白
 
 ### Requirement: 作业标签显示
@@ -246,8 +216,6 @@ def plot_gantt_hatched_residence(
 
 - **泳道高度**：4 单位
 - **泳道间隙**：1 单位
-- **机械手泳道高度**：6 单位
-- **机械手泳道间隙**：6 单位
 - **图像宽度**：30 英寸（固定）
 - **图像高度**：8 英寸（固定）
 - **背景色**：#F8FAFC（浅灰白）
@@ -258,11 +226,6 @@ def plot_gantt_hatched_residence(
 ### 颜色方案
 
 - **作业颜色**：turbo 色谱（连续渐变）
-- **机械手路径颜色**：tab20 色谱（离散颜色）
-- **机械手占用颜色**：
-  - 绿色：单一占用
-  - 蓝色：双重占用
-  - 红色：三重及以上占用（冲突）
 - **边框颜色**：深灰色（#1E293B），统一所有矩形边框
 - **背景色**：浅色背景（#F8FAFC），图表区域白色（#FFFFFF）
 
@@ -369,37 +332,13 @@ plot_gantt_hatched_residence(
 # 泳道标签：S1-M0(PM1), S1-M1(PM2), S2-M0(PM3)
 ```
 
-### 显示机械手占用
-
-```python
-arm_info = {
-    "ARM1": ["u_LP_PM1", "t_PM1"],
-    "ARM2": ["u_PM1_PM2", "t_PM2"],
-    "STAGE2ACT": {
-        1: ["t_PM1", "u_PM1_PM2"],
-        2: ["t_PM2", "u_PM2_LP_done"],
-    }
-}
-
-plot_gantt_hatched_residence(
-    ops=ops,
-    proc_time=proc_time,
-    capacity=capacity,
-    n_jobs=10,
-    out_path="results/",
-    arm_info=arm_info,
-    no_arm=False,  # 显示机械手泳道
-    policy=2
-)
-```
-
 ## ClusterTool.render_gantt（A 方案）
 
 ### Abstract
 
 - **What**：`solutions/A/petri_net.py` 中 `ClusterTool.render_gantt(out_path, title_suffix=None)` 直接读取评估模式下 `_fire` 实时记录的腔室占用轨迹（含每片 wafer 实际 `proc_time`），构建 `Op` 并调用本页所述 `plot_gantt_hatched_residence`。
 - **When**：评估模式（`ClusterTool.eval()`）执行 `step` 产生 `t_*/u_*/swap` 后可调用；训练 `rollout_and_export`、或可视化 `render_gantt` 按钮/导出工具均可复用。
-- **Not**：训练模式不记录该轨迹；不再通过解析 `fire_log` 重建腔室区间；不维护 `_chamber_timeline`；当前固定 `no_arm=True`（不在图中画机械手专用泳道）。
+- **Not**：训练模式不记录该轨迹；不再通过解析 `fire_log` 重建腔室区间；不维护 `_chamber_timeline`；绘图函数会忽略机械手记录与 `arm_info`/`no_arm` 参数。
 - **Key rules**：只使用路线配置 `routes.<single_route_name>.route_stage` 中声明的腔室泳道；未声明腔室的记录会被忽略；stage 映射**只读取** `route_stage`；`route_stage` 缺失或为空时，`render_gantt` **必须**抛出 `ValueError`；`out_path` 若以 `.png` 结尾会先剥除再交给绘图函数；若没有任何腔室 `Op`，**必须**抛出 `ValueError`。
 
 ### Behavior / Rules
@@ -411,7 +350,7 @@ plot_gantt_hatched_residence(
 
 ### 输出文件名
 
-- **Does**：与 `plot_gantt_hatched_residence(..., no_arm=True)` 相同：`out_path` 为不含 `.png` 的基路径时，落盘 `{base}RL1_job{n_jobs}.png`（详见该函数实现）。
+- **Does**：与 `plot_gantt_hatched_residence(...)` 当前实现一致：`out_path` 为不含 `.png` 的基路径时，落盘 `{base}RL1_job{n_jobs}.png`（详见该函数实现）。
 - **`title_suffix`**：传入绘图函数的 `title_suffix`，拼在标题时间信息后；可为 `None`（`plot.py` 不显示字面 `None`）。
 
 ### Related Docs
@@ -423,7 +362,7 @@ plot_gantt_hatched_residence(
 ## 实现文件
 
 - **主文件**：`visualization/plot.py`
-- **依赖**：matplotlib, numpy
+- **依赖**：matplotlib
 - **核心函数**：
   - `plot_gantt_hatched_residence()` - 主绘制函数
   - `_num_stages()` - 阶段数量验证

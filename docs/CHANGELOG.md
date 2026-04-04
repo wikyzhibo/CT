@@ -8,6 +8,12 @@
 - **Why**：当前可视化 CLI 仅保留 `--adapter=petri`，多适配器抽象与历史模块已不可达，继续保留会增加维护噪音并干扰目录职责。
 - **Impact**：`python -m visualization.main` 与 `--adapter=petri` 行为不变。仅对直接 import 旧模块路径的外部脚本有影响：`visualization.transition_labels` 与 `visualization.route_path_display` 需改为 `visualization.widgets.transition_labels` 与 `visualization.widgets.route_path_display`；被删除模块不再可导入。
 
+### 甘特图：`plot.py` 不再绘制 ARM 信息（2026-04-04）
+
+- **What changed**：`visualization/plot.py` 的 `plot_gantt_hatched_residence` 仅绘制非 ARM 工序；`op.is_arm=True` 记录会被过滤。移除 ARM 路径颜色映射、ARM 图例和 `no_arm=False` 机械手占用泳道分支。函数签名保持不变，`arm_info`、`no_arm` 仅保留兼容。
+- **Why**：用户侧只需要工艺腔室与 wafer 工序的甘特图，ARM 信息会引入噪音并影响读图。
+- **Impact**：所有调用方输出统一为无 ARM 视图；即使传入 ARM 数据或 `no_arm=False`，图中也不会出现 ARM 矩形、ARM 图例或 ARM 专用泳道。若过滤后没有任何非 ARM 工序，函数会抛出 `ValueError`。
+
 ### A 方案：可视化与导出统一复用 `make_env`（2026-04-04）
 
 - **What changed**：`solutions/A/rl_env.py` 新增 `make_env(...)` 与共享 override 过滤；`visualization/main.py` 的 `build_adapter(...)` 与 `solutions/A/eval/export_inference_sequence.py` 的 single/concurrent rollout 均改为复用该工厂。共享口径仅透传 `n_wafer`、`single_route_config`、`single_route_name`、`process_time_map`，并保留 `single_process_time_map` 兼容别名；并发继续强制 `device_mode=cascade`。
