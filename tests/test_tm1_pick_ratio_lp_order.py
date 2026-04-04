@@ -25,6 +25,7 @@ def test_tm1_pick_prefers_lp_matching_ratio_when_cycle_wants_type2():
     net = ClusterTool(_cfg_4_8_n5(), concurrent=True)
     net.reset()
     net._shared_ratio_cycle_idx = 1
+    net._lp_pick_cycle_idx = 1  # LP pick cycle 独立，需同步设置
     req = net._resolve_required_release_type_for_entry_heads()
     assert req == 2
     start = int(net.T)
@@ -41,6 +42,7 @@ def test_tm1_pick_starts_with_lp1_when_cycle_wants_type1():
     net = ClusterTool(_cfg_4_8_n5(), concurrent=True)
     net.reset()
     net._shared_ratio_cycle_idx = 0
+    net._lp_pick_cycle_idx = 0
     req = net._resolve_required_release_type_for_entry_heads()
     assert req == 1
     start = int(net.T)

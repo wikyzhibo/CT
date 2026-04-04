@@ -117,6 +117,7 @@ class ClusterTool:
         self._shared_ratio_cycle_enabled: bool = False
         self._shared_ratio_cycle_types: Tuple[int, ...] = ()
         self._shared_ratio_cycle_idx: int = 0
+        self._lp_pick_cycle_idx: int = 0
         self._init_shared_ratio_release_cycle(route_entry)
 
         # ====== 8) Petri 静态结构索引 ======
@@ -426,6 +427,7 @@ class ClusterTool:
         self._entry_release_ready_time_shared = 0
         self._entry_release_ready_time_by_type = {int(t): 0 for t in sorted(all_types)}
         self._shared_ratio_cycle_idx = 0
+        self._lp_pick_cycle_idx = 0
         self._reset_eval_gantt_records()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
@@ -744,6 +746,8 @@ class ClusterTool:
                 )
                 self._advance_release_ratio_cycle()
                 self._arm_entry_head_with_takt_delay(released_type)
+            if t_name.startswith("u_") and pre_place.name in set(self._load_port_names or ()):
+                self._advance_lp_pick_cycle()
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -1022,6 +1026,25 @@ class ClusterTool:
         if not cycle:
             return
         self._shared_ratio_cycle_idx = (int(self._shared_ratio_cycle_idx) + 1) % len(cycle)
+
+    def _advance_lp_pick_cycle(self) -> None:
+        """TM1 从 LP 取料时推进独立的 LP pick 计数器。"""
+        if not self._shared_ratio_cycle_enabled:
+            return
+        cycle = self._shared_ratio_cycle_types
+        if not cycle:
+            return
+        self._lp_pick_cycle_idx = (int(self._lp_pick_cycle_idx) + 1) % len(cycle)
+
+    def _required_lp_pick_type(self) -> Optional[int]:
+        """返回下一次 TM1 应从哪种 LP 取料（基于独立 LP pick cycle，与 LLA release cycle 解耦）。"""
+        if not self._shared_ratio_cycle_enabled:
+            return None
+        cycle = self._shared_ratio_cycle_types
+        if not cycle:
+            return None
+        idx = int(self._lp_pick_cycle_idx) % len(cycle)
+        return int(cycle[idx])
 
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
@@ -1414,8 +1437,12 @@ class ClusterTool:
                 if u_lp is not None and mask[u_lp]:
                     lp_candidates.append(str(lp_name))
             if lp_candidates:
-                if required_release_type is not None:
-                    req = int(required_release_type)
+                # 优先使用独立的 LP pick cycle（与 LLA release cycle 解耦），
+                # 避免因 LLA 中仍有 type1 wafer 导致 cycle 回滚、TM1 持续选 LP1 的问题。
+                lp_pick_type = self._required_lp_pick_type()
+                effective_req = lp_pick_type if lp_pick_type is not None else required_release_type
+                if effective_req is not None:
+                    req = int(effective_req)
 
                     def _lp_head_route_type(name: str) -> int:
                         lp = pbname.get(name)
