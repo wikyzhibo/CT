@@ -2,6 +2,12 @@
 
 ## 2026-04-04
 
+### 可视化：取消默认模型自动加载 + 并发权重仅支持 DualHead（2026-04-04）
+
+- **What changed**：`visualization/main.py` 启动时不再在“未传 `--model`”分支探测 `CT_single_best.pt` / `CT_concurrent_best.pt`；仅在显式传 `--model` 或 UI 菜单手动选择模型文件时加载 Model A。并发加载链路收敛为 **DualHeadPolicyNet（TM2/TM3）**：支持常见 state_dict 外层前缀（`module.` / `backbone.` / `policy_module.`），并在检测到 `head_tm1` 时直接报“旧三头权重不支持”。
+- **Why**：默认自动探测会在可视化启动时引入隐式权重来源，且历史三头并发权重在当前双头推理路径上会表现为模糊“权重错误”；需收敛到显式加载与可解释报错。
+- **Impact**：`python -m visualization.main --device cascade` 默认进入手动模式，不再自动挂载 `results/models/*_best.pt`。导入双头并发权重（如 `CT_concurrent_best.pt`）可按前缀兼容规则稳定加载；导入含 `head_tm1` 的旧三头权重会被明确拒绝。
+
 ### 可视化：目录清理与单适配器收敛（2026-04-04）
 
 - **What changed**：`visualization/` 删除不可达模块 `dfs_adapter.py`、`ga_adapter.py`、`pdr_adapter.py`、`scripted_adapter.py`，删除无调用工具模块 `config_editor.py`、`debug_tools.py`、`export_tools.py`、`smoke_test.py`。`transition_labels.py`、`route_path_display.py` 迁移到 `visualization/widgets/`；`main_window.py`、`widgets/control_panel.py` 导入路径同步更新。`visualization/algorithm_interface.py` 删除 `AlgorithmAdapter` 抽象基类，保留 `ActionInfo/WaferState/ChamberState/RobotState/StateInfo` 数据类型；`petri_adapter.py`、`petri_single_adapter.py` 去继承；`viewmodel.py` 的 `adapter` 类型注解改为 `Any`。

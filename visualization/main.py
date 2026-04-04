@@ -23,7 +23,6 @@ from .petri_single_adapter import PetriSingleAdapter
 from .petri_adapter import PetriAdapter
 from .viewmodel import PetriViewModel
 from .main_window import PetriMainWindow
-from results.paths import model_output_path
 
 
 def set_app_icon(app: QApplication) -> QIcon | None:
@@ -85,10 +84,10 @@ def _load_raw_state_dict(model_path: str):
 
 
 def _detect_model_kind(state_dict: dict[str, object]) -> str:
-    for key in state_dict.keys():
-        key_str = str(key)
-        if ("head_tm2" in key_str and "head_tm3" in key_str) or "head_tm1" in key_str:
-            return "concurrent"
+    has_tm2 = any("head_tm2" in str(key) for key in state_dict.keys())
+    has_tm3 = any("head_tm3" in str(key) for key in state_dict.keys())
+    if has_tm2 and has_tm3:
+        return "concurrent"
     return "single"
 
 
@@ -118,31 +117,48 @@ def _infer_single_model_shape(state_dict: dict) -> tuple[int, int]:
 
 
 def _iter_concurrent_candidate_state_dicts(state_dict: dict):
-    return [
-        state_dict,
-        {k[len("backbone."):]: v for k, v in state_dict.items() if k.startswith("backbone.")},
-    ]
+    prefixes = (
+        "",
+        "module.",
+        "backbone.",
+        "module.backbone.",
+        "policy_module.",
+        "module.policy_module.",
+        "policy_module.backbone.",
+        "module.policy_module.backbone.",
+    )
+    for prefix in prefixes:
+        if not prefix:
+            yield state_dict
+            continue
+        candidate = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+        if candidate:
+            yield candidate
 
 
 def _infer_concurrent_dual_head_shape(state_dict: dict) -> tuple[int, int, int, int, int]:
     """与 `export_inference_sequence._infer_dual_head_shape` 同构：DualHeadPolicyNet（仅 TM2/TM3）。"""
-    w0 = state_dict.get("backbone.backbone.0.weight")
+    w0 = state_dict.get("backbone.0.weight")
     if w0 is None:
-        raise KeyError("权重缺少 backbone.backbone.0.weight")
+        raise KeyError("权重缺少 backbone.0.weight")
     n_hidden, n_obs = int(w0.shape[0]), int(w0.shape[1])
-    h2 = state_dict.get("backbone.head_tm2.weight")
-    h3 = state_dict.get("backbone.head_tm3.weight")
+    h2 = state_dict.get("head_tm2.weight")
+    h3 = state_dict.get("head_tm3.weight")
     if h2 is None or h3 is None:
         raise KeyError("权重缺少 head_tm2 / head_tm3，无法推断 DualHeadPolicyNet 结构")
     n_actions_tm2 = int(h2.shape[0])
     n_actions_tm3 = int(h3.shape[0])
     linear_count = 0
     for k in state_dict:
-        m = re.match(r"^backbone\.backbone\.(\d+)\.weight$", str(k))
+        m = re.match(r"^backbone\.(\d+)\.weight$", str(k))
         if m and int(m.group(1)) % 2 == 0:
             linear_count += 1
     n_layers = linear_count + 1
     return n_obs, n_hidden, n_actions_tm2, n_actions_tm3, n_layers
+
+
+def _contains_tm1_head(state_dict: dict[str, object]) -> bool:
+    return any("head_tm1" in str(key) for key in state_dict.keys())
 
 
 def _ensure_runtime_adapter(
@@ -292,7 +308,7 @@ def load_model(model_path: str, adapter: PetriSingleAdapter):
         return None
 
 
-def load_concurrent_model(model_path: str, adapter: PetriAdapter):
+def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[object | None, str]:
     """
     加载并发双头策略（TM2/TM3）；TM1 由 `ClusterTool` 规则自动执行。
     返回的步进回调为 `(a1, a2, a3)`，其中 `a1` 恒为 `-1`（占位，仿真侧忽略）。
@@ -309,11 +325,17 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
         n_actions_tm2 = int(env.n_actions_tm2)
         n_actions_tm3 = int(env.n_actions_tm3)
         raw_state_dict = _load_raw_state_dict(model_path)
+        if _contains_tm1_head(raw_state_dict):
+            raise ValueError(
+                "检测到 head_tm1：当前可视化仅支持 DualHeadPolicyNet（TM2/TM3）并发权重，"
+                "不支持旧三头权重。"
+            )
         n_hidden = 256
         n_layers = 4
         inferred_tm2 = n_actions_tm2
         inferred_tm3 = n_actions_tm3
         inferred_obs = n_obs
+        shape_inferred = False
         for cand in _iter_concurrent_candidate_state_dicts(raw_state_dict):
             if not cand:
                 continue
@@ -321,9 +343,16 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
                 inferred_obs, n_hidden, inferred_tm2, inferred_tm3, n_layers = _infer_concurrent_dual_head_shape(
                     cand
                 )
+                shape_inferred = True
                 break
             except Exception:
                 continue
+        if not shape_inferred:
+            raise RuntimeError(
+                "无法识别并发双头权重格式。需要包含 DualHeadPolicyNet 的 "
+                "backbone.0.weight、head_tm2.weight、head_tm3.weight "
+                "（可带 module/backbone/policy_module 外层前缀）。"
+            )
         if inferred_obs != n_obs or inferred_tm2 != n_actions_tm2 or inferred_tm3 != n_actions_tm3:
             raise ValueError(
                 f"并发模型动作空间与当前环境不匹配: "
@@ -344,6 +373,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
         )
 
         loaded = False
+        load_error: Exception | None = None
         for cand in _iter_concurrent_candidate_state_dicts(raw_state_dict):
             if not cand:
                 continue
@@ -351,10 +381,11 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
                 backbone.load_state_dict(cand)
                 loaded = True
                 break
-            except Exception:
+            except Exception as exc:
+                load_error = exc
                 continue
         if not loaded:
-            raise RuntimeError(f"无法识别的并发模型权重格式: {model_path}")
+            raise RuntimeError(f"无法加载并发双头权重: {model_path}; 最后错误: {load_error}")
         backbone.eval()
 
         print(f"✓ 并发模型加载成功: {model_path}")
@@ -387,11 +418,11 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter):
                 traceback.print_exc()
                 return (-1, -1, -1)
 
-        return get_model_actions
+        return get_model_actions, ""
 
     except Exception as e:
         print(f"✗ 加载并发模型失败: {e}")
-        return None
+        return None, str(e)
 
 
 def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWindow) -> tuple[bool, str]:
@@ -416,10 +447,10 @@ def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWin
         if not isinstance(adapter, PetriAdapter):
             window.set_concurrent_model_handler(None)
             return False, "并发适配器切换失败，当前窗口仍不是并发后端。"
-        handler = load_concurrent_model(model_path, adapter)
+        handler, error_msg = load_concurrent_model(model_path, adapter)
         if handler is None:
             window.set_concurrent_model_handler(None)
-            return False, f"并发模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
+            return False, f"并发模型加载失败: {error_msg}"
         window.set_concurrent_model_handler(handler)
         return True, f"并发模型加载成功: {model_path}"
 
@@ -500,23 +531,13 @@ def main() -> int:
     if app_icon:
         window.setWindowIcon(app_icon)
     
-    # 加载模型（如果指定）
+    # 加载模型（仅在显式传 --model 时自动应用）
     if not args.no_model:
         if args.model:
-            model_path = args.model
-        else:
-            default_model_name = "CT_concurrent_best.pt" if concurrent_mode else "CT_single_best.pt"
-            default_model = model_output_path(default_model_name)
-            if default_model.exists():
-                model_path = str(default_model)
-                print(f"使用默认模型: {model_path}")
-            else:
-                model_path = None
-                print("未找到默认模型，将以手动模式运行")
-        
-        if model_path:
-            ok, msg = apply_model_for_mode(model_path, selected_device, window)
+            ok, msg = apply_model_for_mode(args.model, selected_device, window)
             print(("✓ " if ok else "✗ ") + msg)
+        else:
+            print("未指定 --model，启动手动模式（可在回放菜单中选择模型文件）。")
     else:
         print("已禁用模型加载")
         print("提示: 即使不加载模型，也可在回放菜单选择 JSON 后使用 Model B 进行离线回放。")
