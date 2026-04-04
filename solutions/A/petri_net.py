@@ -79,33 +79,22 @@ class ClusterTool:
         self.chambers = tuple(route_meta.get("timeline_chambers") or route_meta.get("chambers", ()))
         self._u_targets = dict(route_meta.get("u_targets", {}))
         self._step_map = dict(route_meta.get("step_map", {}))
-        self._has_repeat_syntax_reentry = bool(route_meta.get("has_repeat_syntax_reentry", False))
         self._cleaning_duration_map = route_meta.get("cleaning_duration_map")
         self._cleaning_trigger_map = route_meta.get("cleaning_trigger_wafers_map")
         self._multi_subpath = bool(route_meta.get("multi_subpath", False))
-        self._subpath_to_type: Dict[str, int] = route_meta.get("subpath_to_type")
         self._wafer_type_to_subpath: Dict[int, str] = route_meta.get("wafer_type_to_subpath")
-        subpath_route_stages_raw = dict(route_meta.get("subpath_route_stages") or {})
-        self._subpath_route_stages: Dict[str, List[List[str]]] = {
-            str(subpath_name): [
-                [str(place_name) for place_name in list(stage or [])]
-                for stage in list(stages or [])
-            ]
-            for subpath_name, stages in subpath_route_stages_raw.items()
-        }
         self._takt_policy: str = str(route_meta.get("takt_policy", "") or "")
-        self._wafer_type_to_load_port: Dict[int, str] = route_meta.get("wafer_type_to_load_port")
         self._load_port_names: Tuple[str, ...] = route_meta.get("load_port_names")
         self._wafer_type_to_release_place: Dict[int, str] = route_meta.get("wafer_type_to_release_place") or {}
         self._release_control_places: Tuple[str, ...] = tuple(route_meta.get("release_control_places") or self._load_port_names)
         self._mask_skip_places: frozenset[str] = frozenset({"LP_done"})
-        self._ready_chambers = route_meta.get("ready_chambers") or route_meta.get("chambers")
-        self._single_process_chambers = self.chambers
-        self._cycle_type_enabled: bool = False
-        self._cycle_type: Tuple[int, ...] = ()
+        _raw_cycle = route_entry.get("cycle_type") if str(self._takt_policy or "").strip().lower() == "shared" else None
+        _valid_types = set(int(t) for t in self._wafer_type_to_subpath.keys())
+        _filtered = tuple(int(t) for t in (_raw_cycle or []) if int(t) in _valid_types)
+        self._cycle_type_enabled: bool = bool(_filtered)
+        self._cycle_type: Tuple[int, ...] = _filtered
         self._cycle_type_idx: int = 0
         self._lp_pick_cycle_idx: int = 0
-        self._init_shared_ratio_release_cycle(route_entry)
 
         # ====== 8) Petri 静态结构索引 ======
         self.m0: np.ndarray = info["m0"]
@@ -114,8 +103,6 @@ class ClusterTool:
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
-        self._token_route_queue_templates_by_type: Dict[int, Tuple[object, ...]] = info.get("token_route_queue_templates_by_type")
-        self._token_route_type_sequence: List[int] = info.get("token_route_type_sequence")
         self._t_target_place_map: Dict[str, str] = dict(info.get("t_target_place_map") or {})
         self._route_source_target_transport: Dict[Tuple[str, str], str] = info.get("route_source_target_transport")
         self._t_route_code_by_idx: List[int] = [
@@ -139,8 +126,6 @@ class ClusterTool:
         # 预计算的 pre/pst 库所索引与运输位索引（构网返回或本地计算以兼容旧版）
         self._pre_place_indices: List[np.ndarray] = info["pre_place_indices"]
         self._pst_place_indices: List[np.ndarray] = info["pst_place_indices"]
-        self._transport_pre_place_idx: List[int] = info["transport_pre_place_idx"]
-        self._fixed_topology: bool = bool(info.get("fixed_topology", False))
 
         # ====== 9) Episode 状态与统计容器 ======
         self.marks: List[Place] = self._clone_marks(info["marks"])
@@ -201,7 +186,7 @@ class ClusterTool:
         self._last_state_scan: Dict[str, Any] = {}
 
         # ====== 12) 观测缓存与索引重建 ======
-        self._ready_chambers_set: frozenset = frozenset(self._ready_chambers)
+        self._ready_chambers_set: frozenset = frozenset(self.chambers)
         self._place_by_name: Dict[str, Place] = {}
         self._obs_place_names: List[str] = []
         self.obs_dim: int = 0
@@ -965,24 +950,6 @@ class ClusterTool:
             raise RuntimeError(f"unsupported route_type for WIP cap: {type_id}")
         current = int(self._entered_wafer_count_by_type.get(type_id, 0))
         return int(current + 1) <= cap
-
-    # 作用：初始化 shared+ratio 的 release 轮转状态。
-    def _init_shared_ratio_release_cycle(self, route_entry: Dict[str, Any]) -> None:
-        self._cycle_type_enabled = False
-        self._cycle_type = ()
-        self._cycle_type_idx = 0
-        if str(self._takt_policy or "").strip().lower() != "shared":
-            return
-        raw_cycle = route_entry.get("cycle_type")
-        if not raw_cycle:
-            return
-        valid_types = set(int(t) for t in self._wafer_type_to_subpath.keys())
-        filtered = tuple(int(t) for t in raw_cycle if int(t) in valid_types)
-        if not filtered:
-            return
-        self._cycle_type_enabled = True
-        self._cycle_type = filtered
-        self._cycle_type_idx = 0
 
     # 作用：返回当前 release 轮次要求的 route_type。
     def _required_release_type(self) -> Optional[int]:

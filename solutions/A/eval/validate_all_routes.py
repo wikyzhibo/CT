@@ -26,17 +26,17 @@ ROUTE_PLAN: dict[str, dict[str, int | str]] = {
     "2-1": {"train": 8, "eval": 75, "profile": "low"},  # 2-* 集创赛 ABCD 路径
     "2-2": {"train": 6, "eval": 75, "profile": "low"},
     "2-3": {"train": 6, "eval": 75, "profile": "medium"},
-    "2-4": {"train": 6, "eval": 75, "profile": "low"},
+    #"2-4": {"train": 6, "eval": 75, "profile": "low"},
     #"3-1": {"train": 9, "eval": 75, "profile": "low"},  # 3-* 单腔测试路径
     #"3-2": {"train": 6, "eval": 75, "profile": "low"},
     #"3-3": {"train": 6, "eval": 15, "profile": "medium"},
     #"4-2": {"train": 8, "eval": 75, "profile": "low"},  # 4-* 双腔路径
     #"4-3": {"train": 8, "eval": 75, "profile": "low"},
-    #"4-8": {"train": 10, "eval": 75, "profile": "medium"},
+    "4-8": {"train": 10, "eval": 75, "profile": "medium"},
     #"4-9": {"train": 12, "eval": 75, "profile": "medium"},
     #"4-10": {"train": 12, "eval": 75, "profile": "medium"},
     #"4-11": {"train": 12, "eval": 75, "profile": "medium"},
-    #"4-12": {"train": 12, "eval": 75, "profile": "high"},
+    "4-12": {"train": 12, "eval": 75, "profile": "high"},
     #"4-13": {"train": 10, "eval": 75, "profile": "medium"},
     #"4-14": {"train": 10, "eval": 75, "profile": "high"},
 }
