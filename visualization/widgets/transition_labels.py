@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from .algorithm_interface import ActionInfo
+from ..algorithm_interface import ActionInfo
 
 # 配置菜单可选路径（与 data/petri_configs/cascade_routes_1_star.json 中 routes 键一致）
 CASCADE_ROUTE_OPTIONS: Tuple[str, ...] = tuple(f"1-{i}" for i in range(1, 7)) + tuple(f"2-{i}" for i in range(1, 5))

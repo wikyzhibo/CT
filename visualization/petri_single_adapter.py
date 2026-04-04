@@ -23,7 +23,6 @@ REWARD_DESC_VIZ: Dict[str, str] = {
 
 from .algorithm_interface import (
     ActionInfo,
-    AlgorithmAdapter,
     ChamberState,
     RobotState,
     StateInfo,
@@ -42,7 +41,7 @@ def _normalize_transport_name(name: str) -> str:
     return raw
 
 
-class PetriSingleAdapter(AlgorithmAdapter):
+class PetriSingleAdapter:
     def __init__(self, env: Env_PN_Single, step_verbose: bool = True) -> None:
         self.env = env
         self.net = env.net

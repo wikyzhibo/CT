@@ -1,10 +1,8 @@
 """
-统一算法接口 - 为不同调度算法提供统一的抽象层
-支持 PPO/PDR/DFS/遗传算法等多种算法接入可视化系统
+可视化状态与动作的数据类型定义。
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
 
@@ -70,86 +68,3 @@ class StateInfo:
     
     # 统计信息
     stats: Dict[str, Any] = field(default_factory=dict)
-
-
-class AlgorithmAdapter(ABC):
-    """算法适配器基类 - 统一接口"""
-    
-    @abstractmethod
-    def reset(self) -> StateInfo:
-        """重置环境,返回初始状态"""
-        pass
-    
-    @abstractmethod
-    def step(self, action: int | Tuple[int, ...]) -> Tuple[StateInfo, float, bool, Dict]:
-        """
-        执行动作,返回(新状态, 奖励, 是否结束, 额外信息)
-        
-        Args:
-            action: 动作 ID，或并发动作 `(a1, a2, ...)`
-            
-        Returns:
-            state_info: 新状态信息
-            reward: 奖励值
-            done: 是否结束
-            info: 额外信息字典
-        """
-        pass
-    
-    @abstractmethod
-    def get_action_name(self, action: int) -> str:
-        """获取动作名称(用于UI显示)"""
-        pass
-    
-    @abstractmethod
-    def get_enabled_actions(self) -> List[ActionInfo]:
-        """获取当前可用动作列表"""
-        pass
-    
-    @abstractmethod
-    def get_reward_breakdown(self) -> Dict[str, float]:
-        """
-        获取奖励分解(用于详细显示)
-        
-        Returns:
-            字典,包含各个奖励/惩罚项,例如:
-            {
-                "proc_reward": 10.0,
-                "penalty": -5.0,
-                "transport_penalty": -2.0,
-                ...
-            }
-        """
-        pass
-    
-    @property
-    @abstractmethod
-    def action_space_size(self) -> int:
-        """动作空间大小(不含 WAIT 动作)"""
-        pass
-    
-    @abstractmethod
-    def get_current_state(self) -> StateInfo:
-        """获取当前状态信息(不执行动作)"""
-        pass
-    
-    def render_gantt(self, output_path: str) -> bool:
-        """
-        生成甘特图(可选功能)
-        
-        Args:
-            output_path: 输出文件路径
-            
-        Returns:
-            是否成功生成
-        """
-        return False
-    
-    def export_action_sequence(self) -> List[Dict[str, Any]]:
-        """
-        导出动作序列(可选功能)
-        
-        Returns:
-            动作序列列表,每个元素包含 step, action, reward 等信息
-        """
-        return []
