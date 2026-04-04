@@ -1,5 +1,5 @@
 MAX_TIME: 200000
-n_wafer: 75
+n_wafer: 8
 time_coef_penalty: 10
 warn_coef_penalty: 4
 transport_overtime_coef_penalty: 6.0

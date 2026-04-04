@@ -81,6 +81,7 @@
 36. `ClusterTool._fire` 在 `t_*` 入目标库所时，按 token 当前 `route_head_idx` 读取 `route_proc_time_queue`，并将该值写入目标库所 `processing_time`；工时按“每片 wafer 的访问序号”生效，`use_count` 仅用于并行选机。
 37. `preprocess_chamber_runtime_blocks` 与 `model_builder` 允许同一 chamber 在不同 stage 使用不同 `process_time`；`chamber_blocks.process_time` 仅作为基础值，不再作为重复访问时的唯一工时。
 38. 级联 `ClusterTool.get_obs()` **不**写入下列库所的观测段：`route_meta.load_port_names` 所列各装载口、`AL`、`CL`、`TM1`、`LP_done`（`_skip_obs_places` 显式包含上述名字）。其余库所仍按 `load_port_names + TM1 + TM2 + TM3 + chambers` 顺序在剔除上述名字后保留相对次序；动作空间、`get_action_mask` 与 Petri 拓扑**不因**该剔除而改变。
+39. 并发模式（`ClusterTool(..., concurrent=True)`）下，TM1 离散动作由 `get_action_mask` 末尾写入的 `_cached_auto_tm1_action` 决定；优先级仍为「持片投递 → `LLB` → `CL` → `AL` → `LP` 取料」。**Does**：(a) 「持片投递」一步对 `t_TM1_*` 的挑选与 `get_action_mask` 中运输位分支一致：同一套 `route_gate`、`_allow_t_by_use_count` 并行选机、`_is_struct_enabled`（非双臂 PM）及双臂 PM 完工判定；(b) 当路线为 `takt_policy=shared` 且配置 `ratio` 时，若本步 `_resolve_required_release_type_for_entry_heads()` 返回值不为 `None`，且 `AL` 空、`LLA` 未满、多个 `u_LP*_TM1` 同时被掩码置位，则在其中**优先**队首 `route_type` 与该值一致的装载口，其余按原 `load_port_names` 顺序回退。**Does NOT**：不改变规则 27（外层 `LP→TM1` / `AL→TM1` 不受节拍门控）；不改变规则 32（release `u_*` 节拍与比例门控主体）。
 
 ## Examples
 - 正例:
@@ -101,6 +102,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-04-03: **并发 TM1 `_pick_tm1_from_mask`**：`t_TM1_*` 与 `get_action_mask` 并行选机对齐；`shared`+`ratio` 下多 LP 同时可取时优先当前 `_resolve_required_release_type_for_entry_heads()` 对应 `route_type`；见规则 39 与 `CHANGELOG.md`。
 - 2026-04-02: **`export_inference_sequence` 序列文件名**：实际文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。
 - 2026-04-02: **`export_inference_sequence` CLI 收敛**：默认级联导出；`--concurrent` 使用双头并发权重；移除 `--device`、`--max-steps`、`--robot-capacity` 等；`--retry` 替代 `--single-retries`；rollout 步数固定 `MAX_STEPS=10000`；入口 `python -m solutions.A.eval.export_inference_sequence`；见 `docs/CHANGELOG.md`。
 - 2026-04-01: **WAIT 关键节点截断收敛**：`config/cluster_tool/env_config.py` 新增 `wait_key_event_truncation_enabled`（默认 `True`）。`solutions/A/petri_net.py` 的 `get_next_event_delta` 改为只保留“加工完成 + LP 节拍到点”关键事件，并在单次 `marks` 扫描中同步记录“加工完成待取片 / TM2-TM3 持片”标记；`step(do_wait)` 在上述标记任一为真时将 `WAIT>5s` 截断为 `5s`。

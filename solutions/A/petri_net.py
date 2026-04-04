@@ -1316,18 +1316,77 @@ class ClusterTool:
     # TM1 在这些库所支持双臂 swap（AL：送新料同时带走旧料；CL：送入同时取出待送 LP_done 的料）
     _TM1_SWAP_PLACES: frozenset = frozenset({"AL", "CL"})
 
-    def _pick_tm1_from_mask(self, mask: np.ndarray) -> Optional[int]:
+    def _pick_tm1_from_mask(
+        self,
+        mask: np.ndarray,
+        required_release_type: Optional[int] = None,
+    ) -> Optional[int]:
         """从已计算的全量 mask 中按优先级选择 TM1 变迁（不再调用 get_action_mask）。"""
         pbname = self._place_by_name
         tm1_t_indices = self._t_transitions_by_transport.get("TM1", [])
+        total_actions = int(mask.shape[0])
+        place_by_name = self._place_by_name
+        route_code_by_idx = self._t_route_code_by_idx
+        route_gate_allows = self._route_gate_allows_t
 
-        # 1. TM1 持有晶圆 → 投递到路由目的地
+        # 1. TM1 持有晶圆 → 投递到路由目的地（与 get_action_mask d_TM 分支同一套 gate/并行选机/结构判定）
         tm1_place = pbname.get("TM1")
         if tm1_place is not None and len(tm1_place.tokens) > 0:
-            for t_idx in tm1_t_indices:
-                if mask[t_idx]:
-                    return t_idx
-            return None  # 目的地暂不可用，等待
+            struct_enabled_cache: Dict[int, bool] = {}
+            selected_parallel_target_cache: Dict[Tuple[int, Tuple[str, ...]], str] = {}
+
+            def _is_struct_enabled_pick(t_idx: int) -> bool:
+                cached = struct_enabled_cache.get(t_idx)
+                if cached is not None:
+                    return cached
+                result = not bool(
+                    (
+                        self.m[int(self._pre_place_indices[t_idx][0])] < 1
+                        or self.m[int(self._pst_place_indices[t_idx][0])] + 1
+                        > self.k[int(self._pst_place_indices[t_idx][0])]
+                    )
+                )
+                struct_enabled_cache[t_idx] = result
+                return result
+
+            p_type = tm1_place.type
+            proc_time = tm1_place.processing_time
+            is_timed = p_type in self._MASK_TIMED_TYPES
+            for tok in tm1_place.tokens:
+                if is_timed and proc_time > 0 and tok.stay_time < proc_time:
+                    continue
+                tok_gate = tok.route_queue[tok.route_head_idx]
+                for t_idx in tm1_t_indices:
+                    if not mask[int(t_idx)]:
+                        continue
+                    target = self._transition_target_place(int(t_idx))
+                    if target is None:
+                        continue
+                    if not self._allow_t_by_use_count(
+                        "TM1",
+                        target,
+                        tok_gate,
+                        tok,
+                        selected_parallel_target_cache,
+                    ):
+                        continue
+                    if not route_gate_allows(tok_gate, route_code_by_idx[t_idx]):
+                        continue
+                    target_place = place_by_name.get(target)
+                    if target_place is None or target_place.is_cleaning:
+                        continue
+                    if self._dual_arm and target_place.is_pm:
+                        if (
+                            len(target_place.tokens) > 0
+                            and target_place.tokens[0].stay_time < target_place.processing_time
+                        ):
+                            continue
+                    else:
+                        if not _is_struct_enabled_pick(int(t_idx)):
+                            continue
+                    if 0 <= int(t_idx) < total_actions:
+                        return int(t_idx)
+            return None
 
         # 2. LLB 有完成晶圆 → 优先清空（防止 LLB 满阻塞 TM2）
         u_llb = self._u_transition_by_source_transport.get(("LLB", "TM1"))
@@ -1346,14 +1405,33 @@ class ClusterTool:
             if u_al is not None and mask[u_al]:
                 return u_al
 
-        # 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料
+        # 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料（shared+ratio 时优先当前发片轮次所需 route_type）
         al = pbname.get("AL")
-        if (al is not None and len(al.tokens) == 0
-                and lla is not None and len(lla.tokens) < lla.capacity):
+        if al is not None and len(al.tokens) == 0 and lla is not None and len(lla.tokens) < lla.capacity:
+            lp_candidates: List[str] = []
             for lp_name in self._load_port_names:
                 u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
                 if u_lp is not None and mask[u_lp]:
-                    return u_lp
+                    lp_candidates.append(str(lp_name))
+            if lp_candidates:
+                if required_release_type is not None:
+                    req = int(required_release_type)
+
+                    def _lp_head_route_type(name: str) -> int:
+                        lp = pbname.get(name)
+                        if lp is None or len(lp.tokens) == 0:
+                            return -1
+                        return int(getattr(lp.tokens[0], "route_type", 1) or 1)
+
+                    preferred = [lp for lp in lp_candidates if _lp_head_route_type(lp) == req]
+                    others = [lp for lp in lp_candidates if lp not in preferred]
+                    pick_lps = preferred + others
+                else:
+                    pick_lps = lp_candidates
+                for lp_name in pick_lps:
+                    u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
+                    if u_lp is not None and mask[u_lp]:
+                        return int(u_lp)
 
         return None
 
@@ -1520,7 +1598,7 @@ class ClusterTool:
                 mask[idx] = True
 
         if self._concurrent:
-            self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask)
+            self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask, required_release_type)
 
         if use_tm:
             return self._tm_masks_from_full(mask)

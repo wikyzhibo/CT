@@ -2,6 +2,13 @@
 
 ## 2026-04-03
 
+### A 方案：`ClusterTool._pick_tm1_from_mask` 与 mask / shared+ratio 发片对齐（2026-04-03）
+
+- **What changed**：`solutions/A/petri_net.py` 中 `_pick_tm1_from_mask`：TM1 持片时对 `t_TM1_*` 的选取与 `get_action_mask` 运输位分支一致（`route_gate`、`_allow_t_by_use_count`、结构/双臂 PM 条件）；`get_action_mask` 将当次的 `_resolve_required_release_type_for_entry_heads()` 结果传入；当 `takt_policy=shared` 且配置 `ratio` 时，多 `u_LP*_TM1` 同时掩码为真则优先队首 `route_type` 与该值一致的装载口。
+- **Why**：固定 `t_*` 枚举序或固定 `LP1→LP2` 会在双子路径（如 `4-*` shared+ratio）上与比例发片轮次错位，导致 LLA 队首类型与 release 门控不一致。
+- **Impact**：并发 rollout / 导出 / 可视化所依赖的 TM1 规则解码与训练环境一致；微观调度顺序可能与旧版略有差异。
+- **Docs**：`docs/continuous-model/pn-single.md` 规则 39、`docs/pn_api.md` `get_action_mask` 条。
+
 ### A 方案：级联观测剔除装载口 / `AL` / `CL` / `TM1`（2026-04-03）
 
 - **What changed**：`solutions/A/petri_net.py` 在构造 `_obs_place_names` 时跳过 `route_meta.load_port_names`、`AL`、`CL`、`TM1`、`LP_done`（`LP_done` 与装载口等同列入 `_skip_obs_places`，避免日后 `order` / `chambers` 含终点时误入观测）。级联典型 `obs_dim` 由 **162** 降为 **139**（与剔除前相比 `LP_done` 本不占维，数值不变）。
