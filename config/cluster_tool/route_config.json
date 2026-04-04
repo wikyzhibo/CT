@@ -502,6 +502,7 @@
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(50s)->LLC/LLD(37s)->PM9/PM10(56s)[352s/25片]->LLB(20s)->CL(20s)->LP_done",
       "route_stage": [["PM7","PM8"],["LLC","LLD"],["PM9","PM10"]],
+      "takt_cycle": [50],
       "sequence": [
         {
           "stage": {
@@ -1302,7 +1303,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(116s)->PM10(131s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM6(116s)->PM2/PM5(131s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "ratio": [1,2],
+      "ratio": [2,4],
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 4,
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
@@ -1916,7 +1917,7 @@
                   "PM7",
                   "PM10"
                 ],
-                "process_time": 423
+                "process_time": 425
               }
             },
             {
@@ -1932,7 +1933,7 @@
                 "candidates": [
                   "PM1"
                 ],
-                "process_time": 138
+                "process_time": 140
               }
             },
             {
@@ -1949,7 +1950,7 @@
                   "PM7",
                   "PM10"
                 ],
-                "process_time": 102
+                "process_time": 100
               }
             },
             {
@@ -1965,7 +1966,7 @@
                 "candidates": [
                   "PM1"
                 ],
-                "process_time": 138
+                "process_time": 140
               }
             },
             {
@@ -1982,7 +1983,7 @@
                   "PM7",
                   "PM10"
                 ],
-                "process_time": 762
+                "process_time": 760
               }
             },
             {
@@ -2020,7 +2021,7 @@
                   "PM3",
                   "PM4"
                 ],
-                "process_time": 423
+                "process_time": 425
               }
             },
             {
@@ -2028,7 +2029,7 @@
                 "candidates": [
                   "PM1"
                 ],
-                "process_time": 138
+                "process_time": 140
               }
             },
             {
@@ -2038,7 +2039,7 @@
                   "PM3",
                   "PM4"
                 ],
-                "process_time": 102
+                "process_time": 100
               }
             },
             {
@@ -2046,7 +2047,7 @@
                 "candidates": [
                   "PM1"
                 ],
-                "process_time": 138
+                "process_time": 140
               }
             },
             {
@@ -2056,7 +2057,7 @@
                   "PM3",
                   "PM4"
                 ],
-                "process_time": 762
+                "process_time": 760
               }
             },
             {

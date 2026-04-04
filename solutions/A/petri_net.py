@@ -460,6 +460,7 @@ class ClusterTool:
         _training = self._training
         is_scrap = False
         scrap_info = None
+        _CUSTOM_LIMITS: Dict[str, int] = {"AL": 200, "CL": 200}
 
         total_reward = 0.0
         total_reward += -float(safe_dt * self.time_coef_penalty)
@@ -521,11 +522,13 @@ class ClusterTool:
             # 驻留违规扫描
             if not has_tok:
                 continue
-            if p.type == CHAMBER:
+            if p.name in _CUSTOM_LIMITS:
+                resident_limit = _CUSTOM_LIMITS[p.name]
+            elif p.type == CHAMBER:
                 resident_limit = self.P_Residual_time
             elif p.type == 5:
-                # LLA/LLB/CL 作为缓冲区，允许晶圆无限停留，不触发 scrap
-                if p.name in {"LLA", "LLB", "CL"}:
+                # LLA/LLB 作为缓冲区，允许晶圆无限停留，不触发 scrap
+                if p.name in {"LLA", "LLB"}:
                     continue
                 resident_limit = self.P_Residual_time * 3
             else:
@@ -1239,9 +1242,9 @@ class ClusterTool:
                     delta = ptime - head.stay_time
                     if delta < 0:
                         delta = 0
-                    if best is None or delta < best:
+                    if delta > 0 and (best is None or delta < best):
                         best = delta
-                    if head.stay_time >= ptime:
+                    if head.stay_time >= ptime and place.type == CHAMBER:
                         has_important_task = True
         entry_heads = self._entry_type_head_tokens()
         if entry_heads:
@@ -1251,7 +1254,7 @@ class ClusterTool:
             ]
             if deltas:
                 delta_takt = min(deltas)
-                if best is None or delta_takt < best:
+                if delta_takt > 0 and (best is None or delta_takt < best):
                     best = delta_takt
         return 5 if (self.stride and has_important_task) else best
 
