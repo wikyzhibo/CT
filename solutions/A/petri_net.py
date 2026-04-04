@@ -14,6 +14,7 @@ SOURCE = 3
 
 
 class ClusterTool:
+    # 作用：初始化配置、构网结果、状态容器与索引缓存。
     def __init__(self, config: PetriEnvConfig = None, concurrent: bool = False) -> None:
         assert config is not None, "config must be provided"
         self.config = config
@@ -246,14 +247,17 @@ class ClusterTool:
         if not self._training:
             print(self._takt_result)
 
+    # 作用：切换为训练模式。
     def train(self):
         """训练模式"""
         self._training = True
 
+    # 作用：切换为评估模式。
     def eval(self):
         """评估模式"""
         self._training = False
 
+    # 作用：执行一步仿真推进并返回 done/reward/scrap/mask/obs。
     def step(
         self,
         a1=None,
@@ -396,6 +400,7 @@ class ClusterTool:
             obs,
         )
 
+    # 作用：重置网状态、统计计数与入口节拍游标。
     def reset(self):
         self.marks = self._clone_marks(self.ori_marks)
         self._place_by_name = {p1.name: p1 for p1 in self.marks}
@@ -444,11 +449,13 @@ class ClusterTool:
         enabled_t = sorted(i for i in range(T) if bool(mask[i]))
         return None, enabled_t
 
+    # 作用：将当前库所观测写入缓冲并返回观测向量。
     def get_obs(self) -> np.ndarray:
         for place, offset in zip(self._obs_places, self._obs_offsets):
             place.write_obs_fast(self._obs_buffer, offset)
         return self._obs_buffer
 
+    # 作用：推进时间并累计奖励、惩罚与驻留 scrap 扫描结果。
     def _advance_and_compute_reward(self, dt: int, t1: int, t2: int) -> tuple:
         """
         推进仿真时间并累计本步奖励。
@@ -555,6 +562,7 @@ class ClusterTool:
         self._last_state_scan = scan_info
         return total_reward, scan_info
 
+    # 作用：初始化评估态甘特图记录槽位。
     def _reset_eval_gantt_records(self) -> None:
         route_stages = [list(stage) for stage in self._gantt_route_stages]
         place_to_sm: Dict[str, Tuple[int, int, int]] = {}
@@ -576,6 +584,7 @@ class ClusterTool:
         self._eval_gantt_slots = {name: {} for name in place_to_sm.keys()}
         self._eval_gantt_closed_ops = []
 
+    # 作用：记录晶圆进入腔室时的甘特开始片段。
     def _record_eval_gantt_enter(self, chamber: str, token_id: int, start_time: int, proc_time: int) -> None:
         if self._training:
             return
@@ -595,6 +604,7 @@ class ClusterTool:
             "proc_end": float(start_time + int(proc_time)),
         }
 
+    # 作用：闭合晶圆离开腔室时的甘特片段。
     def _record_eval_gantt_exit(self, chamber: str, token_id: int, end_time: int) -> None:
         if self._training:
             return
@@ -615,6 +625,7 @@ class ClusterTool:
             }
         )
 
+    # 作用：执行一个或多个变迁发射并更新 token、计数与日志。
     def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
         is_multi = not isinstance(t_idx, (int, np.integer))
         transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
@@ -625,6 +636,7 @@ class ClusterTool:
         if is_swap and len(transitions) == 1 and not swap_set:
             swap_set.add(int(transitions[0]))
 
+        # 作用：定义多变迁发射时的运输位优先级排序。
         def _transport_order(idx: int) -> int:
             transport = self._transition_transport_place(int(idx))
             if transport == "TM1":
@@ -764,6 +776,7 @@ class ClusterTool:
             return log_entries[0]
         return log_entries
 
+    # 作用：判断发射后是否应撤销同步 resident scrap。
     def _should_cancel_resident_scrap_after_fire(self, scan: Dict[str, Any], log_entry: Optional[Dict[str, Any]]) -> bool:
         if isinstance(log_entry, list):
             for item in log_entry:
@@ -802,6 +815,7 @@ class ClusterTool:
         decision = bool(place_match and token_match)
         return decision
 
+    # 作用：从 token 路由队列推断下一目标腔室。
     def _token_next_target(self, tok: BasedToken) -> Optional[str]:
         """从 token 的 route_queue 推断下一个目标腔室（用于 u_* 选择）。"""
         queue = tok.route_queue
@@ -823,6 +837,7 @@ class ClusterTool:
         return None
 
     @staticmethod
+    # 作用：读取 token 当前阶段工时配置。
     def _token_current_stage_process_time(tok: BasedToken) -> Optional[int]:
         proc_queue = tuple(getattr(tok, "route_proc_time_queue", ()) or ())
         if not proc_queue:
@@ -835,6 +850,7 @@ class ClusterTool:
             return None
         return value
 
+    # 作用：把路由 gate 归一化为允许目标集合。
     def _gate_targets_from_tok_gate(self, tok_gate: object) -> Tuple[str, ...]:
         if tok_gate == -1:
             return tuple()
@@ -857,6 +873,7 @@ class ClusterTool:
             targets.append(name)
         return tuple(targets)
 
+    # 作用：计算候选目标与 gate 的交集目标序列。
     def _stage_targets_for_candidates(self, candidates: Sequence[str], tok_gate: object) -> Tuple[str, ...]:
         candidate_targets = tuple(str(x) for x in candidates)
         if not candidate_targets:
@@ -868,6 +885,7 @@ class ClusterTool:
         filtered = tuple(t for t in candidate_targets if t in gate_set)
         return filtered if filtered else candidate_targets
 
+    # 作用：按 use_count 最小且稳定顺序选择目标腔室。
     def _select_min_use_count_target(
         self,
         candidates: Sequence[str],
@@ -896,6 +914,7 @@ class ClusterTool:
         return picked
 
     @staticmethod
+    # 作用：判定 gate 是否允许指定的 t_route_code。
     def _route_gate_allows_t(gate: object, t_code: int) -> bool:
         if t_code < 0:
             return True
@@ -909,6 +928,7 @@ class ClusterTool:
             return t_code in gate
         return True
 
+    # 作用：校验 t_* 目标是否满足并行选机一致性约束。
     def _allow_t_by_use_count(
         self,
         transport_name: str,
@@ -934,6 +954,7 @@ class ClusterTool:
             return False
         return str(target_name) == str(selected)
 
+    # 作用：收集各 release 入口队首 wafer 的 route_type。
     def _entry_type_head_tokens(self) -> Dict[int, BasedToken]:
         heads: Dict[int, BasedToken] = {}
         for place_name in self._release_control_places:
@@ -946,6 +967,7 @@ class ClusterTool:
                 heads[t_id] = tok
         return heads
 
+    # 作用：按在制上限判断 route_type 是否允许发片。
     def _allow_start_for_route_type(self, route_type: int) -> bool:
         """双子路径：route_type 1/2 分别受 max_wafers1_in_system / max_wafers2_in_system 约束。"""
         if not self._multi_subpath:
@@ -961,6 +983,7 @@ class ClusterTool:
         return int(current + 1) <= cap
 
     @staticmethod
+    # 作用：将 ratio 配置展开为 release 轮转序列。
     def _build_release_ratio_cycle(raw_ratio: Sequence[int]) -> Tuple[int, ...]:
         cycle: List[int] = []
         for type_id, raw_count in enumerate(list(raw_ratio), start=1):
@@ -970,6 +993,7 @@ class ClusterTool:
             cycle.extend([int(type_id)] * count)
         return tuple(cycle)
 
+    # 作用：初始化 shared+ratio 的 release 轮转状态。
     def _init_shared_ratio_release_cycle(self, route_entry: Dict[str, Any]) -> None:
         self._shared_ratio_cycle_enabled = False
         self._shared_ratio_cycle_types = ()
@@ -992,6 +1016,7 @@ class ClusterTool:
         self._shared_ratio_cycle_types = filtered_cycle
         self._shared_ratio_cycle_idx = 0
 
+    # 作用：返回当前 release 轮次要求的 route_type。
     def _required_release_type(self) -> Optional[int]:
         if not self._shared_ratio_cycle_enabled:
             return None
@@ -1001,6 +1026,7 @@ class ClusterTool:
         idx = int(self._shared_ratio_cycle_idx) % len(cycle)
         return int(cycle[idx])
 
+    # 作用：结合入口队首状态解析当前可执行 route_type。
     def _resolve_required_release_type_for_entry_heads(self) -> Optional[int]:
         required = self._required_release_type()
         if required is None:
@@ -1022,6 +1048,7 @@ class ClusterTool:
             return cand_type
         return required
 
+    # 作用：推进 release 轮转游标。
     def _advance_release_ratio_cycle(self) -> None:
         if not self._shared_ratio_cycle_enabled:
             return
@@ -1030,6 +1057,7 @@ class ClusterTool:
             return
         self._shared_ratio_cycle_idx = (int(self._shared_ratio_cycle_idx) + 1) % len(cycle)
 
+    # 作用：推进 TM1 从 LP 取料轮转游标。
     def _advance_lp_pick_cycle(self) -> None:
         """TM1 从 LP 取料时推进独立的 LP pick 计数器。"""
         if not self._shared_ratio_cycle_enabled:
@@ -1039,6 +1067,7 @@ class ClusterTool:
             return
         self._lp_pick_cycle_idx = (int(self._lp_pick_cycle_idx) + 1) % len(cycle)
 
+    # 作用：返回当前 LP 取料轮次要求的 route_type。
     def _required_lp_pick_type(self) -> Optional[int]:
         """返回下一次 TM1 应从哪种 LP 取料（基于独立 LP pick cycle，与 LLA release cycle 解耦）。"""
         if not self._shared_ratio_cycle_enabled:
@@ -1049,6 +1078,7 @@ class ClusterTool:
         idx = int(self._lp_pick_cycle_idx) % len(cycle)
         return int(cycle[idx])
 
+    # 作用：返回指定 route_type 的节拍间隔需求。
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
         返回下一次允许 release_control_places 发片的最小间隔（秒）。
@@ -1096,6 +1126,7 @@ class ClusterTool:
             required = 0
         return required
 
+    # 作用：计算当前 route_type 还需等待的节拍时长。
     def _entry_delay_remaining(self, route_type: Optional[int] = None) -> int:
         type_id = int(route_type if route_type is not None else 1)
         policy = str(self._takt_policy or "").strip().lower()
@@ -1105,6 +1136,7 @@ class ClusterTool:
             ready_at = int(self._entry_release_ready_time_by_type.get(type_id, 0))
         return max(0, ready_at - int(self.time))
 
+    # 作用：将节拍延迟写回入口 token 的 stay_time。
     def _apply_entry_release_delay(self, tok: BasedToken) -> None:
         route_type = int(getattr(tok, "route_type", 1) or 1)
         remaining = self._entry_delay_remaining(route_type)
@@ -1113,6 +1145,7 @@ class ClusterTool:
         elif int(tok.stay_time) < 0:
             tok.stay_time = 0
 
+    # 作用：发片后为下一入口队首挂载节拍延迟。
     def _arm_entry_head_with_takt_delay(self, route_type: Optional[int]) -> None:
         """
         每次 release_control_places 发射后，更新下一次允许发射的绝对时刻。
@@ -1143,6 +1176,7 @@ class ClusterTool:
                 return
             self._apply_entry_release_delay(head)
 
+    # 作用：构建 u/t 变迁到 source/transport 的索引缓存。
     def _build_transition_index(self) -> None:
         self._u_transition_by_source = {}
         self._u_transition_by_source_transport = {}
@@ -1176,6 +1210,7 @@ class ClusterTool:
                 self._tm3_transition_indices.append(int(t_idx))
 
     @staticmethod
+    # 作用：深拷贝 marks 与 token，避免共享引用。
     def _clone_marks(marks: List[Place]) -> List[Place]:
         cloned: List[Place] = []
         for p in marks:
@@ -1183,6 +1218,7 @@ class ClusterTool:
             cloned.append(cp)
         return cloned
 
+    # 作用：通过后置索引解析 t_idx 对应目标库所名。
     def _transition_target_place(self, t_idx: int) -> Optional[str]:
         """根据变迁后置库所索引返回目标库所名，避免依赖 t_* 命名格式。"""
         if t_idx < 0 or t_idx >= len(self._pst_place_indices):
@@ -1192,6 +1228,7 @@ class ClusterTool:
             return None
         return str(self.id2p_name[int(pst_idx[0])])
 
+    # 作用：通过前置索引解析 t_idx 对应运输位库所名。
     def _transition_transport_place(self, t_idx: int) -> Optional[str]:
         """根据变迁前置库所索引返回运输位库所名。"""
         if t_idx < 0 or t_idx >= len(self._pre_place_indices):
@@ -1203,6 +1240,7 @@ class ClusterTool:
                 return p_name
         return None
 
+    # 作用：按 source->target 映射选择运输位名称。
     def _transport_for_t_target(self, source: str, target: str) -> str:
         """按当前 route 的 hop 映射选择 source->target 的 transport。"""
         mapped = self._route_source_target_transport.get((str(source), str(target)))
@@ -1210,6 +1248,7 @@ class ClusterTool:
             return str(mapped)
         return infer_cascade_transport_by_scope((str(source),), (str(target),))
 
+    # 作用：初始化 PM 清洗阈值与运行状态字段。
     def _init_cleaning_state(self) -> None:
         for p in self.marks:
             if not p.name.startswith("PM"):
@@ -1221,6 +1260,7 @@ class ClusterTool:
             p.cleaning_remaining = p.cleaning_remaining
             p.cleaning_reason = p.cleaning_reason
 
+    # 作用：计算下一关键事件时间差并同步关键标记。
     def get_next_event_delta(self) -> Optional[int]:
         """
         计算当前时刻到下一个关键事件的时间差（秒）。
@@ -1258,6 +1298,7 @@ class ClusterTool:
                     best = delta_takt
         return 5 if (self.stride and has_important_task) else best
 
+    # 作用：处理加工腔卸片后的清洗计数与清洗状态。
     def _on_processing_unload(self, source_name: str) -> None:
         if not self._cleaning_enabled:
             return
@@ -1288,6 +1329,7 @@ class ClusterTool:
                 }
             )
 
+    # 作用：判断目标位是否满足双臂 swap 条件。
     def _is_swap_eligible(self, pst_place: Place) -> bool:
         """目标库所是否可执行 swap（仅在 _fire 中调用）。
         PM 腔室及 TM1 的 AL/CL 目标均可 swap。
@@ -1304,6 +1346,7 @@ class ClusterTool:
             return False
         return not pst_place.is_cleaning
 
+    # 作用：预判当前 t_idx 是否会触发 swap。
     def _will_swap(self, t_idx: int) -> bool:
         """判断 t_idx 变迁当前是否会触发 swap（用于 step 计算时长）。"""
         if not self._dual_arm:
@@ -1317,6 +1360,7 @@ class ClusterTool:
         pst_place = self.marks[int(pst_idx[0])]
         return self._is_swap_eligible(pst_place)
 
+    # 作用：判断 source 下游是否存在可执行目标并返回目标名。
     def _is_next_stage_available(self, source: str) -> Tuple[bool, Optional[str]]:
         """
         按 route gate 过滤后的候选集中，优先选择 use_count 最小的目标；
@@ -1342,6 +1386,7 @@ class ClusterTool:
     # TM1 在这些库所支持双臂 swap（AL：送新料同时带走旧料；CL：送入同时取出待送 LP_done 的料）
     _TM1_SWAP_PLACES: frozenset = frozenset({"AL", "CL"})
 
+    # 作用：从全量掩码按优先级自动挑选 TM1 动作。
     def _pick_tm1_from_mask(
         self,
         mask: np.ndarray,
@@ -1361,6 +1406,7 @@ class ClusterTool:
             struct_enabled_cache: Dict[int, bool] = {}
             selected_parallel_target_cache: Dict[Tuple[int, Tuple[str, ...]], str] = {}
 
+            # 作用：缓存并判定 TM1 候选 t_idx 的结构性使能。
             def _is_struct_enabled_pick(t_idx: int) -> bool:
                 cached = struct_enabled_cache.get(t_idx)
                 if cached is not None:
@@ -1447,6 +1493,7 @@ class ClusterTool:
                 if effective_req is not None:
                     req = int(effective_req)
 
+                    # 作用：读取指定 LP 队首晶圆的 route_type。
                     def _lp_head_route_type(name: str) -> int:
                         lp = pbname.get(name)
                         if lp is None or len(lp.tokens) == 0:
@@ -1465,6 +1512,7 @@ class ClusterTool:
 
         return None
 
+    # 作用：把全量动作掩码投影成 TM1/TM2/TM3 三段掩码。
     def _tm_masks_from_full(self, full_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         tm1_idx = self._tm1_transition_indices
         tm2_idx = self._tm2_transition_indices
@@ -1483,6 +1531,7 @@ class ClusterTool:
         mask_tm3[-1] = True
         return mask_tm1, mask_tm2, mask_tm3
 
+    # 作用：生成全量或并发三头动作掩码并缓存自动 TM1 动作。
     def get_action_mask(
         self,
         wait_action_start: Optional[int] = None,
@@ -1503,6 +1552,7 @@ class ClusterTool:
         struct_enabled_cache: Dict[int, bool] = {}
         selected_parallel_target_cache: Dict[Tuple[int, Tuple[str, ...]], str] = {}
 
+        # 作用：缓存并判定通用变迁的结构性使能。
         def _is_struct_enabled(t_idx: int) -> bool:
             cached = struct_enabled_cache.get(t_idx)
             if cached is not None:
@@ -1634,6 +1684,7 @@ class ClusterTool:
             return self._tm_masks_from_full(mask)
         return mask
 
+    # 作用：基于评估日志渲染腔室甘特图。
     def render_gantt(self, out_path: str, title_suffix: str | None = None) -> None:
         from visualization.plot import Op, plot_gantt_hatched_residence
 

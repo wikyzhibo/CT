@@ -18,6 +18,7 @@
 
 ## Appendices
 - [`pn_api.md`](./pn_api.md)：`pn.py` API 说明（补充参考）。
+- [`cluster_tool_reference.md`](./cluster_tool_reference.md)：`ClusterTool` 全量变量/函数作用与调用链参考。
 - [`pn_design.md`](./pn_design.md)：`pn.py` 设计说明（补充参考）。
 - [`pdr-search.md`](./pdr-search.md)：PDR 构网命名与 DFS 搜索约束（补充参考）。
 - [`routes.md`](./routes.md)：调度技术路线与约束说明（历史与背景）。

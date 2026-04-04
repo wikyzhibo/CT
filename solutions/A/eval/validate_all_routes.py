@@ -18,27 +18,27 @@ from solutions.A.ppo_trainer import train_single
 # 注5：所有路径clean_enabled=False，降低训练难度
 # 注6：训练档位根据路径难度预设，主要影响训练时长和最终效果，low(~4s)，medium(~14s)，high(~26s)，实际效果会有波动
 ROUTE_PLAN: dict[str, dict[str, int | str]] = {
-    "1-1": {"train": 8, "eval": 75, "profile": "low"},  # 1-* 单腔线路
-    "1-2": {"train": 10, "eval": 75, "profile": "medium"},
-    "1-3": {"train": 10, "eval": 75, "profile": "medium"},
+    #"1-1": {"train": 8, "eval": 75, "profile": "low"},  # 1-* 单腔线路
+    #"1-2": {"train": 10, "eval": 75, "profile": "medium"},
+    #"1-3": {"train": 10, "eval": 75, "profile": "medium"},
     #"1-4": {"train": 12, "eval": 75, "profile": "high"},
-    "1-5": {"train": 10, "eval": 75, "profile": "medium"},
+    #"1-5": {"train": 10, "eval": 75, "profile": "medium"},
     "2-1": {"train": 8, "eval": 75, "profile": "low"},  # 2-* 集创赛 ABCD 路径
     "2-2": {"train": 6, "eval": 75, "profile": "low"},
     "2-3": {"train": 6, "eval": 75, "profile": "medium"},
     "2-4": {"train": 6, "eval": 75, "profile": "low"},
-    "3-1": {"train": 9, "eval": 75, "profile": "low"},  # 3-* 单腔测试路径
-    "3-2": {"train": 6, "eval": 75, "profile": "low"},
-    "3-3": {"train": 6, "eval": 15, "profile": "medium"},
-    "4-2": {"train": 8, "eval": 75, "profile": "low"},  # 4-* 双腔路径
-    "4-3": {"train": 8, "eval": 75, "profile": "low"},
-    "4-8": {"train": 10, "eval": 75, "profile": "medium"},
-    "4-9": {"train": 12, "eval": 75, "profile": "medium"},
-    "4-10": {"train": 12, "eval": 75, "profile": "medium"},
-    "4-11": {"train": 12, "eval": 75, "profile": "medium"},
-    "4-12": {"train": 12, "eval": 75, "profile": "high"},
-    "4-13": {"train": 10, "eval": 75, "profile": "medium"},
-    "4-14": {"train": 10, "eval": 75, "profile": "high"},
+    #"3-1": {"train": 9, "eval": 75, "profile": "low"},  # 3-* 单腔测试路径
+    #"3-2": {"train": 6, "eval": 75, "profile": "low"},
+    #"3-3": {"train": 6, "eval": 15, "profile": "medium"},
+    #"4-2": {"train": 8, "eval": 75, "profile": "low"},  # 4-* 双腔路径
+    #"4-3": {"train": 8, "eval": 75, "profile": "low"},
+    #"4-8": {"train": 10, "eval": 75, "profile": "medium"},
+    #"4-9": {"train": 12, "eval": 75, "profile": "medium"},
+    #"4-10": {"train": 12, "eval": 75, "profile": "medium"},
+    #"4-11": {"train": 12, "eval": 75, "profile": "medium"},
+    #"4-12": {"train": 12, "eval": 75, "profile": "high"},
+    #"4-13": {"train": 10, "eval": 75, "profile": "medium"},
+    #"4-14": {"train": 10, "eval": 75, "profile": "high"},
 }
 
 
