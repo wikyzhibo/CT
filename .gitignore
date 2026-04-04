@@ -5,6 +5,9 @@
 /specs/
 AGENTS.md
 
+/.codex
+/.claude
+
 # Python
 __pycache__/
 *.py[cod]
