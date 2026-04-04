@@ -1,11 +1,16 @@
 from typing import Dict, List, Optional, Tuple
-#from solutions.DFS.permit_left import _num_stages,Op
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.patches import Rectangle
-from matplotlib import patheffects
+from collections import defaultdict
 from dataclasses import dataclass
-from matplotlib.ticker import MultipleLocator, FuncFormatter
+from functools import lru_cache
+import os
+import time
+
+import matplotlib.pyplot as plt
+from matplotlib import patheffects
+from matplotlib.collections import PolyCollection
+from matplotlib.colors import to_rgba
+from matplotlib.ticker import FuncFormatter, MultipleLocator
+
 
 @dataclass
 class Op:
@@ -54,28 +59,36 @@ def _get_contrast_ratio(color1: Tuple[float, float, float], color2: Tuple[float,
     return (lighter + 0.05) / (darker + 0.05)
 
 
+@lru_cache(maxsize=256)
 def _get_text_color(bg_color: Tuple[float, float, float]) -> str:
     """
     根据背景色返回合适的文字颜色（白色或深色）
     确保对比度≥4.5:1
     """
-    # 定义白色和深色文字
     white = (1.0, 1.0, 1.0)
     dark = (0.1, 0.1, 0.1)  # 接近黑色，确保高对比度
-    
-    # 计算对比度
+
     contrast_white = _get_contrast_ratio(bg_color, white)
     contrast_dark = _get_contrast_ratio(bg_color, dark)
-    
-    # 选择对比度更高的颜色
+
     if contrast_white >= contrast_dark and contrast_white >= 4.5:
         return "white"
     elif contrast_dark >= 4.5:
         return "#1A1A1A"  # 深灰色，确保高对比度
     else:
-        # 如果都不够，使用描边增强对比度
-        # 返回深色，后续会添加描边
         return "#1A1A1A"
+
+
+# 与原先每次 ax.text 内联构造的参数完全一致，仅复用对象引用
+_PE_WHITE_STROKE = [patheffects.withStroke(linewidth=2, foreground="white", alpha=0.8)]
+_PE_DARK_STROKE = [patheffects.withStroke(linewidth=1.5, foreground="#1A1A1A", alpha=0.6)]
+
+
+def _rect_verts(x0: float, y0: float, w: float, h: float):
+    x1 = x0 + w
+    y1 = y0 + h
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
 
 def plot_gantt_hatched_residence(
     ops: List[Op],
@@ -84,12 +97,24 @@ def plot_gantt_hatched_residence(
     n_jobs: int,
     out_path: str,
     arm_info: dict,
-    with_label = True,
-    no_arm = True,
+    with_label=True,
+    no_arm=True,
     policy: int = None,
     stage_module_names: Dict[int, List[str]] = None,
     title_suffix: Optional[str] = None,
 ):
+    _bench = os.environ.get("CT_GANTT_BENCH") == "1"
+    _t_all = time.perf_counter()
+    _t_mark = _t_all
+    _bench_times: Dict[str, float] = {}
+
+    def _mark(name: str):
+        nonlocal _t_mark
+        if _bench:
+            now = time.perf_counter()
+            _bench_times[name] = now - _t_mark
+            _t_mark = now
+
     _ = arm_info
     _ = no_arm
     if title_suffix:
@@ -138,10 +163,10 @@ def plot_gantt_hatched_residence(
     fig_width = 30
     fig_height = 6
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    
+
     # 统一为纯白背景
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
 
     cmap = plt.get_cmap("turbo")
     # 修复：job 可能从 0 开始，需要包含所有可能的 job 值
@@ -151,23 +176,55 @@ def plot_gantt_hatched_residence(
         min_job = min(all_jobs)
         max_job = max(all_jobs)
         job_range = max_job - min_job if max_job > min_job else 1
-        job_color = {j: cmap((j - min_job) / job_range) if job_range > 0 else cmap(0.5) 
-                     for j in all_jobs}
+        job_color = {
+            j: cmap((j - min_job) / job_range) if job_range > 0 else cmap(0.5)
+            for j in all_jobs
+        }
     else:
         # 如果没有有效的 job，使用默认颜色
         job_color = {0: cmap(0.5)}
 
+    # 驻留段斜线边线粗细则与默认 Rectangle 一致（hatch 描边依赖 linewidth）
+    _patch_lw = float(plt.rcParams["patch.linewidth"])
+
     # 泳道参数
     lane_h, lane_gap = 4, 1
 
-    # 绘制泳道 lanes
+    lane_verts: List[List[Tuple[float, float]]] = []
+    for (s, m, _name) in lanes:
+        idx = lane_index[(s, m)]
+        y0 = idx * (lane_h + lane_gap)
+        lane_verts.append(_rect_verts(0.0, y0, t_max, lane_h))
+    lane_edge = to_rgba("#1E293B", alpha=0.3)
+    lane_pc = PolyCollection(
+        lane_verts,
+        facecolors="none",
+        edgecolors=[lane_edge] * len(lane_verts),
+        linewidths=1.2,
+        zorder=1,
+    )
+    ax.add_collection(lane_pc)
     for (s, m, name) in lanes:
         idx = lane_index[(s, m)]
         y0 = idx * (lane_h + lane_gap)
-        ax.add_patch(patches.Rectangle((0, y0), t_max, lane_h, fill=False, 
-                                       linewidth=1.2, edgecolor='#1E293B', alpha=0.3))
-        ax.text(-5, y0 + lane_h / 2, name, ha="right", va="center", 
-               fontsize=16, color='#1E293B', weight='normal')
+        ax.text(
+            -5,
+            y0 + lane_h / 2,
+            name,
+            ha="right",
+            va="center",
+            fontsize=16,
+            color="#1E293B",
+            weight="normal",
+        )
+    _mark("lanes")
+
+    if n_jobs > 80:
+        with_label = False
+
+    proc_by_fc: Dict[Tuple[float, float, float, float], List[List[Tuple[float, float]]]] = defaultdict(list)
+    res_by_fc: Dict[Tuple[float, float, float, float], List[List[Tuple[float, float]]]] = defaultdict(list)
+    outline_verts: List[List[Tuple[float, float]]] = []
 
     # ops: 深色代表加工段 + 浅色斜线代表驻留段
     for op in proc_ops:
@@ -178,61 +235,72 @@ def plot_gantt_hatched_residence(
             color = job_color[op.job]
         else:
             # 回退：使用灰色作为默认颜色
-            color = 'gray'
+            color = "gray"
             print(f"警告: job {op.job} 不在 job_color 中，使用默认颜色")
 
-        # processing (dark)
-        # 绘制加工段填充（无边框，边框由统一外边框绘制）
-        ax.add_patch(Rectangle(
-            (op.start, y0),
-            max(0.0, op.proc_end - op.start),
-            lane_h,
-            facecolor=color,
-            edgecolor="none",  # 不绘制内部边框
-            alpha=0.9,
-        ))
+        pw = max(0.0, op.proc_end - op.start)
+        if pw > 0.0:
+            fc_proc = tuple(float(x) for x in to_rgba(color, alpha=0.9))
+            proc_by_fc[fc_proc].append(_rect_verts(op.start, y0, pw, lane_h))
 
-        # residence (light + hatch)
         if op.end > op.proc_end + 1e-9:
-            # 绘制驻留段填充（无边框，边框由统一外边框绘制）
-            ax.add_patch(Rectangle(
-                (op.proc_end, y0),
-                op.end - op.proc_end,
-                lane_h,
-                facecolor=color,
-                edgecolor="0.6",
-                alpha=0.3,  # 降低透明度，使斜线更明显，与加工段形成更明显对比
-                hatch="xxx",  # 使用交叉线图案，比///更明显，提高可见性
-            ))
-        
-        # 添加统一外边框，包裹整个区间（start到end），形成整体感
-        # 这样加工段和驻留段看起来像一个统一的整体
+            fc_res = tuple(float(x) for x in to_rgba(color, alpha=0.3))
+            res_by_fc[fc_res].append(_rect_verts(op.proc_end, y0, op.end - op.proc_end, lane_h))
+
         if op.end > op.start:
-            ax.add_patch(Rectangle(
-                (op.start, y0),
-                op.end - op.start,
-                lane_h,
-                fill=False,
-                edgecolor="#1E293B",
-                linewidth=0.8,
-                zorder=10,  # 确保在外层
-            ))
+            outline_verts.append(_rect_verts(op.start, y0, op.end - op.start, lane_h))
 
-        # completion line at proc_end
-        #ax.plot([op.proc_end, op.proc_end], [y0, y0 + lane_h], color="black", linewidth=1.5)
+    z_proc = 1
+    z_res = 2
+    z_outline = 10
 
-        # label
-        if n_jobs > 80:
-            with_label = False
+    for fc, verts in proc_by_fc.items():
+        pc = PolyCollection(
+            verts,
+            facecolors=fc,
+            edgecolors="none",
+            linewidths=0,
+            alpha=1.0,
+            zorder=z_proc,
+        )
+        ax.add_collection(pc)
+
+    for fc, verts in res_by_fc.items():
+        pc = PolyCollection(
+            verts,
+            facecolors=fc,
+            edgecolors="0.6",
+            linewidths=_patch_lw,
+            hatch="xxx",
+            alpha=1.0,
+            zorder=z_res,
+        )
+        ax.add_collection(pc)
+
+    if outline_verts:
+        oc = PolyCollection(
+            outline_verts,
+            facecolors="none",
+            edgecolors="#1E293B",
+            linewidths=0.8,
+            zorder=z_outline,
+        )
+        ax.add_collection(oc)
+
+    _mark("ops_geometry")
+
+    for op in proc_ops:
+        idx = lane_index[(op.stage, op.machine)]
+        y0 = idx * (lane_h + lane_gap)
+        if op.job in job_color:
+            color = job_color[op.job]
+        else:
+            color = "gray"
 
         if with_label:
-            # 根据背景色动态选择文字颜色，确保对比度≥4.5:1
-            # 使用加工段的颜色作为背景色参考
-            text_color = _get_text_color(color[:3] if len(color) >= 3 else color)
-            
-            # 如果对比度不足，添加描边增强可读性
+            r, g, b, _a = to_rgba(color)
+            text_color = _get_text_color((float(r), float(g), float(b)))
             if text_color == "#1A1A1A":
-                # 深色文字，添加白色描边
                 ax.text(
                     (op.start + op.end) / 2,
                     y0 + lane_h / 2,
@@ -241,11 +309,10 @@ def plot_gantt_hatched_residence(
                     va="center",
                     fontsize=11,
                     color=text_color,
-                    weight='bold',
-                    path_effects=[patheffects.withStroke(linewidth=2, foreground='white', alpha=0.8)]
+                    weight="bold",
+                    path_effects=_PE_WHITE_STROKE,
                 )
             else:
-                # 白色文字，添加深色描边
                 ax.text(
                     (op.start + op.end) / 2,
                     y0 + lane_h / 2,
@@ -254,9 +321,11 @@ def plot_gantt_hatched_residence(
                     va="center",
                     fontsize=11,
                     color=text_color,
-                    weight='bold',
-                    path_effects=[patheffects.withStroke(linewidth=1.5, foreground='#1A1A1A', alpha=0.6)]
+                    weight="bold",
+                    path_effects=_PE_DARK_STROKE,
                 )
+
+    _mark("ops_labels")
 
     y_top = len(lanes) * (lane_h + lane_gap)
     ax.set_ylim(-lane_gap, y_top + 5)
@@ -270,34 +339,42 @@ def plot_gantt_hatched_residence(
     # 次刻度：200（只用于小网格，不显示在坐标轴）
     ax.xaxis.set_minor_locator(MultipleLocator(200))
     # 大网格（主刻度）
-    ax.grid(True, axis='x', which='major',
-            linestyle='--', linewidth=0.6, alpha=0.4, color='#94A3B8')
+    ax.grid(True, axis="x", which="major",
+            linestyle="--", linewidth=0.6, alpha=0.4, color="#94A3B8")
     # 小网格（次刻度）
-    ax.grid(True, axis='x', which='minor',
-            linestyle=':', linewidth=0.4, alpha=0.4, color='#94A3B8')
+    ax.grid(True, axis="x", which="minor",
+            linestyle=":", linewidth=0.4, alpha=0.4, color="#94A3B8")
     # 只显示主刻度标签（默认就是这样，这句是保险）
-    ax.tick_params(axis='x', which='minor', bottom=False, labelbottom=False)
+    ax.tick_params(axis="x", which="minor", bottom=False, labelbottom=False)
     ax.set_axisbelow(True)
 
     # 优化时间轴标签
-    ax.set_xlabel("Time (s)", fontsize=14, color='#1E293B', weight='normal')
+    ax.set_xlabel("Time (s)", fontsize=14, color="#1E293B", weight="normal")
 
     # 设置主要时间刻度
     # 主刻度文字格式（替代 set_xticklabels）
     ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x)}"))
-    ax.tick_params(axis='x', which='major', labelsize=11, colors='#475569')
+    ax.tick_params(axis="x", which="major", labelsize=11, colors="#475569")
 
     title = f"{S}-Stage|makespan={t_max:.1f}s"
     if title_suffix:
         title = f"{title}|{title_suffix}"
-    ax.set_title(title, fontsize=17, color='#0F172A', weight='normal', pad=15)
+    ax.set_title(title, fontsize=17, color="#0F172A", weight="normal", pad=15)
 
     plt.tight_layout()
+    _mark("tight_layout")
 
-    policy_dict = {0: 'pdr', 1: 'random', 2: 'RL1', 3: 'RL2'}
+    policy_dict = {0: "pdr", 1: "random", 2: "RL1", 3: "RL2"}
     policy_key = 2 if policy is None else int(policy)
     out_path = out_path + f"{policy_dict[policy_key]}_job{n_jobs}.png"
     print("save img in:", out_path)
     # 提高分辨率到 300 dpi
-    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    _mark("savefig")
+
     plt.close(fig)
+
+    if _bench:
+        _bench_times["total"] = time.perf_counter() - _t_all
+        parts = " ".join(f"{k}={v*1000:.1f}ms" for k, v in sorted(_bench_times.items()))
+        print(f"[CT_GANTT_BENCH] {parts}")

@@ -171,6 +171,18 @@ def plot_gantt_hatched_residence(
 - **THEN** 应使用 300 DPI
 - **AND** 使用 `bbox_inches='tight'` 自动裁剪空白
 
+### Requirement: 可选绘制性能探针
+
+系统 MAY 通过环境变量输出分段耗时，**仅用于诊断**，不改变图面、文件路径与 dpi。
+
+#### Scenario: CT_GANTT_BENCH
+
+- **GIVEN** 进程环境变量 `CT_GANTT_BENCH=1`
+- **WHEN** 调用 `plot_gantt_hatched_residence()` 并完成落盘
+- **THEN** 标准输出 SHALL 追加一行前缀为 `[CT_GANTT_BENCH]` 的日志
+- **AND** 该行 SHALL 包含各阶段耗时（毫秒级）：泳道绘制与泳道文字、`ops_geometry`（工序矩形批量集合）、`ops_labels`（作业标签）、`tight_layout`、`savefig`、`total`
+- **AND** 未设置该变量时 **不得** 输出上述行
+
 ### Requirement: 作业标签显示
 
 系统 SHALL 根据作业数量自动决定是否显示标签。

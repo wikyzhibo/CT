@@ -2,6 +2,12 @@
 
 ## 2026-04-04
 
+### 可视化：甘特图 `plot_gantt_hatched_residence` 几何批量绘制（2026-04-04）
+
+- **What changed**：`visualization/plot.py` 将泳道框、加工段、驻留段与外框由逐条 `ax.add_patch(Rectangle)` 改为按颜色分组的 `PolyCollection`；作业标签复用模块级 `path_effects`；`_get_text_color` 对 RGB 输入做 `lru_cache`。设置 `CT_GANTT_BENCH=1` 时打印分段耗时（泳道、`ops_geometry`、`ops_labels`、`tight_layout`、`savefig`、`total`）。
+- **Why**：大量独立 Patch 会增加 Artist 管理与绘制开销；缓存文本色与描边对象减少重复计算与对象分配。
+- **Impact**：默认参数与输出文件名规则不变；dpi 仍为 300。详见 `docs/gantt.md`「可选绘制性能探针」。同一泳道若有条带时间重叠，半透明叠色顺序可能与旧版略有差异（正常调度数据通常无重叠）。
+
 ### 可视化：取消默认模型自动加载 + 并发权重仅支持 DualHead（2026-04-04）
 
 - **What changed**：`visualization/main.py` 启动时不再在“未传 `--model`”分支探测 `CT_single_best.pt` / `CT_concurrent_best.pt`；仅在显式传 `--model` 或 UI 菜单手动选择模型文件时加载 Model A。并发加载链路收敛为 **DualHeadPolicyNet（TM2/TM3）**：支持常见 state_dict 外层前缀（`module.` / `backbone.` / `policy_module.`），并在检测到 `head_tm1` 时直接报“旧三头权重不支持”。
