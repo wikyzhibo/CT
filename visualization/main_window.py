@@ -29,8 +29,8 @@ from PySide6.QtWidgets import (
 
 from .algorithm_interface import ActionInfo
 from .theme import ColorTheme
-from .route_path_display import format_route_path_html
-from .transition_labels import CASCADE_ROUTE_OPTIONS
+from .widgets.route_path_display import format_route_path_html
+from .widgets.transition_labels import CASCADE_ROUTE_OPTIONS
 from .ui_params import ui_params
 from .viewmodel import PetriViewModel
 from .widgets.stats_panel import StatsPanel

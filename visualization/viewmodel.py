@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
-from .algorithm_interface import AlgorithmAdapter, StateInfo
+from .algorithm_interface import StateInfo
 from .petri_adapter import PetriAdapter
 
 
@@ -21,7 +21,7 @@ class PetriViewModel(QObject):
     done_changed = Signal(bool)
     auto_mode_changed = Signal(bool)
 
-    def __init__(self, adapter: AlgorithmAdapter) -> None:
+    def __init__(self, adapter: Any) -> None:
         super().__init__()
         self.adapter = adapter
 
@@ -144,7 +144,7 @@ class PetriViewModel(QObject):
         """设置自动模式下的智能体回调"""
         self.agent_callback = callback
 
-    def replace_adapter(self, adapter: AlgorithmAdapter, reset: bool = True) -> None:
+    def replace_adapter(self, adapter: Any, reset: bool = True) -> None:
         """运行时替换算法适配器（设备切换时使用）。"""
         if self.auto_mode:
             self.set_auto_mode(False)

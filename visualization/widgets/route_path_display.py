@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import html
 
-from .theme import ColorTheme
+from ..theme import ColorTheme
 
 
 def format_route_path_html(

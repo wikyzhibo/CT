@@ -12,7 +12,6 @@ from solutions.A.rl_env import Env_PN_Concurrent
 
 from .algorithm_interface import (
     ActionInfo,
-    AlgorithmAdapter,
     ChamberState,
     RobotState,
     StateInfo,
@@ -35,7 +34,7 @@ def _normalize_transport_name(name: str) -> str:
     return raw
 
 
-class PetriAdapter(AlgorithmAdapter):
+class PetriAdapter:
     """Petri 网算法适配器。"""
 
     def __init__(self, env: Env_PN_Concurrent, step_verbose: bool = True) -> None:

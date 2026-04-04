@@ -27,7 +27,7 @@
 4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
-7. 状态与动作展示由 `main_window.py + center_canvas.py + stats_panel.py` 负责；级联模式下画布上方路径框与 `--debug` 变迁区由 `main_window.py + control_panel.py + transition_labels.py` 负责。
+7. 状态与动作展示由 `main_window.py + center_canvas.py + stats_panel.py` 负责；级联模式下画布上方路径框与 `--debug` 变迁区由 `main_window.py + widgets/route_path_display.py + widgets/control_panel.py + widgets/transition_labels.py` 负责。
 
 ## Interfaces
 - 启动命令:
@@ -98,6 +98,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-04: `visualization/` 目录清理与收敛：删除不可达适配器与脚本模块 `dfs_adapter.py`、`ga_adapter.py`、`pdr_adapter.py`、`scripted_adapter.py`，删除无调用工具模块 `config_editor.py`、`debug_tools.py`、`export_tools.py`、`smoke_test.py`；`transition_labels.py` 与 `route_path_display.py` 迁移到 `visualization/widgets/`；`algorithm_interface.py` 移除 `AlgorithmAdapter` 抽象基类，仅保留 `ActionInfo/StateInfo` 等 UI 数据契约类型，运行时保持 `petri` 单适配器路径不变。
 - 2026-04-04: `visualization/main.py` 的环境构造收敛到 `solutions.A.rl_env.make_env(...)`，与 `solutions.A.eval.export_inference_sequence.py` 共享同一套 `runtime_mode/device_mode + n_wafer/single_route_name/single_route_config/process_time_map` 过滤与校验；保留 `single_process_time_map` 兼容别名；CLI 与运行时行为不变。
 - 2026-04-03: `config/cluster_tool/route_config.json`：`source`/`sink` 容量由 `25` 提至 `100`，避免 `n_wafer`（如 `30`）大于旧 `sink.capacity` 时终点堵塞与 TM1 持片无法卸入 `LP_done`。
 - 2026-04-03: `petri_adapter.py`：修复并发级联下 `LP`/`LP_done` 聚合重复合并（先 `_build_alias_state(全量)` 再 `_merge_alias_state`）导致腔室晶圆数与容量显示翻倍；现以空壳 `_build_alias_state(..., [], ...)` 初始化，仅由主循环合并一次。

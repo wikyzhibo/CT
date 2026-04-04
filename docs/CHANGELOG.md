@@ -2,6 +2,12 @@
 
 ## 2026-04-04
 
+### 可视化：目录清理与单适配器收敛（2026-04-04）
+
+- **What changed**：`visualization/` 删除不可达模块 `dfs_adapter.py`、`ga_adapter.py`、`pdr_adapter.py`、`scripted_adapter.py`，删除无调用工具模块 `config_editor.py`、`debug_tools.py`、`export_tools.py`、`smoke_test.py`。`transition_labels.py`、`route_path_display.py` 迁移到 `visualization/widgets/`；`main_window.py`、`widgets/control_panel.py` 导入路径同步更新。`visualization/algorithm_interface.py` 删除 `AlgorithmAdapter` 抽象基类，保留 `ActionInfo/WaferState/ChamberState/RobotState/StateInfo` 数据类型；`petri_adapter.py`、`petri_single_adapter.py` 去继承；`viewmodel.py` 的 `adapter` 类型注解改为 `Any`。
+- **Why**：当前可视化 CLI 仅保留 `--adapter=petri`，多适配器抽象与历史模块已不可达，继续保留会增加维护噪音并干扰目录职责。
+- **Impact**：`python -m visualization.main` 与 `--adapter=petri` 行为不变。仅对直接 import 旧模块路径的外部脚本有影响：`visualization.transition_labels` 与 `visualization.route_path_display` 需改为 `visualization.widgets.transition_labels` 与 `visualization.widgets.route_path_display`；被删除模块不再可导入。
+
 ### A 方案：可视化与导出统一复用 `make_env`（2026-04-04）
 
 - **What changed**：`solutions/A/rl_env.py` 新增 `make_env(...)` 与共享 override 过滤；`visualization/main.py` 的 `build_adapter(...)` 与 `solutions/A/eval/export_inference_sequence.py` 的 single/concurrent rollout 均改为复用该工厂。共享口径仅透传 `n_wafer`、`single_route_config`、`single_route_name`、`process_time_map`，并保留 `single_process_time_map` 兼容别名；并发继续强制 `device_mode=cascade`。

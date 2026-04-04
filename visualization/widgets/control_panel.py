@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLa
 
 from ..algorithm_interface import ActionInfo
 from ..theme import ColorTheme
-from ..transition_labels import build_transition_rows_two_columns, cascade_button_label, u_lld_tooltip_extra
+from .transition_labels import build_transition_rows_two_columns, cascade_button_label, u_lld_tooltip_extra
 from ..ui_params import ui_params
 
 
