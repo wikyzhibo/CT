@@ -1203,6 +1203,7 @@
       "max_wafer2_in_system": 4,
       "takt_policy": "shared",
       "ratio": [1,4],
+      "cycle_type": [1, 2, 2, 2, 2],
       "takt_cycle": [600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600],
       "route_stage": [["PM7","PM1","PM2","PM3","PM4"],["PM10"]],
       "subpaths": {
@@ -1304,6 +1305,7 @@
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(116s)->PM10(131s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM6(116s)->PM2/PM5(131s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
+      "cycle_type": [1, 1, 2, 2, 2, 2],
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 4,
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
@@ -1411,6 +1413,7 @@
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(105s)/PM10(105s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM2/PM3/PM4(105s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
+      "cycle_type": [1, 1, 2, 2, 2, 2],
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 4,
       "route_stage": [["PM7","PM1","PM6","PM10","PM2","PM5"]],
@@ -1500,6 +1503,7 @@
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->[PM7(115s)->PM10(130s)]*2->PM7(115s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->[PM1/PM6(115s)->PM2/PM5(130s)]*2->PM1/PM6(115s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
+      "cycle_type": [1, 1, 2, 2, 2, 2],
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 4,
       "takt_policy": "shared",
@@ -1638,6 +1642,7 @@
       "takt_policy": "shared",
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
       "ratio": [2,4],
+      "cycle_type": [1, 1, 2, 2, 2, 2],
       "takt_cycle": [130,0,130,20,130,180],
       "subpaths": {
         "path1": {
@@ -1756,6 +1761,7 @@
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 3,
       "ratio": [2,3],
+      "cycle_type": [1, 1, 2, 2, 2],
       "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],
       "takt_policy": "shared",
       "takt_cycle": [150],
@@ -1895,6 +1901,7 @@
       "max_wafer1_in_system": 2,
       "max_wafer2_in_system": 2,
       "ratio": [2,2],
+      "cycle_type": [1, 1, 2, 2],
       "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],
       "takt_policy": "shared",
       "takt_cycle": [

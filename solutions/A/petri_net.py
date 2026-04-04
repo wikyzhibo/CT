@@ -43,23 +43,9 @@ class ClusterTool:
 
         # ====== 3) 清洗配置（map 来自配置/路线；开关由 cleaning_enabled） ======
         self._cleaning_enabled = bool(config.cleaning_enabled)
-        self._cleaning_default_duration = 0
-        self._cleaning_default_trigger = 0
-        self._cleaning_duration_map: Dict[str, int] = {
-            str(name): max(0, int(value))
-            for name, value in dict(getattr(config, "cleaning_duration_map", {}) or {}).items()
-        }
-        self._cleaning_trigger_map: Dict[str, int] = {
-            str(name): max(0, int(value))
-            for name, value in dict(getattr(config, "cleaning_trigger_wafers_map", {}) or {}).items()
-        }
         self.wait_durations = _normalize_wait_durations(config.wait_durations)
         self.stride = config.stride
-        self._stride_single_wait_mode = (
-            bool(self.stride)
-            and len(self.wait_durations) == 1
-            and int(self.wait_durations[0]) == 5
-        )
+        self._stride_single_wait_mode = True
         
         # ====== 6) 构网输入与构网结果 ======
         self.ttime = 5
@@ -115,17 +101,16 @@ class ClusterTool:
         self._mask_skip_places: frozenset[str] = frozenset({"LP_done"})
         self._ready_chambers = route_meta.get("ready_chambers") or route_meta.get("chambers")
         self._single_process_chambers = self.chambers
-        self._shared_ratio_cycle_enabled: bool = False
-        self._shared_ratio_cycle_types: Tuple[int, ...] = ()
-        self._shared_ratio_cycle_idx: int = 0
+        self._cycle_type_enabled: bool = False
+        self._cycle_type: Tuple[int, ...] = ()
+        self._cycle_type_idx: int = 0
         self._lp_pick_cycle_idx: int = 0
         self._init_shared_ratio_release_cycle(route_entry)
 
         # ====== 8) Petri 静态结构索引 ======
         self.m0: np.ndarray = info["m0"]
         self.m: np.ndarray = self.m0.copy()
-        self.k: np.ndarray = info["capacity"]
-        self._initial_capacity: np.ndarray = np.array(info["capacity"], dtype=int)
+        self.k: np.ndarray = np.array(info["capacity"], dtype=int)
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
@@ -431,13 +416,12 @@ class ClusterTool:
         self._entered_wafer_count_by_type = {int(t): 0 for t in sorted(all_types)}
         self._entry_release_ready_time_shared = 0
         self._entry_release_ready_time_by_type = {int(t): 0 for t in sorted(all_types)}
-        self._shared_ratio_cycle_idx = 0
+        self._cycle_type_idx = 0
         self._lp_pick_cycle_idx = 0
         self._reset_eval_gantt_records()
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 30
         for idx, p in enumerate(self.marks):
-            p.capacity = int(self._initial_capacity[idx])
-            self.k[idx] = int(self._initial_capacity[idx])
+            p.capacity = int(self.k[idx])
         self.m = np.array([len(p.tokens) for p in self.marks], dtype=int)
         self._last_state_scan = {}
         T = int(self.T)
@@ -982,48 +966,32 @@ class ClusterTool:
         current = int(self._entered_wafer_count_by_type.get(type_id, 0))
         return int(current + 1) <= cap
 
-    @staticmethod
-    # 作用：将 ratio 配置展开为 release 轮转序列。
-    def _build_release_ratio_cycle(raw_ratio: Sequence[int]) -> Tuple[int, ...]:
-        cycle: List[int] = []
-        for type_id, raw_count in enumerate(list(raw_ratio), start=1):
-            count = int(raw_count)
-            if count <= 0:
-                continue
-            cycle.extend([int(type_id)] * count)
-        return tuple(cycle)
-
     # 作用：初始化 shared+ratio 的 release 轮转状态。
     def _init_shared_ratio_release_cycle(self, route_entry: Dict[str, Any]) -> None:
-        self._shared_ratio_cycle_enabled = False
-        self._shared_ratio_cycle_types = ()
-        self._shared_ratio_cycle_idx = 0
+        self._cycle_type_enabled = False
+        self._cycle_type = ()
+        self._cycle_type_idx = 0
         if str(self._takt_policy or "").strip().lower() != "shared":
             return
-        raw_ratio = route_entry.get("ratio")
-        if raw_ratio is None:
-            return
-        ratio_cycle = self._build_release_ratio_cycle(raw_ratio)
-        if not ratio_cycle:
+        raw_cycle = route_entry.get("cycle_type")
+        if not raw_cycle:
             return
         valid_types = set(int(t) for t in self._wafer_type_to_subpath.keys())
-        if not valid_types:
+        filtered = tuple(int(t) for t in raw_cycle if int(t) in valid_types)
+        if not filtered:
             return
-        filtered_cycle = tuple(int(t) for t in ratio_cycle if int(t) in valid_types)
-        if not filtered_cycle:
-            return
-        self._shared_ratio_cycle_enabled = True
-        self._shared_ratio_cycle_types = filtered_cycle
-        self._shared_ratio_cycle_idx = 0
+        self._cycle_type_enabled = True
+        self._cycle_type = filtered
+        self._cycle_type_idx = 0
 
     # 作用：返回当前 release 轮次要求的 route_type。
     def _required_release_type(self) -> Optional[int]:
-        if not self._shared_ratio_cycle_enabled:
+        if not self._cycle_type_enabled:
             return None
-        cycle = self._shared_ratio_cycle_types
+        cycle = self._cycle_type
         if not cycle:
             return None
-        idx = int(self._shared_ratio_cycle_idx) % len(cycle)
+        idx = int(self._cycle_type_idx) % len(cycle)
         return int(cycle[idx])
 
     # 作用：结合入口队首状态解析当前可执行 route_type。
@@ -1031,38 +999,38 @@ class ClusterTool:
         required = self._required_release_type()
         if required is None:
             return None
-        cycle = self._shared_ratio_cycle_types
+        cycle = self._cycle_type
         if not cycle:
             return required
         heads = self._entry_type_head_tokens()
         available_types = set(int(t) for t in heads.keys())
         if not available_types or int(required) in available_types:
             return required
-        cur_idx = int(self._shared_ratio_cycle_idx) % len(cycle)
+        cur_idx = int(self._cycle_type_idx) % len(cycle)
         for offset in range(1, len(cycle) + 1):
             cand_idx = (cur_idx + offset) % len(cycle)
             cand_type = int(cycle[cand_idx])
             if cand_type not in available_types:
                 continue
-            self._shared_ratio_cycle_idx = int(cand_idx)
+            self._cycle_type_idx = int(cand_idx)
             return cand_type
         return required
 
     # 作用：推进 release 轮转游标。
     def _advance_release_ratio_cycle(self) -> None:
-        if not self._shared_ratio_cycle_enabled:
+        if not self._cycle_type_enabled:
             return
-        cycle = self._shared_ratio_cycle_types
+        cycle = self._cycle_type
         if not cycle:
             return
-        self._shared_ratio_cycle_idx = (int(self._shared_ratio_cycle_idx) + 1) % len(cycle)
+        self._cycle_type_idx = (int(self._cycle_type_idx) + 1) % len(cycle)
 
     # 作用：推进 TM1 从 LP 取料轮转游标。
     def _advance_lp_pick_cycle(self) -> None:
         """TM1 从 LP 取料时推进独立的 LP pick 计数器。"""
-        if not self._shared_ratio_cycle_enabled:
+        if not self._cycle_type_enabled:
             return
-        cycle = self._shared_ratio_cycle_types
+        cycle = self._cycle_type
         if not cycle:
             return
         self._lp_pick_cycle_idx = (int(self._lp_pick_cycle_idx) + 1) % len(cycle)
@@ -1070,9 +1038,9 @@ class ClusterTool:
     # 作用：返回当前 LP 取料轮次要求的 route_type。
     def _required_lp_pick_type(self) -> Optional[int]:
         """返回下一次 TM1 应从哪种 LP 取料（基于独立 LP pick cycle，与 LLA release cycle 解耦）。"""
-        if not self._shared_ratio_cycle_enabled:
+        if not self._cycle_type_enabled:
             return None
-        cycle = self._shared_ratio_cycle_types
+        cycle = self._cycle_type
         if not cycle:
             return None
         idx = int(self._lp_pick_cycle_idx) % len(cycle)
