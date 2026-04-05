@@ -102,13 +102,16 @@ class ClusterTool:
         self.k: np.ndarray = np.array(info["capacity"], dtype=int)
         self.id2p_name: List[str] = info["id2p_name"]
         self.id2t_name: List[str] = info["id2t_name"]
+        # t_* 变迁名字 -> 变迁的颜色编号
         self._t_route_code_map: Dict[str, int] = dict(info.get("t_route_code_map") or {})
+        # t_* 变迁将晶圆装入的库所（腔室）
         self._t_target_place_map: Dict[str, str] = dict(info.get("t_target_place_map") or {})
+        # （源腔室，目标腔室）-> 负责的机器手
         self._route_source_target_transport: Dict[Tuple[str, str], str] = info.get("route_source_target_transport")
-        self._t_route_code_by_idx: List[int] = [
-            int(self._t_route_code_map.get(name, -1)) for name in self.id2t_name
-        ]
+        # 变迁的编号 -> 颜色编号，u_* 变迁颜色固定为-1
+        self._t_route_code_by_idx: List[int] = [int(self._t_route_code_map.get(name, -1)) for name in self.id2t_name]
         self._t_code_to_place: Dict[int, str] = {}
+        # t_* 颜色编号 -> 目标腔室
         for t_name, t_code in self._t_route_code_map.items():
             if not str(t_name).startswith("t_"):
                 continue
@@ -133,7 +136,6 @@ class ClusterTool:
 
         self.time = 0
         self.idle_timeout = max((p.processing_time for p in self.marks), default=0) + 50
-        self.entered_wafer_count = 0
         self.done_count = 0
         self.scrap_count = 0
         self.deadlock_count = 0
@@ -144,9 +146,7 @@ class ClusterTool:
         self._qtime_violated_tokens: Set[int] = set()
         self._idle_penalty_applied = False
         self._consecutive_wait_time = 0
-        self._place_use_count: Dict[str, int] = {
-            str(place.name): 0 for place in self.marks
-        }
+        self._place_use_count: Dict[str, int] = {str(place.name): 0 for place in self.marks}
         self._eval_gantt_place_to_sm: Dict[str, Tuple[int, int, int]] = {}
         self._eval_gantt_lane_cursor: Dict[str, int] = {}
         self._eval_gantt_slots: Dict[str, Dict[int, Dict[str, Any]]] = {}
@@ -377,7 +377,6 @@ class ClusterTool:
         self._lp_done = self._place_by_name.get("LP_done")
         self._obs_places = [self._place_by_name[name] for name in self._obs_place_names]
         self.time = 0
-        self.entered_wafer_count = 0
         self.done_count = 0
         self.scrap_count = 0
         self.deadlock_count = 0
@@ -595,7 +594,13 @@ class ClusterTool:
         )
 
     # 作用：执行一个或多个变迁发射并更新 token、计数与日志。
-    def _fire(self, t_idx: int | Sequence[int], start_time: int, end_time: int, is_swap: bool = False, swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
+    def _fire(self,
+              t_idx: int | Sequence[int],
+              start_time: int,
+              end_time: int,
+              is_swap: bool = False,
+              swap_indices: Optional[Set[int]] = None) -> Dict[str, Any] | List[Dict[str, Any]]:
+        # 是否为多变迁发射模式
         is_multi = not isinstance(t_idx, (int, np.integer))
         transitions = [int(t_idx)] if not is_multi else [int(idx) for idx in t_idx]
         if not transitions:
@@ -605,36 +610,16 @@ class ClusterTool:
         if is_swap and len(transitions) == 1 and not swap_set:
             swap_set.add(int(transitions[0]))
 
-        # 作用：定义多变迁发射时的运输位优先级排序。
-        def _transport_order(idx: int) -> int:
-            transport = self._transition_transport_place(int(idx))
-            if transport == "TM1":
-                return 0
-            if transport == "TM2":
-                return 1
-            if transport == "TM3":
-                return 2
-            return 3
-
-        transitions.sort(key=_transport_order)
         log_entries: List[Dict[str, Any]] = []
 
+        # 遍历变迁列表
         for current_t_idx in transitions:
             t_name = self.id2t_name[current_t_idx]
             pre_places = self._pre_place_indices[current_t_idx]
             pst_places = self._pst_place_indices[current_t_idx]
-            if pre_places.size == 0 or pst_places.size == 0:
-                log_entries.append(
-                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
-                )
-                continue
+
             pre_place = self.marks[int(pre_places[0])]
             pst_place = self.marks[int(pst_places[0])]
-            if len(pre_place.tokens) == 0:
-                log_entries.append(
-                    {"t_name": t_name, "t1": start_time, "t2": end_time, "token_id": -1}
-                )
-                continue
 
             pre_place_idx = int(pre_places[0])
             pst_place_idx = int(pst_places[0])
@@ -645,39 +630,35 @@ class ClusterTool:
             tok.stay_time = 0
 
             if t_name.startswith("u_"):
+                # u_* 卸载变迁：token 设置下游腔室
                 src = pre_place.name
                 tok._dst_level_targets = tuple(self._u_targets.get(src, []))
-                tok.last_u_source = str(src)
-                transport = pst_place.name if pst_place.name in {"TM1", "TM2", "TM3"} else "TM1"
-                tok.machine = {"TM1": 1, "TM2": 2, "TM3": 3}.get(transport, 1)
+                # 处理加工腔卸片后的清洗计数与清洗状态。
                 self._on_processing_unload(src)
             elif t_name.startswith("t_"):
+                # 设置腔室加工时间（4-14路线中腔室加工时间会变化，需要更新）
                 target = pst_place.name
                 stage_proc_time = self._token_current_stage_process_time(tok)
                 if stage_proc_time is not None:
                     pst_place.processing_time = int(stage_proc_time)
 
+                # 处理双臂模式下的交换变迁
                 if current_t_idx in swap_set and self._is_swap_eligible(pst_place):
+                    # 取出腔室 token
                     old_tok = pst_place.pop_head()
                     old_wafer_id = old_tok.token_id
-
                     self._on_processing_unload(target)
-
                     old_tok.enter_time = self.time
                     old_tok.stay_time = 0
                     old_tok._dst_level_targets = tuple(self._u_targets.get(target, []))
-                    old_tok.machine = tok.machine
                     old_tok.route_head_idx += 1
+                    pre_place.append(old_tok)
 
+                    # 装载腔室 token
                     tok._dst_level_targets = None
-                    tok.step = max(tok.step, self._step_map.get(target, 0))
                     tok.route_head_idx += 1
                     pst_place.append(tok)
-                    tok._place_idx = pst_place_idx
                     self._place_use_count[target] = int(self._place_use_count.get(target, 0)) + 1
-
-                    pre_place.append(old_tok)
-                    old_tok._place_idx = pre_place_idx
 
                     self._record_eval_gantt_exit(target, old_wafer_id, int(start_time))
                     self._record_eval_gantt_enter(target, wafer_id, int(end_time), int(pst_place.processing_time))
@@ -694,32 +675,34 @@ class ClusterTool:
                     )
                     continue
 
+                # 处理直接装载的t_*变迁
                 tok._dst_level_targets = None
-                tok.step = max(tok.step, self._step_map.get(target, 0))
+                # 若下游为LP_done，更新在系统晶圆数，计算完工奖励
                 if target == "LP_done":
                     done_type = int(getattr(tok, "route_type", 1) or 1)
                     self._entered_wafer_count_by_type[done_type] = max(
                         0, int(self._entered_wafer_count_by_type.get(done_type, 0)) - 1
                     )
-                    self.entered_wafer_count = max(0, int(self.entered_wafer_count) - 1)
                     self.done_count += 1
                     self._per_wafer_reward += float(self.done_event_reward)
 
+            # 更新 token 路由索引
             tok.route_head_idx += 1
+            # LLA设置发片节拍控制
             if t_name.startswith("t_") and pst_place.name in self._release_control_places:
                 self._apply_entry_release_delay(tok)
             pst_place.append(tok)
-            tok._place_idx = pst_place_idx
+            # 记录评估甘特图进入信息
             if t_name.startswith("t_"):
                 self._place_use_count[pst_place.name] = int(self._place_use_count.get(pst_place.name, 0)) + 1
                 self._record_eval_gantt_enter(pst_place.name, wafer_id, int(end_time), int(pst_place.processing_time))
             elif t_name.startswith("u_"):
                 self._record_eval_gantt_exit(pre_place.name, wafer_id, int(start_time))
+            # 更新标识
             self.m[pre_place_idx] -= 1
             self.m[pst_place_idx] += 1
             if t_name.startswith("u_") and pre_place.name in self._release_control_places:
                 released_type = int(getattr(tok, "route_type", 1) or 1)
-                self.entered_wafer_count += 1
                 self._entered_wafer_count_by_type[released_type] = (
                     int(self._entered_wafer_count_by_type.get(released_type, 0)) + 1
                 )
@@ -806,8 +789,8 @@ class ClusterTool:
         return None
 
     @staticmethod
-    # 作用：读取 token 当前阶段工时配置。
     def _token_current_stage_process_time(tok: BasedToken) -> Optional[int]:
+        """根据 route_proc_time_queue 读取 token 当前阶段工时配置。"""
         proc_queue = tuple(getattr(tok, "route_proc_time_queue", ()) or ())
         if not proc_queue:
             return None
@@ -1233,8 +1216,8 @@ class ClusterTool:
                     best = delta_takt
         return 5 if (self.stride and has_important_task) else best
 
-    # 作用：处理加工腔卸片后的清洗计数与清洗状态。
     def _on_processing_unload(self, source_name: str) -> None:
+        """处理加工腔卸片后的清洗计数与清洗状态"""
         if not self._cleaning_enabled:
             return
         trigger = self._cleaning_trigger_map.get(source_name, 0)
@@ -1500,7 +1483,7 @@ class ClusterTool:
 
         # release_control_places：单路线用全局 WIP；双子路径按类型上限；节拍入口由 route_meta 指定。
         required_release_type = self._resolve_required_release_type_for_entry_heads()
-        if self._multi_subpath or int(self.entered_wafer_count) < int(self.max_wafers1_in_system):
+        if self._multi_subpath or sum(self._entered_wafer_count_by_type.values()) < int(self.max_wafers1_in_system):
             for place_name in self._release_control_places:
                 control_place = self._place_by_name.get(place_name)
                 if control_place is None or len(control_place.tokens) == 0:

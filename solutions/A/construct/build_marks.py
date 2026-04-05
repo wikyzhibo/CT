@@ -73,8 +73,6 @@ class BasedToken:
     _target_place: Optional[str] = None
     _dst_level_targets: Optional[Tuple[str, ...]] = None
     _dst_level_full_on_pick: bool = False
-    _place_idx: int = -1
-    last_u_source: str = ""
 
     def clone(self):
         return BasedToken(
@@ -88,7 +86,6 @@ class BasedToken:
             route_queue=tuple(self.route_queue),
             route_proc_time_queue=tuple(self.route_proc_time_queue),
             route_head_idx=int(self.route_head_idx),
-            last_u_source=str(self.last_u_source),
         )
 
 @dataclass
