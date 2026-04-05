@@ -17,7 +17,7 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import (
-    QAction, QActionGroup, QLinearGradient, QPalette, QBrush, QIcon, QMouseEvent,
+    QAction, QLinearGradient, QPalette, QBrush, QIcon, QMouseEvent,
     QPainter, QColor, QPainterPath, QRegion
 )
 from PySide6.QtWidgets import (
@@ -90,7 +90,7 @@ class PetriMainWindow(QMainWindow):
         
         # Auto Mode State Tracking ('A' or 'B' or None)
         self._current_auto_mode = None
-        self._device_mode = "single"
+        self._device_mode = "cascade"
         self._wafer_count_route1: int | None = None
         self._wafer_count_route2: int | None = None
         self._cleaning_options: dict[str, bool] = {
@@ -198,17 +198,10 @@ class PetriMainWindow(QMainWindow):
 
         # 设备菜单（仅 UI 占位）
         device_menu = menu_bar.addMenu("设备")
-        device_group = QActionGroup(self)
-        device_group.setExclusive(True)
         self._action_device_cascade = QAction("级联设备", self, checkable=True)
-        self._action_device_single = QAction("单设备", self, checkable=True)
-        self._action_device_single.setChecked(True)
-        device_group.addAction(self._action_device_cascade)
-        device_group.addAction(self._action_device_single)
+        self._action_device_cascade.setChecked(True)
         device_menu.addAction(self._action_device_cascade)
-        device_menu.addAction(self._action_device_single)
         self._action_device_cascade.triggered.connect(lambda: self._set_device_mode("cascade"))
-        self._action_device_single.triggered.connect(lambda: self._set_device_mode("single"))
 
         # 配置菜单
         config_menu = menu_bar.addMenu("配置")
@@ -260,7 +253,7 @@ class PetriMainWindow(QMainWindow):
         self._refresh_status_message()
 
     def _set_device_mode(self, mode: str) -> None:
-        if mode not in {"cascade", "single"}:
+        if mode != "cascade":
             return
         if mode == self._device_mode:
             return
@@ -278,11 +271,8 @@ class PetriMainWindow(QMainWindow):
             except Exception as e:
                 # 切换失败时保持原模式与菜单勾选，避免 UI 与后端状态错位
                 self._action_device_cascade.blockSignals(True)
-                self._action_device_single.blockSignals(True)
                 self._action_device_cascade.setChecked(old_mode == "cascade")
-                self._action_device_single.setChecked(old_mode == "single")
                 self._action_device_cascade.blockSignals(False)
-                self._action_device_single.blockSignals(False)
                 QMessageBox.warning(self, "设备切换失败", f"无法切换到 {mode}: {e}")
                 self._refresh_status_message()
                 return
@@ -323,11 +313,8 @@ class PetriMainWindow(QMainWindow):
         self._concurrent_runtime = bool(concurrent_runtime)
         self.center_canvas.set_device_mode(mode)
         self._action_device_cascade.blockSignals(True)
-        self._action_device_single.blockSignals(True)
         self._action_device_cascade.setChecked(mode == "cascade")
-        self._action_device_single.setChecked(mode == "single")
         self._action_device_cascade.blockSignals(False)
-        self._action_device_single.blockSignals(False)
         self._update_route_banner_text()
         self._refresh_status_message()
 

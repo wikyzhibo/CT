@@ -48,6 +48,7 @@
 4. 输出产物路径必须遵守仓库统一规范：`results/action_sequences`、`results/gantt`、`results/training_logs`、`results/topology_cache`、`results/models`。
 
 ## Change Notes
+- 2026-04-05: `visualization/main.py` / `visualization/main_window.py` / `visualization/ui-guide.md` / `CHANGELOG.md`：可视化 Model A 收敛为仅并发 `DualHeadPolicyNet` 严格加载（`strict=True`），删除模型类型推断/前缀兼容链路；CLI 与设备菜单移除 single 入口，仅保留 `cascade`。
 - 2026-04-05: `visualization/main.py` / `visualization/main_window.py` / `visualization/widgets/center_canvas.py` / `visualization/ui-guide.md` / `CHANGELOG.md`：可视化前端固定单臂布局，删除配置菜单中的「机械手模式」「路径」入口；移除双臂画布绘制分支；级联路径改为仅由启动参数或回放 `replay_env_overrides` 决定（UI 不再热切换）。
 - 2026-04-05: `solutions/A/eval/validate_all_routes.py` / `solutions/A/ppo_trainer.py` / `training/training-guide.md` / `README.md` / `CHANGELOG.md`：新增 `validate_all_routes --lite` 轻量模式；关闭甘特图与 `training_metrics_plot` 绘制；每条路线同一行动态刷新训练进度条，评估后输出 `<route_name> [<profile>] [########################] eval_pass=T/F`；最终汇总表与 summary JSON 字段保持不变。
 - 2026-04-04: `visualization/plot.py` / `docs/gantt.md` / `CHANGELOG.md`：甘特图工序几何改为 `PolyCollection` 批量绘制；可选 `CT_GANTT_BENCH=1` 输出分段耗时。

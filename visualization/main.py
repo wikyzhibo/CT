@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import sys
 import ctypes
-import re
 from pathlib import Path
 
 from PySide6.QtGui import QIcon
@@ -82,84 +81,6 @@ def _load_raw_state_dict(model_path: str):
     return torch.load(model_path, map_location="cpu", weights_only=True)
 
 
-def _detect_model_kind(state_dict: dict[str, object]) -> str:
-    has_tm2 = any("head_tm2" in str(key) for key in state_dict.keys())
-    has_tm3 = any("head_tm3" in str(key) for key in state_dict.keys())
-    if has_tm2 and has_tm3:
-        return "concurrent"
-    return "single"
-
-
-def _iter_single_candidate_state_dicts(state_dict: dict):
-    return [
-        state_dict,
-        {k[len("backbone."):]: v for k, v in state_dict.items() if k.startswith("backbone.")},
-        {k[len("module.0.module."):]: v for k, v in state_dict.items() if k.startswith("module.0.module.")},
-        {
-            k[len("backbone.module.0.module."):]: v
-            for k, v in state_dict.items()
-            if k.startswith("backbone.module.0.module.")
-        },
-    ]
-
-
-def _infer_single_model_shape(state_dict: dict) -> tuple[int, int]:
-    first_linear = state_dict.get("net.0.weight")
-    if first_linear is None:
-        raise KeyError("权重缺少 net.0.weight，无法推断单动作策略网络结构")
-    hidden = int(first_linear.shape[0])
-    linear_key_pattern = re.compile(r"^net\.(\d+)\.weight$")
-    linear_count = sum(1 for k in state_dict.keys() if linear_key_pattern.match(str(k)))
-    if linear_count <= 1:
-        raise ValueError("单动作策略网络线性层数量异常，无法推断 n_layers")
-    return hidden, linear_count - 1
-
-
-def _iter_concurrent_candidate_state_dicts(state_dict: dict):
-    prefixes = (
-        "",
-        "module.",
-        "backbone.",
-        "module.backbone.",
-        "policy_module.",
-        "module.policy_module.",
-        "policy_module.backbone.",
-        "module.policy_module.backbone.",
-    )
-    for prefix in prefixes:
-        if not prefix:
-            yield state_dict
-            continue
-        candidate = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
-        if candidate:
-            yield candidate
-
-
-def _infer_concurrent_dual_head_shape(state_dict: dict) -> tuple[int, int, int, int, int]:
-    """与 `export_inference_sequence._infer_dual_head_shape` 同构：DualHeadPolicyNet（仅 TM2/TM3）。"""
-    w0 = state_dict.get("backbone.0.weight")
-    if w0 is None:
-        raise KeyError("权重缺少 backbone.0.weight")
-    n_hidden, n_obs = int(w0.shape[0]), int(w0.shape[1])
-    h2 = state_dict.get("head_tm2.weight")
-    h3 = state_dict.get("head_tm3.weight")
-    if h2 is None or h3 is None:
-        raise KeyError("权重缺少 head_tm2 / head_tm3，无法推断 DualHeadPolicyNet 结构")
-    n_actions_tm2 = int(h2.shape[0])
-    n_actions_tm3 = int(h3.shape[0])
-    linear_count = 0
-    for k in state_dict:
-        m = re.match(r"^backbone\.(\d+)\.weight$", str(k))
-        if m and int(m.group(1)) % 2 == 0:
-            linear_count += 1
-    n_layers = linear_count + 1
-    return n_obs, n_hidden, n_actions_tm2, n_actions_tm3, n_layers
-
-
-def _contains_tm1_head(state_dict: dict[str, object]) -> bool:
-    return any("head_tm1" in str(key) for key in state_dict.keys())
-
-
 def _ensure_runtime_adapter(
     window: PetriMainWindow,
     device_mode: str,
@@ -191,121 +112,6 @@ def _ensure_runtime_adapter(
         return False, f"切换到 {runtime_mode} 可视化后端失败: {exc}"
 
 
-def load_model(model_path: str, adapter: PetriSingleAdapter):
-    """
-    加载训练好的模型
-    """
-    import torch
-    from tensordict import TensorDict
-    from torchrl.modules import ProbabilisticActor, MaskedCategorical
-    from tensordict.nn import TensorDictModule
-    from torchrl.envs.utils import ExplorationType, set_exploration_type
-    from solutions.model.network import MaskedPolicyHead
-    
-    try:
-        n_actions = adapter.env.n_actions
-        n_obs = adapter.env.observation_spec["observation"].shape[0]
-
-        print(f"[DEBUG] Model Params: n_actions={n_actions}, n_obs={n_obs}")
-
-        raw_state_dict = _load_raw_state_dict(model_path)
-        hidden = 256
-        n_layers = 4
-        actor_error: Exception | None = None
-        for cand in _iter_single_candidate_state_dicts(raw_state_dict):
-            if not cand:
-                continue
-            try:
-                hidden, n_layers = _infer_single_model_shape(cand)
-                break
-            except Exception:
-                continue
-
-        policy_backbone = MaskedPolicyHead(
-            hidden=hidden,
-            n_obs=n_obs,
-            n_actions=n_actions,
-            n_layers=n_layers,
-        )
-        td_module = TensorDictModule(
-            policy_backbone, 
-            in_keys=["observation_f"], 
-            out_keys=["logits"]
-        )
-        policy = ProbabilisticActor(
-            module=td_module,
-            in_keys={"logits": "logits", "mask": "action_mask"},
-            out_keys=["action"],
-            distribution_class=MaskedCategorical,
-            return_log_prob=True,
-        )
-        
-        loaded = False
-        try:
-            # 格式1：直接保存 ProbabilisticActor.state_dict()
-            policy.load_state_dict(raw_state_dict)
-            loaded = True
-        except Exception as e:
-            actor_error = e
-
-        if not loaded:
-            for cand in _iter_single_candidate_state_dicts(raw_state_dict):
-                if not cand:
-                    continue
-                try:
-                    policy_backbone.load_state_dict(cand)
-                    loaded = True
-                    break
-                except Exception:
-                    continue
-
-        if not loaded:
-            raise RuntimeError(
-                f"无法识别的单设备模型权重格式: {model_path}. "
-                f"原始加载错误: {actor_error}"
-            )
-        policy.eval()
-        
-        print(f"✓ 模型加载成功: {model_path}")
-        
-        # 创建模型动作获取函数
-        def get_model_action() -> int:
-            """使用模型预测动作"""
-            try:
-                # 获取观察和动作掩码
-                obs = adapter.env.net.get_obs()
-                # 单设备多档 wait 下，直接复用 env 输出的离散动作掩码。
-                action_mask = torch.as_tensor(adapter.env._mask(), dtype=torch.bool)
-                
-                # 构建 TensorDict
-                # MaskedPolicyHead expects 'observation_f' (float) based on models.py
-                td = TensorDict({
-                    "observation": torch.as_tensor(obs, dtype=torch.int64).unsqueeze(0),
-                    "observation_f": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0),
-                    "action_mask": action_mask.unsqueeze(0),
-                }, batch_size=[1])
-                
-                # 使用模型预测
-                with torch.no_grad():
-                    # explicitly set mode to MODE (ArgMax) to match viz.py manual fix
-                    with set_exploration_type(ExplorationType.RANDOM):
-                        td = policy(td)
-                        action = td["action"].item()
-                
-                return int(action)
-            except Exception as e:
-                print(f"[ERROR] Inference Failed: {e}")
-                import traceback
-                traceback.print_exc()
-                return None
-        
-        return get_model_action
-        
-    except Exception as e:
-        print(f"✗ 加载模型失败: {e}")
-        return None
-
-
 def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[object | None, str]:
     """
     加载并发双头策略（TM2/TM3）；TM1 由 `ClusterTool` 规则自动执行。
@@ -323,40 +129,8 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
         n_actions_tm2 = int(env.n_actions_tm2)
         n_actions_tm3 = int(env.n_actions_tm3)
         raw_state_dict = _load_raw_state_dict(model_path)
-        if _contains_tm1_head(raw_state_dict):
-            raise ValueError(
-                "检测到 head_tm1：当前可视化仅支持 DualHeadPolicyNet（TM2/TM3）并发权重，"
-                "不支持旧三头权重。"
-            )
         n_hidden = 256
         n_layers = 4
-        inferred_tm2 = n_actions_tm2
-        inferred_tm3 = n_actions_tm3
-        inferred_obs = n_obs
-        shape_inferred = False
-        for cand in _iter_concurrent_candidate_state_dicts(raw_state_dict):
-            if not cand:
-                continue
-            try:
-                inferred_obs, n_hidden, inferred_tm2, inferred_tm3, n_layers = _infer_concurrent_dual_head_shape(
-                    cand
-                )
-                shape_inferred = True
-                break
-            except Exception:
-                continue
-        if not shape_inferred:
-            raise RuntimeError(
-                "无法识别并发双头权重格式。需要包含 DualHeadPolicyNet 的 "
-                "backbone.0.weight、head_tm2.weight、head_tm3.weight "
-                "（可带 module/backbone/policy_module 外层前缀）。"
-            )
-        if inferred_obs != n_obs or inferred_tm2 != n_actions_tm2 or inferred_tm3 != n_actions_tm3:
-            raise ValueError(
-                f"并发模型动作空间与当前环境不匹配: "
-                f"weights=(obs={inferred_obs}, tm2={inferred_tm2}, tm3={inferred_tm3}) "
-                f"env=(obs={n_obs}, tm2={n_actions_tm2}, tm3={n_actions_tm3})"
-            )
 
         print(
             f"[Concurrent Model] n_obs={n_obs}, TM2={n_actions_tm2}, TM3={n_actions_tm3} (TM1 自动)"
@@ -369,21 +143,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
             n_actions_tm3=n_actions_tm3,
             n_layers=n_layers,
         )
-
-        loaded = False
-        load_error: Exception | None = None
-        for cand in _iter_concurrent_candidate_state_dicts(raw_state_dict):
-            if not cand:
-                continue
-            try:
-                backbone.load_state_dict(cand)
-                loaded = True
-                break
-            except Exception as exc:
-                load_error = exc
-                continue
-        if not loaded:
-            raise RuntimeError(f"无法加载并发双头权重: {model_path}; 最后错误: {load_error}")
+        backbone.load_state_dict(raw_state_dict, strict=True)
         backbone.eval()
 
         print(f"✓ 并发模型加载成功: {model_path}")
@@ -424,50 +184,29 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
 
 
 def apply_model_for_mode(model_path: str, device_mode: str, window: PetriMainWindow) -> tuple[bool, str]:
-    """按权重类型加载单动作或并发模型，并在需要时切换运行时适配器。"""
-    try:
-        raw_state_dict = _load_raw_state_dict(model_path)
-    except Exception as exc:
-        return False, f"读取模型失败: {exc}"
-
-    model_kind = _detect_model_kind(raw_state_dict)
-    runtime_mode = "concurrent" if model_kind == "concurrent" else "single"
-    ok, reason = _ensure_runtime_adapter(window, device_mode, runtime_mode)
+    """仅加载并发模型，并在需要时切到并发运行时适配器。"""
+    ok, reason = _ensure_runtime_adapter(window, device_mode, "concurrent")
     if not ok:
-        if model_kind == "concurrent":
-            window.set_concurrent_model_handler(None)
-        else:
-            window.set_model_handler(None)
+        window.set_concurrent_model_handler(None)
         return False, reason
 
     adapter = window.viewmodel.adapter
-    if model_kind == "concurrent":
-        if not isinstance(adapter, PetriAdapter):
-            window.set_concurrent_model_handler(None)
-            return False, "并发适配器切换失败，当前窗口仍不是并发后端。"
-        handler, error_msg = load_concurrent_model(model_path, adapter)
-        if handler is None:
-            window.set_concurrent_model_handler(None)
-            return False, f"并发模型加载失败: {error_msg}"
-        window.set_concurrent_model_handler(handler)
-        return True, f"并发模型加载成功: {model_path}"
-
-    if not isinstance(adapter, PetriSingleAdapter):
-        window.set_model_handler(None)
-        return False, "单动作适配器切换失败，当前窗口仍不是 pn_single 后端。"
-    handler = load_model(model_path, adapter)
+    if not isinstance(adapter, PetriAdapter):
+        window.set_concurrent_model_handler(None)
+        return False, "并发适配器切换失败，当前窗口仍不是并发后端。"
+    handler, error_msg = load_concurrent_model(model_path, adapter)
     if handler is None:
-        window.set_model_handler(None)
-        return False, f"{device_mode} 模式模型加载失败，请确认权重与当前代码版本匹配: {model_path}"
-    window.set_model_handler(handler)
-    return True, f"{device_mode} 模式模型加载成功: {model_path}"
+        window.set_concurrent_model_handler(None)
+        return False, f"并发模型加载失败: {error_msg}"
+    window.set_concurrent_model_handler(handler)
+    return True, f"并发模型加载成功: {model_path}"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PySide6 Petri 可视化")
     parser.add_argument("--adapter", default="petri", choices=["petri"], help="算法适配器")
-    parser.add_argument("--device", type=str, default="cascade", choices=["single", "cascade"], help="设备模式")
-    parser.add_argument("--device-mode", type=str, choices=["single", "cascade"], help="已弃用，等价于 --device")
+    parser.add_argument("--device", type=str, default="cascade", choices=["cascade"], help="设备模式（仅支持 cascade）")
+    parser.add_argument("--device-mode", type=str, choices=["cascade"], help="已弃用，等价于 --device（仅支持 cascade）")
     parser.add_argument("--model", "-m", type=str, help="模型文件路径")
     parser.add_argument("--concurrent", action="store_true", help="启用并发三动作可视化（仅支持 cascade）")
     parser.add_argument("--no-model", action="store_true", help="不加载模型")
@@ -513,12 +252,11 @@ def main() -> int:
         )
 
     window.set_adapter_factory(adapter_factory)
-    if selected_device in {"single", "cascade"}:
+    if selected_device == "cascade":
         window._device_mode = selected_device
         window._concurrent_runtime = concurrent_mode
         window.center_canvas.set_device_mode(selected_device)
         window._action_device_cascade.setChecked(selected_device == "cascade")
-        window._action_device_single.setChecked(selected_device == "single")
         window._refresh_status_message()
     window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     

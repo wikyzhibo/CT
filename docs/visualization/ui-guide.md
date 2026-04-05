@@ -7,8 +7,8 @@
 - Key rules:
   - 可视化入口统一为 `python -m visualization.main`。
   - 回放数据优先使用 `schema_version=2` 的序列结构。
-  - 设备模式必须与模型/序列来源一致（single 或 cascade）。
-  - `--concurrent` 只会在 `device=cascade` 下启用，并切换到 `Env_PN_Concurrent + PetriAdapter`。
+  - 设备入口固定为 `device=cascade`。
+  - `--concurrent` 会启用并发运行时并切换到 `Env_PN_Concurrent + PetriAdapter`。
   - 当前 `Env_PN_Concurrent` 直接消费 `solutions.A.petri_net.ClusterTool` 的真实级联运行时，不再绑定 `deprecated.pn.Petri`。
 
 ## Scope
@@ -22,8 +22,8 @@
 
 ## Architecture or Data Flow
 1. `visualization/main.py` 解析 CLI，创建 adapter/viewmodel/window。
-2. 启动时按 `--device` 构建 `single/cascade` 对应后端；若显式传 `--concurrent`，则在 `cascade` 下改为并发三动作后端，且底层仍复用当前 `ClusterTool` 的路线配置。
-3. 选择含 `head_tm2` 与 `head_tm3` 且**不含** `head_tm1` 的权重（`DualHeadPolicyNet`，当前 A 方案并发训练产物）时，UI 会自动重建为并发 runtime；并发权重加载支持常见外层前缀包装（如 `module.` / `backbone.` / `policy_module.`）。
+2. 启动时固定构建 `device=cascade` 后端；默认是单动作级联 runtime，显式传 `--concurrent` 时切换为并发三动作 runtime，底层仍复用当前 `ClusterTool` 的路线配置。
+3. Model A 只支持并发 `DualHeadPolicyNet` 权重，并在加载前强制切到并发 runtime；权重使用 `load_state_dict(strict=True)` 严格加载，不做模型类型推断与前缀兼容。
 4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
@@ -31,14 +31,12 @@
 
 ## Interfaces
 - 启动命令:
-  - `python -m visualization.main --device single`
   - `python -m visualization.main --device cascade --model <model_path>`
   - `python -m visualization.main --device cascade --concurrent --model results/models/CT_concurrent_best.pt`
 - 关键参数:
-  - `--device {single,cascade}`
-  - `--device-mode`（兼容参数，等价于 `--device`）
-  - `--concurrent`：启用并发三动作可视化；仅支持 `--device cascade`
-  - `--single-route-code {0,1}`（single）；cascade 下 legacy 代号见训练文档；配置驱动路线以 `single_route_name` 为准
+  - `--device {cascade}`
+  - `--device-mode`（兼容参数，等价于 `--device`，仅支持 `cascade`）
+  - `--concurrent`：启用并发三动作可视化
   - `--model/-m`, `--no-model`, `--debug`, `--quiet`
 - 配置菜单:
   - 仅保留「设置晶圆数量（UI 占位）」与「清洁」配置项。
@@ -55,18 +53,18 @@
   - 导出脚本默认 `--out-name tmp`，输出 `results/action_sequences/tmp(W<n_wafer>-M<time>).json`；其它名字同样追加 `(W-M)` 后缀
 
 ## Behavior Rules
-1. UI 设备模式与模型设备模式不一致时必须报错并阻止加载。
+1. UI 设备入口固定为 `cascade`；Model A 加载前必须切换到并发 runtime。
 2. `--no-model` 启用时，仍可使用 Model B 进行离线回放。
-3. 回放时序列来源若为 single，应保证 `actions` 与 `action` 字段兼容。
+3. 回放时若缺少显式 `runtime_mode`，可用序列动作字段自动识别并发。
 4. 可视化文档中的命令示例必须与 `visualization/main.py` 参数一致。
-5. 级联 / 单设备 + `--debug`：右侧 **TRANSITIONS** 区按当前网 `id2t_name` 顺序**每两个变迁一行**（左先右后，奇数个时末行右侧留白）；全量列出，用 `enabled` 区分可点/禁用。展示名映射（仅影响按钮文案，不改变 `action_id`）：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`；级联下物理名为 `u_LLD*` 的卸载变迁 tooltip 可附 `LLD` 去向列表。
+5. 级联 + `--debug`：右侧 **TRANSITIONS** 区按当前网 `id2t_name` 顺序**每两个变迁一行**（左先右后，奇数个时末行右侧留白）；全量列出，用 `enabled` 区分可点/禁用。展示名映射（仅影响按钮文案，不改变 `action_id`）：`t_LLC`→`t_TM2_LLC`，`u_LLC`→`u_LLC_TM3`，`t_LLD`→`t_TM3_LLD`，`u_LLD`→`u_LLD_TM2`；级联下物理名为 `u_LLD*` 的卸载变迁 tooltip 可附 `LLD` 去向列表。
 6. `adapter_factory` 在级联模式下会把窗口当前选择的 `single_route_name` 以 `setdefault` 写入 `env_overrides`，以便与回放 JSON 中的 `replay_env_overrides` 合并时后者仍可覆盖。
 7. 晶圆可视化口径：`LLC/LLD`（`place_type=5`）在 `proc_time>0` 时按加工腔渲染，显示外圈进度与加工完成橙色；其 scrap 判定阈值与 `pn_single` 一致为 `process_time + 3 * P_Residual_time`，超时显示红色。`time_to_scrap < 0` 表示“无 scrap 风险”，禁止把该值解释为已 scrap；`AL/CL/LLA/LLB` 这类正工时 buffer 只显示计时/完成态，不显示 `SCRAP`。
 8. 手动导出（甘特图/统计/动作）必须强制写入 `results/` 规范目录：`results/gantt`、`results/training_logs`、`results/action_sequences`。
 9. 启动时不会自动尝试任何默认 Model A 权重；仅在显式传 `--model` 或在 UI 菜单选择模型文件时加载。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅必须可用，但路径仅支持启动/回放覆盖，UI 内不提供热切换。
-12. 只要权重 `state_dict` 含 `head_tm2` 与 `head_tm3`（当前 A 方案 `DualHeadPolicyNet`），Model A 加载必须自动切到并发 runtime；若检测到 `head_tm1`（旧三头）必须报“不支持旧三头并发权重”。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
+12. Model A 仅支持并发 `DualHeadPolicyNet` 权重；加载必须使用 `strict=True` 严格匹配，不做模型类型推断、不做前缀剥离、不做结构推断。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
 14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。单动作级联 runtime 下，`LP1/LP2` 必须聚合显示为 `LP`，`LP_done` 必须保持 `LP_done` 名称，`TM1` 只通过 `TM1 ARM` 展示，不单独作为 chamber 渲染。
 15. `device=cascade` 下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.8`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 布局禁止复用该缩放与自动扩距规则。
@@ -75,19 +73,18 @@
 
 ## Examples
 - 正例:
-  - `python -m visualization.main --device single --model results/models/CT_single_best.pt`
   - `python -m visualization.main --device cascade --concurrent --model results/models/CT_concurrent_best.pt`
   - 导出序列后，在 UI 中选择 JSON 并用 Model B 回放。
 - 反例:
-  - single 序列在 cascade 模式下直接回放。
-  - 在 `device=single` 下传 `--concurrent`。
+  - 在 `device=single` 下启动可视化。
+  - 加载 key 不严格匹配 `DualHeadPolicyNet` 的权重文件。
   - 文档仍引用已废弃的旧可视化入口。
 
 ## Edge Cases
 - 未指定 `--model` 时，程序直接进入手动模式，不会探测默认权重文件。
 - `--concurrent` 依赖运行环境已安装 `PySide6`；缺失时入口会在导入 GUI 模块阶段失败。
 - 序列文件路径正确但字段不完整时，Model B 回放可能失败。
-- 由单动作导出脚本生成的 `actions=[<single_action>, "WAIT", "WAIT"]` 序列不会再被自动识别为并发 runtime。
+- 权重文件即使仅有前缀差异（如 `module.`），也会因 strict load 失败而报错。
 - 级联单臂若手动调大 `chamber_scale` / `robot_scale`，画布会优先自动扩距避免腔室重叠，而不是强制压回旧尺寸；超出视口时由 `QGraphicsView` 自身滚动显示。
 
 ## Related Docs
@@ -98,6 +95,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-05: `visualization/main.py` / `visualization/main_window.py`：Model A 加载收敛为“仅并发 + strict 报错”；删除 `_detect_model_kind`、`_iter_single_candidate_state_dicts`、`_infer_single_model_shape`、`_iter_concurrent_candidate_state_dicts`、`_infer_concurrent_dual_head_shape`、`_contains_tm1_head` 与单动作 `load_model` 路径；CLI 与设备菜单移除 single 入口，仅保留 `cascade`。
 - 2026-04-05: `visualization/main.py` / `visualization/main_window.py` / `visualization/widgets/center_canvas.py`：可视化前端固定为单臂布局，移除配置菜单中的「机械手模式」「路径」入口；`center_canvas` 删除 single/cascade 双臂绘制分支（`ARM1/ARM2`、`TM2 ARM1/2`、`TM3 ARM1/2`），仅保留 `ARM` 与 `TM1/TM2/TM3 ARM`。级联路线仍可通过启动参数或回放 `replay_env_overrides` 覆盖，UI 不再支持热切换。
 - 2026-04-04: `visualization/main.py` 取消“未传 `--model` 自动加载默认权重”路径；启动时仅在显式传 `--model` 或 UI 菜单选择时加载 Model A。并发权重加载收敛为 **仅 DualHead**：支持常见外层前缀包装（`module.`/`backbone.`/`policy_module.`），检测到 `head_tm1`（旧三头）时给出明确不兼容错误。
 - 2026-04-04: `visualization/` 目录清理与收敛：删除不可达适配器与脚本模块 `dfs_adapter.py`、`ga_adapter.py`、`pdr_adapter.py`、`scripted_adapter.py`，删除无调用工具模块 `config_editor.py`、`debug_tools.py`、`export_tools.py`、`smoke_test.py`；`transition_labels.py` 与 `route_path_display.py` 迁移到 `visualization/widgets/`；`algorithm_interface.py` 移除 `AlgorithmAdapter` 抽象基类，仅保留 `ActionInfo/StateInfo` 等 UI 数据契约类型，运行时保持 `petri` 单适配器路径不变。

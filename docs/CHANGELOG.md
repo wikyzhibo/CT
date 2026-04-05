@@ -2,6 +2,12 @@
 
 ## 2026-04-05
 
+### 可视化：Model A 仅并发 strict 加载 + single 入口下线（2026-04-05）
+
+- **What changed**：`visualization/main.py` 删除模型类型推断与权重结构推断链路（`_detect_model_kind`、`_iter_single_candidate_state_dicts`、`_infer_single_model_shape`、`_iter_concurrent_candidate_state_dicts`、`_infer_concurrent_dual_head_shape`、`_contains_tm1_head`），并移除单动作 `load_model` 路径；`apply_model_for_mode` 固定走并发加载；`load_concurrent_model` 改为 `DualHeadPolicyNet + load_state_dict(strict=True)`。`visualization/main.py` 的 `--device/--device-mode` 仅支持 `cascade`；`visualization/main_window.py` 设备菜单移除「单设备」入口，仅保留「级联设备」。
+- **Why**：模型加载链路需要收敛到单一路径，避免自动识别/兼容推断带来的隐式行为；用户入口与目标能力保持一致，只暴露级联并发主路径。
+- **Impact**：Model A 不再支持单动作权重；不再做前缀兼容与结构推断，权重不匹配直接暴露 strict load 错误。CLI/UI 均不能再选择 `single` 设备模式。
+
 ### 可视化：固定单臂布局并移除路径/机械手模式菜单（2026-04-05）
 
 - **What changed**：`visualization/main.py` 移除 `robot_capacity` 透传链路与 `_action_config_cascade_route` 依赖；`visualization/main_window.py` 的「配置」菜单移除「机械手模式」与「路径」，仅保留「设置晶圆数量（UI 占位）」与「清洁」，状态栏不再显示机械手模式；`visualization/widgets/center_canvas.py` 删除 single/cascade 双臂布局与双臂机器人绘制分支，仅保留单臂 `ARM` 与级联 `TM1 ARM`/`TM2 ARM`/`TM3 ARM`。
