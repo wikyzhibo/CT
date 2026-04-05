@@ -56,7 +56,7 @@ def test_tm1_pick_shows_wafer_on_robot_not_fake_tm1_chamber():
     adapter = _build_adapter("2-1")
     adapter.reset()
 
-    state, _, _, _ = adapter.step(_action_id(adapter, "u_LP1_TM1"))
+    state, _, _, _ = adapter.step(_action_id(adapter, "u_LP_TM1"))
 
     assert [w.place_name for w in state.robot_states["TM1"].wafers] == ["TM1"]
     assert not any(c.name == "TM1" for c in state.chambers)
@@ -66,7 +66,7 @@ def test_al_timed_buffer_uses_non_scrap_rendering(qapp):
     adapter = _build_adapter("2-1")
     adapter.reset()
 
-    for action_name in ("u_LP1_TM1", "t_TM1_AL", "WAIT_5s", "WAIT_5s"):
+    for action_name in ("u_LP_TM1", "t_TM1_AL", "WAIT_5s", "WAIT_5s"):
         state, _, _, _ = adapter.step(_action_id(adapter, action_name))
 
     al = next(c for c in state.chambers if c.name == "AL")

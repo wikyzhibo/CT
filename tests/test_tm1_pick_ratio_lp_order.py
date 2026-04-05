@@ -1,4 +1,4 @@
-"""TM1 自动选择：shared+ratio 下多 LP 同时可取时优先与比例轮次一致的 route_type。"""
+"""LP 单库所：构网时按 cycle_type 排列 tokens，TM1 自动取料选单一 u_LP_TM1。"""
 
 import json
 from pathlib import Path
@@ -21,35 +21,22 @@ def _cfg_4_8_n5() -> PetriEnvConfig:
     return PetriEnvConfig.model_validate(data)
 
 
-def test_tm1_pick_prefers_lp_matching_ratio_when_cycle_wants_type2():
+def test_lp_token_order_follows_cycle_type():
+    """LP tokens 应按 cycle_type=[1,2,2,2,2] 排列：[1,2,2,2,2]。"""
     net = ClusterTool(_cfg_4_8_n5(), concurrent=True)
     net.reset()
-    net._shared_ratio_cycle_idx = 1
-    net._lp_pick_cycle_idx = 1  # LP pick cycle 独立，需同步设置
-    req = net._resolve_required_release_type_for_entry_heads()
-    assert req == 2
-    start = int(net.T)
-    net.get_action_mask(
-        wait_action_start=start,
-        n_actions=start + 1,
-    )
-    act = net._cached_auto_tm1_action
-    assert act is not None
-    assert net.id2t_name[int(act)] == "u_LP2_TM1"
+    lp = net._place_by_name.get("LP")
+    assert lp is not None, "LP place must exist"
+    types = [int(getattr(tok, "route_type", 1)) for tok in lp.tokens]
+    assert types == [1, 2, 2, 2, 2], f"expected [1,2,2,2,2], got {types}"
 
 
-def test_tm1_pick_starts_with_lp1_when_cycle_wants_type1():
+def test_tm1_auto_action_picks_lp_when_al_empty():
+    """AL 空且 LLA 未满时，TM1 自动动作应为 u_LP_TM1。"""
     net = ClusterTool(_cfg_4_8_n5(), concurrent=True)
     net.reset()
-    net._shared_ratio_cycle_idx = 0
-    net._lp_pick_cycle_idx = 0
-    req = net._resolve_required_release_type_for_entry_heads()
-    assert req == 1
     start = int(net.T)
-    net.get_action_mask(
-        wait_action_start=start,
-        n_actions=start + 1,
-    )
+    net.get_action_mask(wait_action_start=start, n_actions=start + 1)
     act = net._cached_auto_tm1_action
     assert act is not None
-    assert net.id2t_name[int(act)] == "u_LP1_TM1"
+    assert net.id2t_name[int(act)] == "u_LP_TM1"

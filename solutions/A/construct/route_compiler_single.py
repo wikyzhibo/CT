@@ -177,31 +177,29 @@ def _alias_load_port_tokens(
     cands: Tuple[str, ...],
     source_name: str,
 ) -> Tuple[str, ...]:
-    """JSON 中占位符 LP 在级联双装载口模式下映射为 LP1/LP2。"""
-    if source_name not in ("LP1", "LP2"):
+    """JSON 中 LP/LP1/LP2 占位符统一映射为单一 LP 库所。"""
+    if source_name not in ("LP", "LP1", "LP2"):
         return cands
-    return tuple(source_name if x == "LP" else x for x in cands)
+    return tuple("LP" if x in ("LP", "LP1", "LP2") else x for x in cands)
 
 
 def first_load_port_name(route_ir: RouteIR) -> str:
-    """首段 source stage 中的装载口名（LP/LP1/LP2）。"""
+    """首段 source stage 中的装载口名，统一返回 "LP"。"""
     for c in route_ir.stages[0].candidates:
-        if c in ("LP1", "LP2"):
-            return str(c)
-        if c == "LP":
-            return "LP1"
+        if c in ("LP", "LP1", "LP2"):
+            return "LP"
     raise ValueError(f"route {route_ir.route_name} first stage has no LP/LP1/LP2 candidate")
 
 
 def first_entry_place_name(route_ir: RouteIR) -> str:
-    """首段 stage 的首个库所名；LP 占位统一映射为 LP1。"""
+    """首段 stage 的首个库所名；LP/LP1/LP2 统一映射为 LP。"""
     if not route_ir.stages:
         raise ValueError(f"route {route_ir.route_name} has no stages")
     first_stage = route_ir.stages[0].candidates
     if not first_stage:
         raise ValueError(f"route {route_ir.route_name} first stage is empty")
     first = str(first_stage[0])
-    return "LP1" if first == "LP" else first
+    return "LP" if first in ("LP", "LP1", "LP2") else first
 
 
 def _normalize_sequence(

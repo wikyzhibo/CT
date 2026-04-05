@@ -69,16 +69,35 @@ def _merge_route_source_target_transport(
     return merged
 
 
-def _build_token_type_sequence(n_wafer1: int, n_wafer2: int) -> List[int]:
-    n_wafer = int(n_wafer1) + int(n_wafer2)
-    if n_wafer <= 0:
-        return []
-    return [1] * int(n_wafer1) + [2] * int(n_wafer2)
+def _build_cycle_token_sequence(
+    n_wafer1: int, n_wafer2: int, cycle_type: Sequence[int]
+) -> List[int]:
+    """按 cycle_type 循环模式交错排列 type1/type2 tokens。
+    例: cycle=[1,2,2,2,2], n1=2, n2=8 → [1,2,2,2,2,1,2,2,2]
+    若无 cycle_type 或 n_wafer2==0，退化为 [1]*n1+[2]*n2。
+    """
+    if not cycle_type or int(n_wafer2) == 0:
+        return [1] * int(n_wafer1) + [2] * int(n_wafer2)
+    counts: Dict[int, int] = {1: int(n_wafer1), 2: int(n_wafer2)}
+    result: List[int] = []
+    cycle = list(cycle_type)
+    while sum(counts.values()) > 0:
+        progress = False
+        for t in cycle:
+            if counts.get(t, 0) > 0:
+                result.append(t)
+                counts[t] -= 1
+                progress = True
+        if not progress:
+            for t in sorted(k for k, v in counts.items() if v > 0):
+                result.extend([t] * counts[t])
+                counts[t] = 0
+            break
+    return result
 
 
 def _normalize_place_name(name: object) -> str:
-    raw = str(name or "").strip()
-    return "LP1" if raw == "LP" else raw
+    return str(name or "").strip()
 
 
 def _logical_stage_slice(route_ir: RouteIR, include_entry_exit: bool) -> Tuple[StageIR, ...]:
@@ -311,7 +330,7 @@ def build_net(n_wafer1: int,
     sink_name = str(sink_cfg.get("name", "LP_done"))
     if sink_name != "LP_done":
         raise ValueError("cascade fixed topology requires sink=LP_done")
-    if source_name not in ("LP1", "LP2"):
+    if source_name not in ("LP", "LP1", "LP2"):
         raise ValueError("cascade fixed topology requires source.name LP/LP1/LP2")
     source_capacity = int(source_cfg.get("capacity", 100))
     sink_capacity = int(sink_cfg.get("capacity", 100))
@@ -346,7 +365,7 @@ def build_net(n_wafer1: int,
     wrap_tm1_prefix_suffix = (
         logical_entry_name == "LLA"
         and logical_exit_name == "LLB"
-        and source_name in ("LP1", "LP2")
+        and source_name in ("LP", "LP1", "LP2")
         and sink_name == "LP_done"
     )
     subpaths_cfg_raw = route_entry.get("subpaths")
@@ -359,10 +378,7 @@ def build_net(n_wafer1: int,
             sub_raw = dict(subpath_cfg or {})
             sub_source = str(sub_raw.pop("source_name", "") or "").strip()
             if not sub_source:
-                if len(subpath_items) == 2:
-                    sub_source = "LP1" if idx == 0 else "LP2"
-                else:
-                    sub_source = source_name
+                sub_source = source_name
             sub_source = _normalize_place_name(sub_source)
             logical_source = logical_entry_name if wrap_tm1_prefix_suffix else sub_source
             logical_sink = logical_exit_name if wrap_tm1_prefix_suffix else sink_name
@@ -519,9 +535,10 @@ def build_net(n_wafer1: int,
             int(type_id): tuple(token_proc_time_queue_templates[subpath_name])
             for type_id, subpath_name in wafer_type_to_subpath.items()
         }
-        token_route_type_sequence = _build_token_type_sequence(
+        token_route_type_sequence = _build_cycle_token_sequence(
             n_wafer1=n_wafer1_i,
             n_wafer2=n_wafer2_i,
+            cycle_type=route_entry.get("cycle_type") or [],
         )
     else:
         _, t_route_code_map, token_route_queue, token_proc_time_queue, token_plan = build_token_route_queue(
@@ -541,10 +558,10 @@ def build_net(n_wafer1: int,
         route_irs_by_name=build_route_irs_by_name,
     )
     c_lp = Counter(lp_per_token)
-    if c_lp.get("LP1", 0) != n_wafer1_i or c_lp.get("LP2", 0) != n_wafer2_i:
+    if c_lp.get("LP", 0) != n_wafer1_i + n_wafer2_i:
         raise ValueError(
             f"LP token distribution {dict(c_lp)} does not match "
-            f"n_wafer1/n_wafer2=({n_wafer1_i},{n_wafer2_i})"
+            f"total n_wafer=({n_wafer1_i + n_wafer2_i})"
         )
 
     p_idx = {name: i for i, name in enumerate(id2p_name)}
@@ -634,33 +651,27 @@ def build_net(n_wafer1: int,
     }
     full_timeline_chambers = tuple(
         name for name in id2p_name
-        if name not in {"LP1", "LP2", "LP_done", "TM1", "TM2", "TM3"}
+        if name not in {"LP", "LP1", "LP2", "LP_done", "TM1", "TM2", "TM3"}
     )
     route_meta["chambers"] = full_timeline_chambers
     route_meta["timeline_chambers"] = full_timeline_chambers
     route_meta["ready_chambers"] = full_timeline_chambers
     route_meta["wafer_type_to_load_port"] = {
-        int(tid): first_load_port_name(build_route_irs_by_name[sp])
-        for tid, sp in wafer_type_to_subpath.items()
+        int(tid): "LP"
+        for tid in wafer_type_to_subpath
     }
     route_meta["wafer_type_to_release_place"] = {
-        int(tid): (
-            str(route_irs_by_name[sp].stages[0].candidates[0])
-            if wrap_tm1_prefix_suffix
-            else first_load_port_name(build_route_irs_by_name[sp])
-        )
-        for tid, sp in wafer_type_to_subpath.items()
+        int(tid): "LP"
+        for tid in wafer_type_to_subpath
     }
-    route_meta["release_control_places"] = tuple(
-        dict.fromkeys(route_meta["wafer_type_to_release_place"].values()).keys()
-    )
+    route_meta["release_control_places"] = ("LP",)
     route_meta["cleaning_duration_map"] = {
         str(name): int(block.cleaning_duration) for name, block in chamber_blocks.items()
     }
     route_meta["cleaning_trigger_wafers_map"] = {
         str(name): int(block.cleaning_trigger_wafers) for name, block in chamber_blocks.items()
     }
-    route_meta["load_port_names"] = ("LP1", "LP2")
+    route_meta["load_port_names"] = ("LP",)
     route_stages = [list(stage) for stage in list(route_meta.get("route_stages") or [])]
     takt_payload = build_takt_payload(
         route_stages=route_stages,
@@ -698,13 +709,13 @@ def build_net(n_wafer1: int,
         "capacity": capacity,
         "id2p_name": id2p_name,
         "id2t_name": id2t_name,
-        "idle_idx": {"start": p_idx["LP1"], "end": p_idx[sink_name]},
+        "idle_idx": {"start": p_idx["LP"], "end": p_idx[sink_name]},
         "marks": marks,
         "n_wafer": n_wafer,
         "n_wafer1": n_wafer1_i,
         "n_wafer2": n_wafer2_i,
-        "n_wafer_route1": int(c_lp.get("LP1", 0)),
-        "n_wafer_route2": int(c_lp.get("LP2", 0)),
+        "n_wafer_route1": n_wafer1_i,
+        "n_wafer_route2": n_wafer2_i,
         "route_meta": route_meta,
         "t_route_code_map": t_route_code_map,
         "t_target_place_map": t_target_place,

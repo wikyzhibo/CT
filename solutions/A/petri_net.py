@@ -85,13 +85,6 @@ class ClusterTool:
         self._wafer_type_to_release_place: Dict[int, str] = route_meta.get("wafer_type_to_release_place") or {}
         self._release_control_places: Tuple[str, ...] = tuple(route_meta.get("release_control_places") or self._load_port_names)
         self._mask_skip_places: frozenset[str] = frozenset({"LP_done"})
-        _raw_cycle = route_entry.get("cycle_type") if str(self._takt_policy or "").strip().lower() == "shared" else None
-        _valid_types = set(int(t) for t in self._wafer_type_to_subpath.keys())
-        _filtered = tuple(int(t) for t in (_raw_cycle or []) if int(t) in _valid_types)
-        self._cycle_type_enabled: bool = bool(_filtered)
-        self._cycle_type: Tuple[int, ...] = _filtered
-        self._cycle_type_idx: int = 0
-        self._lp_pick_cycle_idx: int = 0
 
         # ====== 8) Petri 静态结构索引 ======
         self.m0: np.ndarray = info["m0"]
@@ -677,7 +670,7 @@ class ClusterTool:
 
             # 更新 token 路由索引
             tok.route_head_idx += 1
-            # LLA设置发片节拍控制
+            # LP发片节拍控制
             if t_name.startswith("t_") and pst_place.name in self._release_control_places:
                 self._apply_entry_release_delay(tok)
             pst_place.append(tok)
@@ -700,10 +693,7 @@ class ClusterTool:
                 self._u_entry_release_count_by_type[released_type] = (
                     int(self._u_entry_release_count_by_type.get(released_type, 0)) + 1
                 )
-                self._advance_release_ratio_cycle()
                 self._arm_entry_head_with_takt_delay(released_type)
-            if t_name.startswith("u_") and pre_place.name in set(self._load_port_names or ()):
-                self._advance_lp_pick_cycle()
             log_ret: Dict[str, Any] = {
                 "t_name": t_name,
                 "t1": int(start_time),
@@ -922,68 +912,6 @@ class ClusterTool:
             raise RuntimeError(f"unsupported route_type for WIP cap: {type_id}")
         current = int(self._entered_wafer_count_by_type.get(type_id, 0))
         return int(current + 1) <= cap
-
-    # 作用：返回当前 release 轮次要求的 route_type。
-    def _required_release_type(self) -> Optional[int]:
-        if not self._cycle_type_enabled:
-            return None
-        cycle = self._cycle_type
-        if not cycle:
-            return None
-        idx = int(self._cycle_type_idx) % len(cycle)
-        return int(cycle[idx])
-
-    # 作用：结合入口队首状态解析当前可执行 route_type。
-    def _resolve_required_release_type_for_entry_heads(self) -> Optional[int]:
-        required = self._required_release_type()
-        if required is None:
-            return None
-        cycle = self._cycle_type
-        if not cycle:
-            return required
-        heads = self._entry_type_head_tokens()
-        available_types = set(int(t) for t in heads.keys())
-        if not available_types or int(required) in available_types:
-            return required
-        cur_idx = int(self._cycle_type_idx) % len(cycle)
-        for offset in range(1, len(cycle) + 1):
-            cand_idx = (cur_idx + offset) % len(cycle)
-            cand_type = int(cycle[cand_idx])
-            if cand_type not in available_types:
-                continue
-            self._cycle_type_idx = int(cand_idx)
-            return cand_type
-        return required
-
-    # 作用：推进 release 轮转游标。
-    def _advance_release_ratio_cycle(self) -> None:
-        if not self._cycle_type_enabled:
-            return
-        cycle = self._cycle_type
-        if not cycle:
-            return
-        self._cycle_type_idx = (int(self._cycle_type_idx) + 1) % len(cycle)
-
-    # 作用：推进 TM1 从 LP 取料轮转游标。
-    def _advance_lp_pick_cycle(self) -> None:
-        """TM1 从 LP 取料时推进独立的 LP pick 计数器。"""
-        if not self._cycle_type_enabled:
-            return
-        cycle = self._cycle_type
-        if not cycle:
-            return
-        self._lp_pick_cycle_idx = (int(self._lp_pick_cycle_idx) + 1) % len(cycle)
-
-    # 作用：返回当前 LP 取料轮次要求的 route_type。
-    def _required_lp_pick_type(self) -> Optional[int]:
-        """返回下一次 TM1 应从哪种 LP 取料（基于独立 LP pick cycle，与 LLA release cycle 解耦）。"""
-        if not self._cycle_type_enabled:
-            return None
-        cycle = self._cycle_type
-        if not cycle:
-            return None
-        idx = int(self._lp_pick_cycle_idx) % len(cycle)
-        return int(cycle[idx])
 
     # 作用：返回指定 route_type 的节拍间隔需求。
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
@@ -1297,7 +1225,6 @@ class ClusterTool:
     def _pick_tm1_from_mask(
         self,
         mask: np.ndarray,
-        required_release_type: Optional[int] = None,
     ) -> Optional[int]:
         """从已计算的全量 mask 中按优先级选择 TM1 变迁（不再调用 get_action_mask）。"""
         pbname = self._place_by_name
@@ -1384,38 +1311,12 @@ class ClusterTool:
             if u_al is not None and mask[u_al]:
                 return u_al
 
-        # 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料（shared+ratio 时优先当前发片轮次所需 route_type）
+        # 5. LP 有晶圆 且 AL 空 且 LLA 未满 → 从 LP 取料（队首 token 类型已由构网时 cycle 顺序编码）
         al = pbname.get("AL")
         if al is not None and len(al.tokens) == 0 and lla is not None and len(lla.tokens) < lla.capacity:
-            lp_candidates: List[str] = []
-            for lp_name in self._load_port_names:
-                u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
-                if u_lp is not None and mask[u_lp]:
-                    lp_candidates.append(str(lp_name))
-            if lp_candidates:
-                # 优先使用独立的 LP pick cycle（与 LLA release cycle 解耦），
-                # 避免因 LLA 中仍有 type1 wafer 导致 cycle 回滚、TM1 持续选 LP1 的问题。
-                lp_pick_type = self._required_lp_pick_type()
-                effective_req = lp_pick_type if lp_pick_type is not None else required_release_type
-                if effective_req is not None:
-                    req = int(effective_req)
-
-                    # 作用：读取指定 LP 队首晶圆的 route_type。
-                    def _lp_head_route_type(name: str) -> int:
-                        lp = pbname.get(name)
-                        if lp is None or len(lp.tokens) == 0:
-                            return -1
-                        return int(getattr(lp.tokens[0], "route_type", 1) or 1)
-
-                    preferred = [lp for lp in lp_candidates if _lp_head_route_type(lp) == req]
-                    others = [lp for lp in lp_candidates if lp not in preferred]
-                    pick_lps = preferred + others
-                else:
-                    pick_lps = lp_candidates
-                for lp_name in pick_lps:
-                    u_lp = self._u_transition_by_source_transport.get((lp_name, "TM1"))
-                    if u_lp is not None and mask[u_lp]:
-                        return int(u_lp)
+            u_lp = self._u_transition_by_source_transport.get(("LP", "TM1"))
+            if u_lp is not None and mask[u_lp]:
+                return int(u_lp)
 
         return None
 
@@ -1471,7 +1372,6 @@ class ClusterTool:
             return result
 
         # release_control_places：单路线用全局 WIP；双子路径按类型上限；节拍入口由 route_meta 指定。
-        required_release_type = self._resolve_required_release_type_for_entry_heads()
         if self._multi_subpath or sum(self._entered_wafer_count_by_type.values()) < int(self.max_wafers1_in_system):
             for place_name in self._release_control_places:
                 control_place = self._place_by_name.get(place_name)
@@ -1479,8 +1379,6 @@ class ClusterTool:
                     continue
                 head = control_place.tokens[0]
                 route_type = int(getattr(head, "route_type", 1) or 1)
-                if required_release_type is not None and route_type != required_release_type:
-                    continue
                 if int(self._entry_delay_remaining(route_type)) > 0:
                     continue
                 expected_place = self._wafer_type_to_release_place.get(
@@ -1581,7 +1479,7 @@ class ClusterTool:
                 mask[start] = True
 
         if self._concurrent:
-            self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask, required_release_type)
+            self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask)
 
         if use_tm:
             return self._tm_masks_from_full(mask)

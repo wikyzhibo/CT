@@ -3,10 +3,9 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from results.paths import topology_cache_path
 
 
-_FIXED_CASCADE_TOPOLOGY_VERSION = 6
+_FIXED_CASCADE_TOPOLOGY_VERSION = 7
 _FIXED_CASCADE_PLACE_ORDER: Tuple[str, ...] = (
-    "LP1",
-    "LP2",
+    "LP",
     "AL",
     "LLA",
     "PM1",
@@ -29,8 +28,7 @@ _FIXED_CASCADE_PLACE_ORDER: Tuple[str, ...] = (
     "TM3",
 )
 _FIXED_CASCADE_SOURCES: Tuple[str, ...] = (
-    "LP1",
-    "LP2",
+    "LP",
     "AL",
     "LLA",
     "PM1",
@@ -57,8 +55,7 @@ _FIXED_CASCADE_TARGETS: Tuple[str, ...] = (
 )
 _FIXED_CASCADE_TRANSPORTS: Tuple[str, ...] = ("TM1", "TM2", "TM3")
 _TM1_SCOPE: frozenset[str] = frozenset({
-    "LP1",
-    "LP2",
+    "LP",
     "AL",
     "LLA",
     "LLB",
@@ -66,8 +63,7 @@ _TM1_SCOPE: frozenset[str] = frozenset({
     "LP_done",
 })
 _TM2_SCOPE: frozenset[str] = frozenset({
-    "LP1",
-    "LP2",
+    "LP",
     "LLA",
     "PM7",
     "PM8",
@@ -124,7 +120,7 @@ def _build_topology() -> Dict[str, object]:
             id2t_name.append(t_name)
             u_edges.append((src, t_name, transport))
         for dst in _FIXED_CASCADE_TARGETS:
-            if dst not in scope or dst in ("LP1", "LP2"):
+            if dst not in scope or dst == "LP":
                 continue
             t_name = f"t_{transport}_{dst}"
             id2t_name.append(t_name)

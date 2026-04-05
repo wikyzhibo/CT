@@ -28,7 +28,7 @@ def test_route_2_1_builds_tm1_outer_chain_and_real_capacities():
 
     assert {"TM1", "AL", "LLA", "LLB", "CL"}.issubset(set(info["id2p_name"]))
     assert {
-        "u_LP1_TM1",
+        "u_LP_TM1",
         "u_AL_TM1",
         "u_LLB_TM1",
         "u_CL_TM1",
@@ -47,7 +47,7 @@ def test_route_2_1_builds_tm1_outer_chain_and_real_capacities():
         ["PM9", "PM10"],
         ["LLB"],
     ]
-    assert info["route_meta"]["release_control_places"] == ("LLA",)
+    assert info["route_meta"]["release_control_places"] == ("LP",)
 
     capacity = _capacity_map(info)
     assert capacity["AL"] == 1
@@ -63,7 +63,7 @@ def test_route_1_1_uses_tm1_outer_chain_like_2_1():
     assert "t_TM1_LP_done" in info["id2t_name"]
     assert "t_TM2_LP_done" not in info["id2t_name"]
     assert {
-        "u_LP1_TM1",
+        "u_LP_TM1",
         "u_AL_TM1",
         "u_LLB_TM1",
         "u_CL_TM1",
@@ -72,7 +72,7 @@ def test_route_1_1_uses_tm1_outer_chain_like_2_1():
         "t_TM1_CL",
         "t_TM1_LP_done",
     }.issubset(set(info["id2t_name"]))
-    assert info["route_meta"]["release_control_places"] == ("LLA",)
+    assert info["route_meta"]["release_control_places"] == ("LP",)
 
 
 def test_concurrent_env_exposes_triple_masks_and_tm1_prefix_step():

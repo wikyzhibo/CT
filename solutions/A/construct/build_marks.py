@@ -165,7 +165,7 @@ def build_marks_for_single_net(
     scrap_clip = scrap_clip_threshold
     tm_caps = {str(k): int(v) for k, v in dict(transport_capacities or {}).items()}
 
-    load_ports = tuple(name for name in ("LP1", "LP2") if name in p_idx)
+    load_ports = tuple(name for name in ("LP", "LP1", "LP2") if name in p_idx)
     if lp_per_token is None:
         lp_per_token = tuple(source_name for _ in range(int(n_wafer)))
     counts: Dict[str, int] = {}
