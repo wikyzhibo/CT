@@ -7,10 +7,8 @@ processing_coef_reward: 5.0
 in_system_time_penalty_coef: 0.0
 done_event_reward: 500
 scrap_event_penalty: 4000
-wait_durations:
-  - 5
+wait_duration: 5
 cleaning_enabled: false
-stride: true
 single_route_config_path: route_config.json
 single_route_name: "2-2"
 dual_arm: true

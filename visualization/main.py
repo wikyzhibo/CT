@@ -396,7 +396,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
                 obs_f = torch.as_tensor(env._build_obs(), dtype=torch.float32).unsqueeze(0)
                 _mask_tm1_np, mask_tm2_np, mask_tm3_np = env.net.get_action_mask(
                     wait_action_start=int(env.net.T),
-                    n_actions=int(env.net.T + len(env.wait_durations)),
+                    n_actions=int(env.net.T + 1),
                 )
                 mask_tm2 = torch.as_tensor(mask_tm2_np, dtype=torch.bool).unsqueeze(0)
                 mask_tm3 = torch.as_tensor(mask_tm3_np, dtype=torch.bool).unsqueeze(0)

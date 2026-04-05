@@ -619,19 +619,15 @@ class PetriMainWindow(QMainWindow):
             self.right_panel.update_actions(actions_for_panel, device_mode="single")
         self._update_route_banner_text()
         if self._device_mode == "single" and hasattr(self.viewmodel.adapter, "env"):
-            wait_durations = list(getattr(self.viewmodel.adapter.env, "wait_durations", [5]))
-            wait_enabled_map = {}
-            for action in state.enabled_actions:
-                action_name = str(getattr(action, "action_name", ""))
-                if not action_name.upper().startswith("WAIT_"):
-                    continue
-                wait_text = action_name.removeprefix("WAIT_").removesuffix("s")
-                try:
-                    wait_duration = int(wait_text)
-                except ValueError:
-                    continue
-                wait_enabled_map[wait_duration] = bool(getattr(action, "enabled", False))
-            self.right_panel.set_wait_durations(wait_durations, enabled_map=wait_enabled_map)
+            wait_duration = int(getattr(self.viewmodel.adapter.env, "wait_duration", 5))
+            wait_enabled = any(
+                str(getattr(a, "action_name", "")).upper().startswith("WAIT_")
+                and bool(getattr(a, "enabled", False))
+                for a in state.enabled_actions
+            )
+            self.right_panel.set_wait_durations(
+                [wait_duration], enabled_map={wait_duration: wait_enabled}
+            )
 
     def _on_done_changed(self, done: bool) -> None:
         if done:
@@ -903,9 +899,7 @@ class PetriMainWindow(QMainWindow):
         if key == Qt.Key.Key_W:
             default_wait = 5
             if self._device_mode == "single" and hasattr(self.viewmodel.adapter, "env"):
-                wait_durations = list(getattr(self.viewmodel.adapter.env, "wait_durations", [5]))
-                if wait_durations:
-                    default_wait = int(min(wait_durations))
+                default_wait = int(getattr(self.viewmodel.adapter.env, "wait_duration", 5))
             self._on_wait_clicked(default_wait)
         # elif key == Qt.Key.Key_R: self._on_random_clicked() # Removed
         elif key == Qt.Key.Key_M:

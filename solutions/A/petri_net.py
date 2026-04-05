@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
-from solutions.A.utils import _normalize_wait_durations
 import numpy as np
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.construct import BasedToken
@@ -43,9 +42,7 @@ class ClusterTool:
 
         # ====== 3) 清洗配置（map 来自配置/路线；开关由 cleaning_enabled） ======
         self._cleaning_enabled = bool(config.cleaning_enabled)
-        self.wait_durations = _normalize_wait_durations(config.wait_durations)
-        self.stride = config.stride
-        self._stride_single_wait_mode = True
+        self.wait_duration: int = int(config.wait_duration)
         
         # ====== 6) 构网输入与构网结果 ======
         self.ttime = 5
@@ -248,7 +245,7 @@ class ClusterTool:
         SCRAPE = False
         self._last_deadlock = False
         _mask_start = int(self.T)
-        _mask_n = _mask_start + len(self.wait_durations)
+        _mask_n = _mask_start + 1
         _lp_done = self._lp_done
 
         if self.time >= self.MAX_TIME:
@@ -275,22 +272,14 @@ class ClusterTool:
         t1 = self.time
 
         if do_wait:
-            requested_wait = (
-                int(wait_duration)
-                if wait_duration is not None
-                else int(self.wait_durations[0] if self.wait_durations else 5)
-            )
+            requested_wait = int(wait_duration) if wait_duration is not None else self.wait_duration
             next_event_delta: Optional[int] = None
             episode_finished = len(_lp_done.tokens) >= self.n_wafer
             if episode_finished and requested_wait > 5:
                 actual_dt = 5
-            elif requested_wait == 5 and not self._stride_single_wait_mode:
-                actual_dt = requested_wait
-            elif requested_wait == 5 and self._stride_single_wait_mode:
+            elif requested_wait == 5:
                 next_event_delta = self.get_next_event_delta()
-                if next_event_delta is None:
-                    actual_dt = requested_wait
-                elif next_event_delta <= 0:
+                if next_event_delta is None or next_event_delta <= 0:
                     actual_dt = requested_wait
                 else:
                     actual_dt = int(next_event_delta)
@@ -411,7 +400,7 @@ class ClusterTool:
         T = int(self.T)
         mask = self.get_action_mask(
             wait_action_start=T,
-            n_actions=T + len(self.wait_durations),
+            n_actions=T + 1,
             concurrent=False,
         )
         enabled_t = sorted(i for i in range(T) if bool(mask[i]))
@@ -1214,7 +1203,7 @@ class ClusterTool:
                 delta_takt = min(deltas)
                 if delta_takt > 0 and (best is None or delta_takt < best):
                     best = delta_takt
-        return 5 if (self.stride and has_important_task) else best
+        return 5 if has_important_task else best
 
     def _on_processing_unload(self, source_name: str) -> None:
         """处理加工腔卸片后的清洗计数与清洗状态"""
@@ -1464,7 +1453,7 @@ class ClusterTool:
         use_tm = self._concurrent if concurrent is None else bool(concurrent)
         start = int(self.T if wait_action_start is None else wait_action_start)
         total_actions = int(
-            n_actions if n_actions is not None else (start + len(self.wait_durations))
+            n_actions if n_actions is not None else (start + 1)
         )
         mask = np.zeros(total_actions, dtype=bool)
         struct_enabled_cache: Dict[int, bool] = {}
@@ -1587,13 +1576,9 @@ class ClusterTool:
                         has_ready_chamber = True
                         break
 
-        wait_durations = self.wait_durations
-        for offset in range(len(wait_durations)):
-            if has_ready_chamber and wait_durations[offset] > 5:
-                continue
-            idx = start + offset
-            if 0 <= idx < total_actions:
-                mask[idx] = True
+        if not (has_ready_chamber and self.wait_duration > 5):
+            if 0 <= start < total_actions:
+                mask[start] = True
 
         if self._concurrent:
             self._cached_auto_tm1_action = self._pick_tm1_from_mask(mask, required_release_type)

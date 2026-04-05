@@ -14,10 +14,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-def _default_wait_durations() -> List[int]:
-    return [5, 10, 20, 50, 100]
-
-
 class PetriEnvConfig(BaseModel):
     """
     Petri 网环境配置。
@@ -54,8 +50,7 @@ class PetriEnvConfig(BaseModel):
     single_route_config_path: Optional[str] = None
     single_route_name: Optional[str] = None
     process_time_map: Optional[Dict[str, int]] = None
-    wait_durations: List[int] = Field(default_factory=_default_wait_durations)
-    stride: bool = True
+    wait_duration: int = 5
 
     chambers: Optional[Dict[str, Dict[str, Any]]] = None
     cleaning_trigger_wafers_map: Optional[Dict[str, int]] = None
@@ -147,7 +142,7 @@ class PetriEnvConfig(BaseModel):
         elif self.single_route_config_path:
             sel = self.single_route_name or "<auto>"
             lines.append(f"  单设备配置驱动路径文件: {self.single_route_config_path} (route={sel})")
-        lines.append(f"  关键事件 WAIT 截断: {self.stride}")
+        lines.append(f"  WAIT 时长: {self.wait_duration}s")
 
         if self.end_place_name != "LP_done":
             lines.append(f"  终点库所: {self.end_place_name}")
@@ -207,7 +202,7 @@ class PetriEnvConfig(BaseModel):
         lines.append(f"  single_route_config: {'set' if self.single_route_config is not None else 'None'}")
         lines.append(f"  single_route_config_path: {self.single_route_config_path}")
         lines.append(f"  single_route_name: {self.single_route_name}")
-        lines.append(f"  stride: {self.stride}")
+        lines.append(f"  wait_duration: {self.wait_duration}")
         lines.append("\n【奖励分项】固定全开（无 reward_config）")
 
         lines.append("=" * 60)

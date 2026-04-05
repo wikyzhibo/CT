@@ -31,20 +31,15 @@ except Exception:  # pragma: no cover - numba 可选依赖
 def _step_core_numpy(
     action: int,
     wait_action_start: int,
-    wait_durations: np.ndarray,
+    wait_duration: int,
 ) -> Tuple[bool, int, int]:
     """
     纯 numpy 数值路径：解析动作类型与参数。
     返回: (is_wait, transition_idx, wait_duration)
     """
-    a = int(action)
-    start = int(wait_action_start)
-    if a >= start:
-        idx = a - start
-        if idx < 0 or idx >= int(wait_durations.shape[0]):
-            return True, -1, int(wait_durations[0]) if wait_durations.size > 0 else 5
-        return True, -1, int(wait_durations[idx])
-    return False, a, 0
+    if int(action) >= int(wait_action_start):
+        return True, -1, int(wait_duration)
+    return False, int(action), 0
 
 
 if njit is not None:
@@ -52,19 +47,11 @@ if njit is not None:
     def step_core_numba(
         action: int,
         wait_action_start: int,
-        wait_durations: np.ndarray,
+        wait_duration: int,
     ) -> Tuple[np.bool_, np.int64, np.int64]:
-        a = int(action)
-        start = int(wait_action_start)
-        if a >= start:
-            idx = a - start
-            if idx < 0 or idx >= wait_durations.shape[0]:
-                fallback = 5
-                if wait_durations.shape[0] > 0:
-                    fallback = int(wait_durations[0])
-                return True, -1, fallback
-            return True, -1, int(wait_durations[idx])
-        return False, a, 0
+        if int(action) >= int(wait_action_start):
+            return True, -1, int(wait_duration)
+        return False, int(action), 0
 else:
     step_core_numba = _step_core_numpy
 
@@ -75,7 +62,7 @@ def _load_cascade_runtime_config(
     single_route_config: Optional[Dict[str, Any]] = None,
     single_route_name: Optional[str] = None,
     process_time_map: Optional[Dict[str, int]] = None,
-    wait_durations: Optional[List[int]] = None,
+    wait_duration: Optional[int] = None,
 ) -> PetriEnvConfig:
     config_dir = Path(__file__).parents[2] / "config" / "cluster_tool"
     base_config = PetriEnvConfig.load(config_dir / "cascade.yaml")
@@ -90,8 +77,8 @@ def _load_cascade_runtime_config(
         payload["process_time_map"] = {
             str(chamber): int(value) for chamber, value in dict(process_time_map).items()
         }
-    if wait_durations is not None:
-        payload["wait_durations"] = [int(value) for value in list(wait_durations)]
+    if wait_duration is not None:
+        payload["wait_duration"] = int(wait_duration)
     return PetriEnvConfig.model_validate(payload)
 
 
@@ -164,8 +151,7 @@ class Env_PN_Single(EnvBase):
         )
 
         self.net = ClusterTool(config=config, concurrent=False)
-        # 与 pn_single 保持同一份 wait 档位来源，避免 env/net 两处规则漂移。
-        self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
+        self.wait_duration: int = int(getattr(self.net, "wait_duration", 5))
         self.action_catalog = self._build_action_catalog()
         self.n_actions = len(self.action_catalog)
         self.wait_action_start = int(self.net.T)
@@ -178,24 +164,9 @@ class Env_PN_Single(EnvBase):
             seed = torch.empty((), dtype=torch.int64).random_().item()
         self.set_seed(seed)
 
-    @staticmethod
-    def _normalize_wait_durations(durations) -> List[int]:
-        values: List[int] = []
-        for raw in list(durations or []):
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if value > 0:
-                values.append(value)
-        if not values:
-            values = [5]
-        return sorted(set(values))
-
     def _build_action_catalog(self) -> List[Tuple[str, int]]:
-        # 多档 wait 统一在动作目录里维护，避免在 if-else 中散落硬编码。
         catalog: List[Tuple[str, int]] = [("transition", int(t)) for t in range(int(self.net.T))]
-        catalog.extend(("wait", int(duration)) for duration in self.wait_durations)
+        catalog.append(("wait", self.wait_duration))
         return catalog
 
     def _decode_action(self, action: int) -> Tuple[str, int]:
@@ -319,11 +290,10 @@ class Env_PN_Concurrent(EnvBase):
             single_route_config=single_route_config,
             single_route_name=single_route_name,
             process_time_map=process_time_map,
-            wait_durations=[5],
         )
 
         self.net = ClusterTool(config=config, concurrent=True)
-        self.wait_durations = list(getattr(self.net, "wait_durations", [5]))
+        self.wait_duration: int = int(getattr(self.net, "wait_duration", 5))
         self.tm1_transition_indices = list(getattr(self.net, "_tm1_transition_indices", []))
         self.n_actions_tm1 = len(self.tm1_transition_indices) + 1
         self.tm1_wait_action = len(self.tm1_transition_indices)
@@ -375,7 +345,7 @@ class Env_PN_Concurrent(EnvBase):
         obs = self._build_obs()
         mask_tm1, mask_tm2, mask_tm3 = self.net.get_action_mask(
             wait_action_start=int(self.net.T),
-            n_actions=int(self.net.T + len(self.wait_durations)),
+            n_actions=int(self.net.T + 1),
         )
         return TensorDict({
             "observation": torch.as_tensor(obs, dtype=torch.float32),
@@ -436,13 +406,13 @@ class FastEnvWrapper:
 
         if hasattr(env, "wait_action_start"):
             self.wait_action_start = int(env.wait_action_start)
-            self.wait_durations = np.asarray(getattr(env, "wait_durations", [5]), dtype=np.int64)
+            self.wait_duration: int = int(getattr(env, "wait_duration", 5))
         elif hasattr(env, "net"):
             self.wait_action_start = int(getattr(env.net, "T", 0))
-            self.wait_durations = np.asarray(getattr(env.net, "wait_durations", [5]), dtype=np.int64)
+            self.wait_duration = int(getattr(env.net, "wait_duration", 5))
         else:
             self.wait_action_start = 0
-            self.wait_durations = np.asarray([5], dtype=np.int64)
+            self.wait_duration = 5
 
     def _as_numpy(self, x: Any, dtype: np.dtype | None = None) -> np.ndarray:
         if isinstance(x, np.ndarray):
@@ -473,7 +443,7 @@ class FastEnvWrapper:
             is_wait, transition_idx, wait_duration = step_core_numba(
                 int(action),
                 self.wait_action_start,
-                self.wait_durations,
+                self.wait_duration,
             )
             if bool(is_wait):
                 done, reward_result, scrap, action_mask, obs = self.env.net.step(
@@ -523,7 +493,7 @@ class FastEnvWrapper:
             mask = np.asarray(
                 self.env.net.get_action_mask(
                     wait_action_start=int(self.wait_action_start),
-                    n_actions=int(self.wait_action_start + len(self.wait_durations)),
+                    n_actions=int(self.wait_action_start + 1),
                 ),
                 dtype=np.bool_,
             )
@@ -572,7 +542,7 @@ class FastEnvWrapper_Concurrent:
         obs = np.asarray(self.env._build_obs(), dtype=np.float32)
         mask_tm1, mask_tm2, mask_tm3 = self.env.net.get_action_mask(
             wait_action_start=int(self.env.net.T),
-            n_actions=int(self.env.net.T + len(self.env.wait_durations)),
+            n_actions=int(self.env.net.T + 1),
         )
         return obs, {
             "action_mask_tm1": mask_tm1.astype(np.bool_),

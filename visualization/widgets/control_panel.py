@@ -80,7 +80,7 @@ class ControlPanel(QWidget):
         layout.addLayout(self.wait_buttons_row)
         self.wait_buttons: List[QPushButton] = []
         self._wait_durations: List[int] = []
-        self.set_wait_durations([5, 10, 20, 50, 100])
+        self.set_wait_durations([5])
 
         # Random button removed
 

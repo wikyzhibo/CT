@@ -31,7 +31,7 @@ def test_tm1_pick_prefers_lp_matching_ratio_when_cycle_wants_type2():
     start = int(net.T)
     net.get_action_mask(
         wait_action_start=start,
-        n_actions=start + len(net.wait_durations),
+        n_actions=start + 1,
     )
     act = net._cached_auto_tm1_action
     assert act is not None
@@ -48,7 +48,7 @@ def test_tm1_pick_starts_with_lp1_when_cycle_wants_type1():
     start = int(net.T)
     net.get_action_mask(
         wait_action_start=start,
-        n_actions=start + len(net.wait_durations),
+        n_actions=start + 1,
     )
     act = net._cached_auto_tm1_action
     assert act is not None
