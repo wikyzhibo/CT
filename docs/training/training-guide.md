@@ -45,10 +45,11 @@
   - 训练结束若存在 `results/models/CT_concurrent_best.pt`，与单动作路径相同会调用 `export_inference_sequence.rollout_and_export(..., concurrent=True)` 写出 `results/action_sequences/` 下 JSON 与 `results/gantt/` 下甘特 PNG（`run_name` 为 `train_concurrent` 或 `--artifact-dir` 安全名前缀；需 `render_gantt` 成功则见 `docs/gantt.md`）
 - A 方案多路线批量训练 + 评估（固定并发）:
   - `python -m solutions.A.eval.validate_all_routes`
-  - 可选参数: `--retry`, `--compute-device`, `--rollout-n-envs`
+  - 可选参数: `--retry`, `--compute-device`, `--rollout-n-envs`, `--lite`
   - 路线配置在 `solutions/A/eval/validate_all_routes.py` 的 `ROUTE_PLAN` 中统一维护；每条路线必须同时提供 `train`、`eval`、`profile`
   - 训练档位只接受 `low` / `medium` / `high`，分别从 `config/training/low.yaml`、`medium.yaml`、`high.yaml` 读取
   - 统一训练时 `solutions.A.ppo_trainer` 不打印训练配置和逐 batch 指标，只显示一个 batch 进度条；最终汇总写入 `results/training_logs/validate_all_routes_summary.json`
+  - 轻量模式（`--lite`）会关闭甘特图与 `training_metrics_plot` 绘制，并在每条路线评估结束打印 `route=<route> [progress] mode=<profile> eval_finish@W<eval_n_wafer>=YES|NO`
 - 导出推理序列:
   - `python -m solutions.A.eval.export_inference_sequence --model <model_path>`（默认级联 `MaskedPolicyHead`；`--concurrent` 使用 `DualHeadPolicyNet` 只决策 TM2/TM3；TM1 为 `ClusterTool` 规则自动执行，导出仍写 `actions=[tm1, tm2, tm3]` 且 `action_tm1` 为规则解码；输出 `results/action_sequences/<out_name>(W<n_wafer>-M<time>).json`，`n_wafer`/`time` 来自 rollout 结束时的 `env.net`；默认 `--out-name tmp`；rollout 最大步数固定为模块常量 `MAX_STEPS=10000` 不可通过 CLI 修改）
   - `--model` 为已存在的 `.pt` 文件路径时直接使用；否则按 `results/models/<相对路径>` 解析。
@@ -66,6 +67,7 @@
 7. 并发模式由训练入口选用 `Env_PN_Concurrent`，对应 `ClusterTool(..., concurrent=True)`；`TM1/TM2/TM3` 掩码以 `ClusterTool.get_action_mask`（并发实例返回三段局部掩码）与当前 `id2t_name` 为唯一真源；禁止继续绑定 `deprecated.pn.Petri` 的旧动作名集合。
 8. 多路线批量训练只接受 `single_route_name + single_route_config` 作为路线真源；禁止恢复 `route_code` 口径。
 9. `validate_all_routes` 中训练 makespan 取 best batch 指标；评估 makespan 取 best 权重在评估晶圆数上的 rollout 结果。
+10. `validate_all_routes --lite` 只关闭绘图（甘特图与 `training_metrics_plot`），不改变 summary 表头、summary JSON 字段和评估序列导出。
 
 ## Examples
 - 正例:
@@ -77,6 +79,7 @@
   - A 方案并发 + 4 并行环境: `python -m solutions.A.ppo_trainer --rollout-n-envs 4`
   - A 方案单动作回退: `python -m solutions.A.ppo_trainer --no-concurrent --device cascade`
   - A 方案多路线批量训练 + 评估: `python -m solutions.A.eval.validate_all_routes --rollout-n-envs 4`
+  - A 方案多路线轻量模式: `python -m solutions.A.eval.validate_all_routes --rollout-n-envs 4 --lite`
 - 反例:
   - 将 concurrent 参数传给 train_single。
   - 在 A 方案并发模式中假设存在 `WAIT_10s/20s` 等多档 WAIT（不存在，仅 `WAIT_5s`）。
@@ -90,6 +93,7 @@
 - `solutions.A.ppo_trainer` 在单动作与并发训练结束时，只要 `CT_single_best.pt` / `CT_concurrent_best.pt` 存在即调用 `rollout_and_export`（单动作为 `concurrent=False` 级联导出，并发为 `concurrent=True`），写出动作序列 JSON 并尝试甘特；与是否传入 `--artifact-dir` 无关。甘特文件名由 `plot_gantt_hatched_residence` 在基路径上追加策略后缀（见 `docs/gantt.md`）。`ClusterTool.render_gantt` 从 `fire_log` 写 PNG；若 rollout 无腔室进出事件则调用会失败（见 `docs/gantt.md`）。标题后缀为 `title_suffix`（`路径 <single_route_name>`）。
 - `validate_all_routes` 的 `ROUTE_PLAN` 中每条路线都必须同时提供 `train` / `eval` / `profile`；任一缺项都会直接报错。
 - `validate_all_routes` 的 summary 固定写 `results/training_logs/validate_all_routes_summary.json`；若某路线训练阶段没有产出 best 模型，则该路线评估字段保留为空。
+- `validate_all_routes` 的评估成功判定固定为 `eval_summary["finished"]`；路线级输出中的 `eval_finish@W<eval_n_wafer>=YES|NO` 仅基于该布尔值。
 
 ## Related Docs
 - `../overview/project-context.md`
@@ -98,6 +102,7 @@
 - `../deprecated/continuous-solution-design.md`
 
 ## Change Notes
+- 2026-04-05: `solutions/A/eval/validate_all_routes.py` 新增 `--lite`/`lite` 轻量模式：训练与评估禁用甘特图、训练禁用 `training_metrics_plot`，并在每条路线评估结束输出 `route=<route> [progress] mode=<profile> eval_finish@W<eval_n_wafer>=YES|NO`；`_format_summary_table` 与 summary JSON 字段不变。`solutions/A/ppo_trainer.py` 新增 `draw_training_metrics_plot` 与 `draw_gantt` 开关并透传到并发/单动作共用后处理链路。
 - 2026-04-04: `solutions/A/eval/export_inference_sequence.py` 与 `visualization/main.py` 的环境创建统一复用 `solutions.A.rl_env.make_env(...)`；共享 `runtime_mode` 校验、并发仅 `cascade`、以及 `n_wafer/single_route_name/single_route_config/process_time_map` override 过滤；保留 `single_process_time_map` 兼容别名；CLI、导出字段与默认行为不变。
 - 2026-04-02: `solutions/A/eval/validate_all_routes.py` 将 `ROUTE_WAFER_PLAN` 与 `ROUTE_TRAINING_PROFILE` 合并为单一 `ROUTE_PLAN`；路线配置统一写 `train` / `eval` / `profile`；训练档位固定读取 `config/training/low.yaml` / `medium.yaml` / `high.yaml`；统一训练时 `ppo_trainer` 改为单进度条输出并返回结构化 summary；summary 写入 `results/training_logs/validate_all_routes_summary.json`；见 `docs/CHANGELOG.md`。
 - 2026-04-02: `solutions/A/eval/export_inference_sequence.py`：CLI 收敛为默认级联、`--concurrent` 选双头模型；移除 `--device`、`--max-steps`、`--robot-capacity`、`--force-overwrite-planb`；`--single-retries` 改为 `--retry`；`rollout_and_export` 使用 `concurrent`/`retry`；`ppo_trainer` 训练产物导出步数与 `MAX_STEPS=10000` 对齐；序列文件名为 `<out_name>(W<env.net.n_wafer>-M<env.net.time>).json`；见 `docs/CHANGELOG.md`。

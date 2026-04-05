@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-04-05
+
+### A 方案：`validate_all_routes` 新增轻量模式与路线级评估行输出（2026-04-05）
+
+- **What changed**：`solutions/A/eval/validate_all_routes.py` 的 `run_all_routes(...)` 新增 `lite: bool=False`，CLI 新增 `--lite`。轻量模式下训练调用 `train_single(..., draw_training_metrics_plot=False, draw_gantt=False)`，评估调用 `rollout_and_export(..., gantt_png_path=None)`；每条路线评估结束打印 `route=<route_name> [<bar>] <idx>/<total> mode=<profile> eval_finish@W<eval_n_wafer>=YES|NO`。`solutions/A/ppo_trainer.py` 新增 `draw_training_metrics_plot` 与 `draw_gantt` 开关，并在并发/单动作共用后处理链路中生效。
+- **Why**：多路线批量验证需要可选的低开销运行路径，避免生成甘特图和训练指标图，同时保留路线级即时可见的评估完成状态。
+- **Impact**：`validate_all_routes` 默认行为不变（仍绘图）；开启 `--lite` 后仅关闭甘特图与 `training_metrics_plot`，训练日志/指标 JSON、评估序列导出、`_format_summary_table(...)` 与 `results/training_logs/validate_all_routes_summary.json` 字段保持不变。评估成功判定固定使用 `eval_summary["finished"]`。
+
 ## 2026-04-04
 
 ### 可视化：甘特图 `plot_gantt_hatched_residence` 几何批量绘制（2026-04-04）
