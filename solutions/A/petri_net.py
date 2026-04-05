@@ -672,7 +672,7 @@ class ClusterTool:
 
             # 更新 token 路由索引
             tok.route_head_idx += 1
-            # LP发片节拍控制
+            # 发片节拍控制（release_control_place 进入时挂载倒计时）
             if t_name.startswith("t_") and pst_place.name in self._release_control_places:
                 self._apply_entry_release_delay(tok)
             pst_place.append(tok)

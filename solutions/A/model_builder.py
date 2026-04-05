@@ -660,11 +660,12 @@ def build_net(n_wafer1: int,
         int(tid): "LP"
         for tid in wafer_type_to_subpath
     }
+    _release_place = "LLA" if wrap_tm1_prefix_suffix else "LP"
     route_meta["wafer_type_to_release_place"] = {
-        int(tid): "LP"
+        int(tid): _release_place
         for tid in wafer_type_to_subpath
     }
-    route_meta["release_control_places"] = ("LP",)
+    route_meta["release_control_places"] = (_release_place,)
     route_meta["cleaning_duration_map"] = {
         str(name): int(block.cleaning_duration) for name, block in chamber_blocks.items()
     }
