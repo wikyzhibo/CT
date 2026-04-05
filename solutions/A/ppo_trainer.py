@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict, deque
 from datetime import datetime
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
@@ -280,6 +280,10 @@ def _train_concurrent(
     env_overrides: dict[str, Any] | None = None,
     batch_progress_only: bool = False,
     progress_label: str | None = None,
+    show_batch_progress: bool = True,
+    batch_progress_callback: Callable[[int, int], None] | None = None,
+    draw_training_metrics_plot: bool = True,
+    draw_gantt: bool = True,
     return_summary: bool = False,
 ):
     """
@@ -499,18 +503,21 @@ def _train_concurrent(
         log["policy_loss"].append(update_stats["policy_loss"])
         log["value_loss"].append(update_stats["value_loss"])
         log["entropy"].append(update_stats["entropy"])
+        if batch_progress_callback is not None:
+            batch_progress_callback(batch_idx + 1, int(config.total_batch))
 
-        if batch_progress_only:
+        if batch_progress_only and show_batch_progress:
             _write_batch_progress(progress_text, batch_idx + 1, int(config.total_batch), eta_str)
         else:
-            print(
-                f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
-                f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
-                f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
-                f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
-                f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
-                flush=True,
-            )
+            if not batch_progress_only:
+                print(
+                    f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
+                    f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
+                    f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
+                    f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
+                    f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
+                    flush=True,
+                )
 
         if ep_reward > best_reward and finish_count > 0:
             best_reward = ep_reward
@@ -533,20 +540,21 @@ def _train_concurrent(
     rollout_pct = (avg_rollout / avg_batch * 100) if avg_batch > 0 else 0.0
     update_pct = (avg_update / avg_batch * 100) if avg_batch > 0 else 0.0
 
-    if batch_progress_only:
+    if batch_progress_only and show_batch_progress:
         _finish_batch_progress()
     else:
-        print("\n[Concurrent Training Summary]", flush=True)
-        print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
-        print(f"  总 env steps: {total_env_steps}", flush=True)
-        print(
-            f"  平均 batch: {avg_batch:.2f}s "
-            f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
-            f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
-            flush=True,
-        )
-        print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
-        print(f"  Best reward: {best_reward:.2f}", flush=True)
+        if not batch_progress_only:
+            print("\n[Concurrent Training Summary]", flush=True)
+            print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
+            print(f"  总 env steps: {total_env_steps}", flush=True)
+            print(
+                f"  平均 batch: {avg_batch:.2f}s "
+                f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
+                f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
+                flush=True,
+            )
+            print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
+            print(f"  Best reward: {best_reward:.2f}", flush=True)
 
     torch.save(policy_module.state_dict(), backup_dir / "CT_concurrent_final.pt")
     torch.save(policy_module.state_dict(), run_final_model_path)
@@ -558,7 +566,7 @@ def _train_concurrent(
     metrics_png = training_log_output_path(f"{run_name}_training_metrics_plot.png").with_suffix(".png")
     _save_training_log_json(log, training_log_path)
     _save_training_metrics_json(log, training_metrics_path)
-    if log.get("reward"):
+    if draw_training_metrics_plot and log.get("reward"):
         plot_metrics(training_metrics_path, metrics_png, route_label=route_label or "路径 concurrent")
         if not batch_progress_only:
             print(f"[artifact] metrics_plot={metrics_png}", flush=True)
@@ -569,6 +577,7 @@ def _train_concurrent(
         route_label,
         concurrent=True,
         env_overrides=env_overrides,
+        draw_gantt=draw_gantt,
         verbose=not batch_progress_only,
     )
     has_best_batch = best_batch_index > 0
@@ -1204,6 +1213,7 @@ def _postprocess_training_artifacts(
     route_label: str | None,
     concurrent: bool = False,
     env_overrides: dict[str, Any] | None = None,
+    draw_gantt: bool = True,
     verbose: bool = True,
 ) -> None:
     if not best_model_path.is_file():
@@ -1215,7 +1225,7 @@ def _postprocess_training_artifacts(
         "train_concurrent_run" if concurrent else "train_single_run",
     )
     seq_name = Path(action_sequence_path(safe_run_name)).stem
-    gantt_png = gantt_output_path(f"{safe_run_name}_gantt.png")
+    gantt_png = gantt_output_path(f"{safe_run_name}_gantt.png") if draw_gantt else None
     out = rollout_and_export(
         model_path=best_model_path,
         seed=int(config.seed),
@@ -1230,7 +1240,8 @@ def _postprocess_training_artifacts(
     seq_path = out["action_series_path"]
     if verbose:
         print(f"[artifact] seq={seq_path}", flush=True)
-        print(f"[artifact] gantt={gantt_png}", flush=True)
+        if draw_gantt:
+            print(f"[artifact] gantt={gantt_png}", flush=True)
 
 
 def train_single(
@@ -1243,6 +1254,10 @@ def train_single(
     env_overrides: dict[str, Any] | None = None,
     batch_progress_only: bool = False,
     progress_label: str | None = None,
+    show_batch_progress: bool = True,
+    batch_progress_callback: Callable[[int, int], None] | None = None,
+    draw_training_metrics_plot: bool = True,
+    draw_gantt: bool = True,
     return_summary: bool = False,
 ):
     assert config is not None, "training config must be provided"
@@ -1256,6 +1271,10 @@ def train_single(
             env_overrides=env_overrides,
             batch_progress_only=batch_progress_only,
             progress_label=progress_label,
+            show_batch_progress=show_batch_progress,
+            batch_progress_callback=batch_progress_callback,
+            draw_training_metrics_plot=draw_training_metrics_plot,
+            draw_gantt=draw_gantt,
             return_summary=return_summary,
         )
 
@@ -1519,14 +1538,21 @@ def train_single(
     metrics_png = training_log_output_path(f"{run_name}_training_metrics_plot.png").with_suffix(".png")
     _save_training_log_json(log, training_log_path)
     _save_training_metrics_json(log, training_metrics_path)
-    if log.get("reward"):
+    if draw_training_metrics_plot and log.get("reward"):
         plot_metrics(
             training_metrics_path,
             metrics_png,
             route_label=route_label,
         )
         print(f"[artifact] metrics_plot={metrics_png}", flush=True)
-    _postprocess_training_artifacts(best_model_path, run_name, config, route_label, concurrent=False)
+    _postprocess_training_artifacts(
+        best_model_path,
+        run_name,
+        config,
+        route_label,
+        concurrent=False,
+        draw_gantt=draw_gantt,
+    )
     return log, policy_backbone
 
 

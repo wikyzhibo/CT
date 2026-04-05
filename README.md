@@ -53,7 +53,17 @@ python -m visualization.main --device cascade --model results/models/quickstart_
 python -m solutions.A.eval.validate_all_routes --rollout-n-envs 1
 ```
 
-运行期间训练阶段只显示一个 batch 进度条。最终会把汇总结果写到 `results/training_logs/validate_all_routes_summary.json`，其中包含每条路线的训练晶圆、best batch makespan、评估晶圆、评估 makespan、训练时间和评估动作序列路径。
+运行期间每条路线同一行动态刷新训练进度条，评估结束后在该行追加 `eval_pass=T/F`。最终会把汇总结果写到 `results/training_logs/validate_all_routes_summary.json`，其中包含每条路线的训练晶圆、best batch makespan、评估晶圆、评估 makespan、训练时间和评估动作序列路径。
+
+如需轻量模式（不绘制甘特图和 `training_metrics_plot`）：
+
+```bash
+python -m solutions.A.eval.validate_all_routes --rollout-n-envs 1 --lite
+```
+
+轻量模式下每条路线评估完成会输出一行：
+`<route_name> [<low|medium|high>] [########################] eval_pass=T/F`。
+最终汇总表 `_format_summary_table(...)` 与输出 JSON 字段保持不变。
 
 ## Python 导入入口
 

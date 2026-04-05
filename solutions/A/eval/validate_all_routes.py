@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from config.cluster_tool.env_config import PetriEnvConfig
@@ -8,6 +9,7 @@ from config.training.training_config import PPOTrainingConfig
 from results.paths import gantt_output_path, training_log_output_path
 from solutions.A.eval.export_inference_sequence import rollout_and_export
 from solutions.A.ppo_trainer import train_single
+from tqdm.auto import tqdm
 
 
 # 每条路线训练/评估使用的晶圆数与训练档位。
@@ -173,12 +175,55 @@ def _format_summary_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _format_route_eval_progress_line(
+    *,
+    route_name: str,
+    profile_name: str,
+    total_batch: int,
+    finished: bool,
+) -> str:
+    bar_prefix = _format_route_train_progress_prefix(
+        route_name=route_name,
+        profile_name=profile_name,
+        current_batch=total_batch,
+        total_batch=total_batch,
+    )
+    status = "T" if bool(finished) else "F"
+    return f"{bar_prefix} eval_pass={status}"
+
+
+def _format_route_train_progress_prefix(
+    *,
+    route_name: str,
+    profile_name: str,
+    current_batch: int,
+    total_batch: int,
+    width: int = 24,
+) -> str:
+    total_i = max(1, int(total_batch))
+    current_i = min(max(0, int(current_batch)), total_i)
+    filled = int(width * current_i / total_i)
+    bar = "#" * filled + " " * (width - filled)
+    return f"{route_name} [{profile_name}] [{bar}]"
+
+
+def _finish_route_eval_progress(route_name: str, profile_name: str, total_batch: int, finished: bool) -> None:
+    line = _format_route_eval_progress_line(
+        route_name=route_name,
+        profile_name=profile_name,
+        total_batch=total_batch,
+        finished=finished,
+    )
+    print(line, flush=True)
+
+
 def run_all_routes(
     *,
     route_plan: dict[str, dict[str, int | str]] | None = None,
     retry: int = 10,
     compute_device: str | None = None,
     rollout_n_envs: int = 1,
+    lite: bool = False,
 ) -> tuple[list[dict[str, Any]], Path]:
     route_config = _load_route_config()
     normalized_routes = _normalize_route_plan(
@@ -197,9 +242,30 @@ def run_all_routes(
         cfg = PPOTrainingConfig.load(config_path)
         if compute_device is not None:
             cfg.device = str(compute_device).strip()
+        total_batch = max(1, int(cfg.total_batch))
+
+        progress_bar = tqdm(
+            total=total_batch,
+            desc=f"{route_name} [{profile_name}]",
+            bar_format="{desc} [{bar:24}]",
+            dynamic_ncols=False,
+            leave=False,
+            ascii=" #",
+            file=sys.stdout,
+        )
 
         train_run_name = f"validate_{route_name}_trainW{train_n_wafer}"
         train_env_overrides = _build_env_overrides(route_config, route_name, train_n_wafer)
+
+        def _on_train_progress(current_batch: int, total: int) -> None:
+            total_i = max(1, int(total))
+            target = min(max(0, int(current_batch)), total_i)
+            if target > progress_bar.n:
+                progress_bar.update(target - progress_bar.n)
+            elif target < progress_bar.n:
+                progress_bar.n = target
+                progress_bar.refresh()
+
         _log, _policy, train_summary = train_single(
             config=cfg,
             checkpoint_path=None,
@@ -209,6 +275,10 @@ def run_all_routes(
             env_overrides=train_env_overrides,
             batch_progress_only=True,
             progress_label=f"{route_name} [{profile_name}]",
+            show_batch_progress=False,
+            batch_progress_callback=_on_train_progress,
+            draw_training_metrics_plot=not lite,
+            draw_gantt=not lite,
             return_summary=True,
         )
 
@@ -231,12 +301,16 @@ def run_all_routes(
                 out_name=eval_run_name,
                 concurrent=True,
                 retry=int(retry),
-                gantt_png_path=gantt_output_path(f"{eval_run_name}_gantt.png"),
+                gantt_png_path=None if lite else gantt_output_path(f"{eval_run_name}_gantt.png"),
                 gantt_title_suffix=f"路径 {route_name}",
                 env_overrides=eval_env_overrides,
                 verbose=False,
             )
 
+        eval_finished = bool(eval_summary.get("finished", False))
+        if progress_bar.n < total_batch:
+            progress_bar.update(total_batch - progress_bar.n)
+        progress_bar.close()
         summary_rows.append(
             {
                 "route_name": route_name,
@@ -248,7 +322,7 @@ def run_all_routes(
                 "training_time_seconds": train_summary.get("training_time_seconds"),
                 "eval_n_wafer": eval_n_wafer,
                 "eval_makespan": eval_summary.get("makespan"),
-                "eval_finished": bool(eval_summary.get("finished", False)),
+                "eval_finished": eval_finished,
                 "eval_action_sequence_path": (
                     str(eval_summary["action_series_path"])
                     if eval_summary.get("action_series_path") is not None
@@ -256,6 +330,7 @@ def run_all_routes(
                 ),
             }
         )
+        _finish_route_eval_progress(route_name, profile_name, total_batch, eval_finished)
 
     summary_path = training_log_output_path("validate_all_routes_summary.json")
     summary_path.write_text(json.dumps(summary_rows, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -267,12 +342,14 @@ def main() -> None:
     parser.add_argument("--retry", type=int, default=10, help="评估 rollout 最大重试次数")
     parser.add_argument("--compute-device", type=str, default=None, help="覆盖 YAML 中的 device，例如 cpu / cuda")
     parser.add_argument("--rollout-n-envs", type=int, default=20, help="训练 rollout 并行环境数")
+    parser.add_argument("--lite", action="store_true", help="轻量模式：不绘制甘特图与 training_metrics_plot")
     args = parser.parse_args()
 
     summary_rows, summary_path = run_all_routes(
         retry=int(args.retry),
         compute_device=args.compute_device,
         rollout_n_envs=int(args.rollout_n_envs),
+        lite=bool(args.lite),
     )
     print(_format_summary_table(summary_rows), flush=True)
     print(f"\nsummary: {summary_path}", flush=True)
