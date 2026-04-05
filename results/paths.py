@@ -11,6 +11,7 @@ ACTION_SEQUENCES_DIR = RESULTS_ROOT / "action_sequences"
 GANTT_DIR = RESULTS_ROOT / "gantt"
 TRAINING_LOGS_DIR = RESULTS_ROOT / "training_logs"
 TOPOLOGY_CACHE_DIR = RESULTS_ROOT / "topology_cache"
+ROUTE_CACHE_DIR = RESULTS_ROOT / "route_cache"
 MODELS_DIR = RESULTS_ROOT / "models"
 
 
@@ -20,6 +21,7 @@ def ensure_results_dirs() -> None:
         GANTT_DIR,
         TRAINING_LOGS_DIR,
         TOPOLOGY_CACHE_DIR,
+        ROUTE_CACHE_DIR,
         MODELS_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -59,4 +61,9 @@ def topology_cache_path(filename: str) -> Path:
     if path.suffix.lower() != ".npz":
         path = path.with_suffix(".npz")
     return path
+
+
+def route_cache_path(filename: str) -> Path:
+    ensure_results_dirs()
+    return ROUTE_CACHE_DIR / safe_name(filename, "cache.pkl")
 
