@@ -2,6 +2,12 @@
 
 ## 2026-04-05
 
+### 可视化：Model A 对齐 `DualActionPolicyModule` 保存格式（2026-04-05）
+
+- **What changed**：`visualization/main.py` 的 `load_concurrent_model` 在 `strict=True` 加载前，若 checkpoint 键含 `backbone.backbone.*`，则剥除一层 `backbone.` 映射为 `DualHeadPolicyNet` 内层键；`n_hidden`、`层数 n_layers` 与头维度由权重张量推断，并与当前 `Env_PN_Concurrent` 的 `n_obs`、`n_actions_tm2`/`tm3` 校验一致后再 `load_state_dict`。
+- **Why**：`solutions/A/ppo_trainer.py` 并发路径保存的是 `DualActionPolicyModule.state_dict()`，与裸 `DualHeadPolicyNet` 键名不一致，此前直接加载会得到 Missing/Unexpected key。
+- **Impact**：默认 `CT_concurrent_best.pt` 等训练产物可被可视化加载；仍拒绝含 `head_tm1` 的旧三头权重；与当前环境维不一致的权重会明确报 `ValueError`。
+
 ### 可视化：Model A 仅并发 strict 加载 + single 入口下线（2026-04-05）
 
 - **What changed**：`visualization/main.py` 删除模型类型推断与权重结构推断链路（`_detect_model_kind`、`_iter_single_candidate_state_dicts`、`_infer_single_model_shape`、`_iter_concurrent_candidate_state_dicts`、`_infer_concurrent_dual_head_shape`、`_contains_tm1_head`），并移除单动作 `load_model` 路径；`apply_model_for_mode` 固定走并发加载；`load_concurrent_model` 改为 `DualHeadPolicyNet + load_state_dict(strict=True)`。`visualization/main.py` 的 `--device/--device-mode` 仅支持 `cascade`；`visualization/main_window.py` 设备菜单移除「单设备」入口，仅保留「级联设备」。

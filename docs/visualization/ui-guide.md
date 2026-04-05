@@ -23,7 +23,7 @@
 ## Architecture or Data Flow
 1. `visualization/main.py` 解析 CLI，创建 adapter/viewmodel/window。
 2. 启动时固定构建 `device=cascade` 后端；默认是单动作级联 runtime，显式传 `--concurrent` 时切换为并发三动作 runtime，底层仍复用当前 `ClusterTool` 的路线配置。
-3. Model A 只支持并发 `DualHeadPolicyNet` 权重，并在加载前强制切到并发 runtime；权重使用 `load_state_dict(strict=True)` 严格加载，不做模型类型推断与前缀兼容。
+3. Model A 只支持并发 `DualHeadPolicyNet` 策略权重，并在加载前强制切到并发 runtime。`ppo_trainer` 默认保存 `DualActionPolicyModule.state_dict()`（键前缀为 `backbone.backbone.*`、`backbone.head_tm2.*` 等），可视化在加载前剥除外层 `backbone.` 得到内层 `DualHeadPolicyNet` 键后，再 `load_state_dict(strict=True)`；已对齐内层键的 checkpoint 可直接加载。不做三头推断与任意 `module.` 多前缀兼容。
 4. Model B 回放优先读取 `replay_env_overrides.runtime_mode` 或顶层 `device_mode`；仅当两者都缺失且序列中出现“同一步两个非 WAIT 动作”时，UI 才会自动推断为并发 runtime。
 5. Model A 模式读取模型权重并在线推理。
 6. Model B 模式读取动作序列 JSON（默认由导出脚本生成）并逐步回放。
@@ -64,7 +64,7 @@
 9. 启动时不会自动尝试任何默认 Model A 权重；仅在显式传 `--model` 或在 UI 菜单选择模型文件时加载。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
 11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅必须可用，但路径仅支持启动/回放覆盖，UI 内不提供热切换。
-12. Model A 仅支持并发 `DualHeadPolicyNet` 权重；加载必须使用 `strict=True` 严格匹配，不做模型类型推断、不做前缀剥离、不做结构推断。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
+12. Model A 仅支持并发 `DualHeadPolicyNet` 权重（或与之等价的 `DualActionPolicyModule` 保存格式）；加载前若检测到 `backbone.backbone.*` 键则剥除一层 `backbone.` 与内层网络对齐，随后 `load_state_dict(strict=True)`；`n_hidden`/`n_layers`/动作头维度从权重张量形状推断并与环境观测维、TM2/TM3 动作数核对，不一致则报错。禁止 `head_tm1` 旧三头权重。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
 14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。单动作级联 runtime 下，`LP1/LP2` 必须聚合显示为 `LP`，`LP_done` 必须保持 `LP_done` 名称，`TM1` 只通过 `TM1 ARM` 展示，不单独作为 chamber 渲染。
 15. `device=cascade` 下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.8`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 布局禁止复用该缩放与自动扩距规则。
@@ -84,7 +84,7 @@
 - 未指定 `--model` 时，程序直接进入手动模式，不会探测默认权重文件。
 - `--concurrent` 依赖运行环境已安装 `PySide6`；缺失时入口会在导入 GUI 模块阶段失败。
 - 序列文件路径正确但字段不完整时，Model B 回放可能失败。
-- 权重文件即使仅有前缀差异（如 `module.`），也会因 strict load 失败而报错。
+- 训练产物的 `DualActionPolicyModule` 外层 `backbone.` 由入口统一剥除；与内层键不一致的其它包装（如无关的 `module.` 顶层）仍会因 strict load 失败而报错。
 - 级联单臂若手动调大 `chamber_scale` / `robot_scale`，画布会优先自动扩距避免腔室重叠，而不是强制压回旧尺寸；超出视口时由 `QGraphicsView` 自身滚动显示。
 
 ## Related Docs
@@ -95,6 +95,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-05: `visualization/main.py` / `docs/visualization/ui-guide.md`：并发 Model A 加载在 `strict=True` 前剥除 `DualActionPolicyModule` 的外层 `backbone.` 前缀，并从权重推断 `n_hidden`/`n_layers`、与环境观测与 TM2/TM3 动作维校验。
 - 2026-04-05: `visualization/main.py` / `visualization/main_window.py`：Model A 加载收敛为“仅并发 + strict 报错”；删除 `_detect_model_kind`、`_iter_single_candidate_state_dicts`、`_infer_single_model_shape`、`_iter_concurrent_candidate_state_dicts`、`_infer_concurrent_dual_head_shape`、`_contains_tm1_head` 与单动作 `load_model` 路径；CLI 与设备菜单移除 single 入口，仅保留 `cascade`。
 - 2026-04-05: `visualization/main.py` / `visualization/main_window.py` / `visualization/widgets/center_canvas.py`：可视化前端固定为单臂布局，移除配置菜单中的「机械手模式」「路径」入口；`center_canvas` 删除 single/cascade 双臂绘制分支（`ARM1/ARM2`、`TM2 ARM1/2`、`TM3 ARM1/2`），仅保留 `ARM` 与 `TM1/TM2/TM3 ARM`。级联路线仍可通过启动参数或回放 `replay_env_overrides` 覆盖，UI 不再支持热切换。
 - 2026-04-04: `visualization/main.py` 取消“未传 `--model` 自动加载默认权重”路径；启动时仅在显式传 `--model` 或 UI 菜单选择时加载 Model A。并发权重加载收敛为 **仅 DualHead**：支持常见外层前缀包装（`module.`/`backbone.`/`policy_module.`），检测到 `head_tm1`（旧三头）时给出明确不兼容错误。

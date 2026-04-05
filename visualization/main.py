@@ -9,6 +9,7 @@ PySide6 可视化入口
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import ctypes
 from pathlib import Path
@@ -81,6 +82,34 @@ def _load_raw_state_dict(model_path: str):
     return torch.load(model_path, map_location="cpu", weights_only=True)
 
 
+def _to_dual_head_inner_state_dict(raw: dict) -> dict:
+    """`ppo_trainer` 并发保存 `DualActionPolicyModule.state_dict()`，键前缀多为 `backbone.backbone.*`；剥掉一层 `backbone.` 得到 `DualHeadPolicyNet` 键。"""
+    keys = [str(k) for k in raw.keys()]
+    if any(k.startswith("backbone.backbone.") for k in keys):
+        prefix = "backbone."
+        return {str(k)[len(prefix) :]: v for k, v in raw.items() if str(k).startswith(prefix)}
+    return raw
+
+
+def _infer_dual_head_inner_shape(state_dict: dict) -> tuple[int, int, int, int, int]:
+    """与 `export_inference_sequence._infer_dual_head_shape` 一致，但针对内层键（`backbone.0.weight` 等）。"""
+    w0 = state_dict.get("backbone.0.weight")
+    if w0 is None:
+        raise KeyError("并发策略权重缺少 backbone.0.weight")
+    n_hidden, n_obs = int(w0.shape[0]), int(w0.shape[1])
+    h2 = state_dict["head_tm2.weight"]
+    h3 = state_dict["head_tm3.weight"]
+    n_actions_tm2 = int(h2.shape[0])
+    n_actions_tm3 = int(h3.shape[0])
+    linear_count = 0
+    for k in state_dict:
+        m = re.match(r"^backbone\.(\d+)\.weight$", k)
+        if m and int(m.group(1)) % 2 == 0:
+            linear_count += 1
+    n_layers = linear_count + 1
+    return n_obs, n_hidden, n_actions_tm2, n_actions_tm3, n_layers
+
+
 def _ensure_runtime_adapter(
     window: PetriMainWindow,
     device_mode: str,
@@ -129,11 +158,19 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
         n_actions_tm2 = int(env.n_actions_tm2)
         n_actions_tm3 = int(env.n_actions_tm3)
         raw_state_dict = _load_raw_state_dict(model_path)
-        n_hidden = 256
-        n_layers = 4
+        inner_state_dict = _to_dual_head_inner_state_dict(raw_state_dict)
+        ckpt_n_obs, n_hidden, ckpt_na2, ckpt_na3, n_layers = _infer_dual_head_inner_shape(inner_state_dict)
+
+        if int(ckpt_n_obs) != int(n_obs):
+            raise ValueError(f"权重 n_obs={ckpt_n_obs} 与当前环境观测维 {n_obs} 不一致")
+        if int(ckpt_na2) != n_actions_tm2 or int(ckpt_na3) != n_actions_tm3:
+            raise ValueError(
+                f"权重动作维 ({ckpt_na2},{ckpt_na3}) 与 Env ({n_actions_tm2},{n_actions_tm3}) 不一致"
+            )
 
         print(
-            f"[Concurrent Model] n_obs={n_obs}, TM2={n_actions_tm2}, TM3={n_actions_tm3} (TM1 自动)"
+            f"[Concurrent Model] n_obs={n_obs}, n_hidden={n_hidden}, n_layers={n_layers}, "
+            f"TM2={n_actions_tm2}, TM3={n_actions_tm3} (TM1 自动)"
         )
 
         backbone = DualHeadPolicyNet(
@@ -143,7 +180,7 @@ def load_concurrent_model(model_path: str, adapter: PetriAdapter) -> tuple[objec
             n_actions_tm3=n_actions_tm3,
             n_layers=n_layers,
         )
-        backbone.load_state_dict(raw_state_dict, strict=True)
+        backbone.load_state_dict(inner_state_dict, strict=True)
         backbone.eval()
 
         print(f"✓ 并发模型加载成功: {model_path}")
