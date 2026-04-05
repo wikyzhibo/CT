@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from config.cluster_tool.env_config import PetriEnvConfig
@@ -8,6 +9,7 @@ from config.training.training_config import PPOTrainingConfig
 from results.paths import gantt_output_path, training_log_output_path
 from solutions.A.eval.export_inference_sequence import rollout_and_export
 from solutions.A.ppo_trainer import train_single
+from tqdm.auto import tqdm
 
 
 # 每条路线训练/评估使用的晶圆数与训练档位。
@@ -176,22 +178,43 @@ def _format_summary_table(rows: list[dict[str, Any]]) -> str:
 def _format_route_eval_progress_line(
     *,
     route_name: str,
-    index: int,
-    total: int,
     profile_name: str,
-    eval_n_wafer: int,
+    total_batch: int,
     finished: bool,
 ) -> str:
-    total_i = max(1, int(total))
-    index_i = min(max(0, int(index)), total_i)
-    width = 20
-    filled = int(width * index_i / total_i)
-    bar = "#" * filled + "-" * (width - filled)
-    status = "YES" if bool(finished) else "NO"
-    return (
-        f"route={route_name} [{bar}] {index_i}/{total_i} "
-        f"mode={profile_name} eval_finish@W{int(eval_n_wafer)}={status}"
+    bar_prefix = _format_route_train_progress_prefix(
+        route_name=route_name,
+        profile_name=profile_name,
+        current_batch=total_batch,
+        total_batch=total_batch,
     )
+    status = "T" if bool(finished) else "F"
+    return f"{bar_prefix} eval_pass={status}"
+
+
+def _format_route_train_progress_prefix(
+    *,
+    route_name: str,
+    profile_name: str,
+    current_batch: int,
+    total_batch: int,
+    width: int = 24,
+) -> str:
+    total_i = max(1, int(total_batch))
+    current_i = min(max(0, int(current_batch)), total_i)
+    filled = int(width * current_i / total_i)
+    bar = "#" * filled + " " * (width - filled)
+    return f"{route_name} [{profile_name}] [{bar}]"
+
+
+def _finish_route_eval_progress(route_name: str, profile_name: str, total_batch: int, finished: bool) -> None:
+    line = _format_route_eval_progress_line(
+        route_name=route_name,
+        profile_name=profile_name,
+        total_batch=total_batch,
+        finished=finished,
+    )
+    print(line, flush=True)
 
 
 def run_all_routes(
@@ -209,8 +232,7 @@ def run_all_routes(
     )
 
     summary_rows: list[dict[str, Any]] = []
-    total_routes = len(normalized_routes)
-    for index, route in enumerate(normalized_routes, start=1):
+    for route in normalized_routes:
         route_name = str(route["route_name"])
         train_n_wafer = int(route["train_n_wafer"])
         eval_n_wafer = int(route["eval_n_wafer"])
@@ -220,9 +242,30 @@ def run_all_routes(
         cfg = PPOTrainingConfig.load(config_path)
         if compute_device is not None:
             cfg.device = str(compute_device).strip()
+        total_batch = max(1, int(cfg.total_batch))
+
+        progress_bar = tqdm(
+            total=total_batch,
+            desc=f"{route_name} [{profile_name}]",
+            bar_format="{desc} [{bar:24}]",
+            dynamic_ncols=False,
+            leave=False,
+            ascii=" #",
+            file=sys.stdout,
+        )
 
         train_run_name = f"validate_{route_name}_trainW{train_n_wafer}"
         train_env_overrides = _build_env_overrides(route_config, route_name, train_n_wafer)
+
+        def _on_train_progress(current_batch: int, total: int) -> None:
+            total_i = max(1, int(total))
+            target = min(max(0, int(current_batch)), total_i)
+            if target > progress_bar.n:
+                progress_bar.update(target - progress_bar.n)
+            elif target < progress_bar.n:
+                progress_bar.n = target
+                progress_bar.refresh()
+
         _log, _policy, train_summary = train_single(
             config=cfg,
             checkpoint_path=None,
@@ -232,6 +275,8 @@ def run_all_routes(
             env_overrides=train_env_overrides,
             batch_progress_only=True,
             progress_label=f"{route_name} [{profile_name}]",
+            show_batch_progress=False,
+            batch_progress_callback=_on_train_progress,
             draw_training_metrics_plot=not lite,
             draw_gantt=not lite,
             return_summary=True,
@@ -263,6 +308,9 @@ def run_all_routes(
             )
 
         eval_finished = bool(eval_summary.get("finished", False))
+        if progress_bar.n < total_batch:
+            progress_bar.update(total_batch - progress_bar.n)
+        progress_bar.close()
         summary_rows.append(
             {
                 "route_name": route_name,
@@ -282,17 +330,7 @@ def run_all_routes(
                 ),
             }
         )
-        print(
-            _format_route_eval_progress_line(
-                route_name=route_name,
-                index=index,
-                total=total_routes,
-                profile_name=profile_name,
-                eval_n_wafer=eval_n_wafer,
-                finished=eval_finished,
-            ),
-            flush=True,
-        )
+        _finish_route_eval_progress(route_name, profile_name, total_batch, eval_finished)
 
     summary_path = training_log_output_path("validate_all_routes_summary.json")
     summary_path.write_text(json.dumps(summary_rows, ensure_ascii=False, indent=2), encoding="utf-8")

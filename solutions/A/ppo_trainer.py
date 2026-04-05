@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict, deque
 from datetime import datetime
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
@@ -280,6 +280,8 @@ def _train_concurrent(
     env_overrides: dict[str, Any] | None = None,
     batch_progress_only: bool = False,
     progress_label: str | None = None,
+    show_batch_progress: bool = True,
+    batch_progress_callback: Callable[[int, int], None] | None = None,
     draw_training_metrics_plot: bool = True,
     draw_gantt: bool = True,
     return_summary: bool = False,
@@ -501,18 +503,21 @@ def _train_concurrent(
         log["policy_loss"].append(update_stats["policy_loss"])
         log["value_loss"].append(update_stats["value_loss"])
         log["entropy"].append(update_stats["entropy"])
+        if batch_progress_callback is not None:
+            batch_progress_callback(batch_idx + 1, int(config.total_batch))
 
-        if batch_progress_only:
+        if batch_progress_only and show_batch_progress:
             _write_batch_progress(progress_text, batch_idx + 1, int(config.total_batch), eta_str)
         else:
-            print(
-                f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
-                f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
-                f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
-                f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
-                f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
-                flush=True,
-            )
+            if not batch_progress_only:
+                print(
+                    f"batch {batch_idx+1:04d} | reward={ep_reward:.2f} | finish={finish_count} "
+                    f"| scrap={scrap_count} | makespan={avg_makespan:.1f} "
+                    f"| rollout={rollout_time:.2f}s update={update_time:.2f}s "
+                    f"| steps/s={steps_per_sec:.0f} | p={update_stats['policy_loss']:.4f} "
+                    f"v={update_stats['value_loss']:.4f} ent={update_stats['entropy']:.4f} ETA={eta_str}",
+                    flush=True,
+                )
 
         if ep_reward > best_reward and finish_count > 0:
             best_reward = ep_reward
@@ -535,20 +540,21 @@ def _train_concurrent(
     rollout_pct = (avg_rollout / avg_batch * 100) if avg_batch > 0 else 0.0
     update_pct = (avg_update / avg_batch * 100) if avg_batch > 0 else 0.0
 
-    if batch_progress_only:
+    if batch_progress_only and show_batch_progress:
         _finish_batch_progress()
     else:
-        print("\n[Concurrent Training Summary]", flush=True)
-        print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
-        print(f"  总 env steps: {total_env_steps}", flush=True)
-        print(
-            f"  平均 batch: {avg_batch:.2f}s "
-            f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
-            f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
-            flush=True,
-        )
-        print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
-        print(f"  Best reward: {best_reward:.2f}", flush=True)
+        if not batch_progress_only:
+            print("\n[Concurrent Training Summary]", flush=True)
+            print(f"  总训练时间: {total_training_time:.1f}s ({total_training_time / 60:.1f}m)", flush=True)
+            print(f"  总 env steps: {total_env_steps}", flush=True)
+            print(
+                f"  平均 batch: {avg_batch:.2f}s "
+                f"(rollout={avg_rollout:.2f}s [{rollout_pct:.0f}%] "
+                f"| update={avg_update:.2f}s [{update_pct:.0f}%])",
+                flush=True,
+            )
+            print(f"  平均 steps/sec: {overall_sps:.0f}", flush=True)
+            print(f"  Best reward: {best_reward:.2f}", flush=True)
 
     torch.save(policy_module.state_dict(), backup_dir / "CT_concurrent_final.pt")
     torch.save(policy_module.state_dict(), run_final_model_path)
@@ -1248,6 +1254,8 @@ def train_single(
     env_overrides: dict[str, Any] | None = None,
     batch_progress_only: bool = False,
     progress_label: str | None = None,
+    show_batch_progress: bool = True,
+    batch_progress_callback: Callable[[int, int], None] | None = None,
     draw_training_metrics_plot: bool = True,
     draw_gantt: bool = True,
     return_summary: bool = False,
@@ -1263,6 +1271,8 @@ def train_single(
             env_overrides=env_overrides,
             batch_progress_only=batch_progress_only,
             progress_label=progress_label,
+            show_batch_progress=show_batch_progress,
+            batch_progress_callback=batch_progress_callback,
             draw_training_metrics_plot=draw_training_metrics_plot,
             draw_gantt=draw_gantt,
             return_summary=return_summary,
