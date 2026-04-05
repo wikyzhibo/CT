@@ -7,6 +7,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
+import warnings
+
 import numpy as np
 from solutions.A.construct.build_marks import build_marks_for_single_net
 from solutions.A.construct.build_takt import build_takt_payload
@@ -25,6 +27,7 @@ from solutions.A.construct.route_compiler_single import (
     compile_route_stages,
     first_load_port_name,
 )
+from solutions.A.construct.route_cache import load_net_cached, save_net_cached
 
 BUFFER_NAMES: Set[str] = {"AL", "LLA", "LLC", "LLD", "LLB", "CL"}
 
@@ -735,3 +738,121 @@ def build_net(n_wafer1: int,
         "takt_payload": takt_payload,
         "fixed_topology": True,
     }
+
+
+def build_net_cached(
+    n_wafer1: int,
+    n_wafer2: int = 0,
+    ttime: int = 5,
+    cleaning_enabled: bool = False,
+    p_residual_time: int = 15,
+    d_residual_time: int = 10,
+    scrap_clip_threshold: float = 20.0,
+    route_config: Optional[Mapping[str, Any]] = None,
+    route_name: Optional[str] = None,
+) -> Dict[str, object]:
+    """
+    build_net() 的缓存版本，签名与 build_net() 完全相同。
+
+    命中缓存时直接返回（marks 已 clone）；未命中时调用 build_net() 并持久化结果。
+    修改 route_config.json 内容后自动失效（基于 SHA256 哈希），无需手动干预。
+    """
+    cached = load_net_cached(
+        route_name=str(route_name or ""),
+        n_wafer1=int(n_wafer1),
+        n_wafer2=int(n_wafer2),
+        ttime=int(ttime),
+        cleaning_enabled=bool(cleaning_enabled),
+        p_residual_time=int(p_residual_time),
+        d_residual_time=int(d_residual_time),
+        scrap_clip_threshold=float(scrap_clip_threshold),
+        route_config=route_config,
+    )
+    if cached is not None:
+        return cached
+
+    result = build_net(
+        n_wafer1=n_wafer1,
+        n_wafer2=n_wafer2,
+        ttime=ttime,
+        cleaning_enabled=cleaning_enabled,
+        p_residual_time=p_residual_time,
+        d_residual_time=d_residual_time,
+        scrap_clip_threshold=scrap_clip_threshold,
+        route_config=route_config,
+        route_name=route_name,
+    )
+    save_net_cached(
+        data=result,
+        route_name=str(route_name or ""),
+        n_wafer1=int(n_wafer1),
+        n_wafer2=int(n_wafer2),
+        ttime=int(ttime),
+        cleaning_enabled=bool(cleaning_enabled),
+        p_residual_time=int(p_residual_time),
+        d_residual_time=int(d_residual_time),
+        scrap_clip_threshold=float(scrap_clip_threshold),
+        route_config=route_config,
+    )
+    # 首次调用者同样返回 clone 的 marks，与后续从缓存加载语义一致
+    out = dict(result)
+    out["marks"] = [p.clone() for p in result["marks"]]
+    return out
+
+
+def precompute_all_routes(
+    route_config: Mapping[str, Any],
+    n_wafer: int = 10,
+    ttime: int = 5,
+    cleaning_enabled: bool = False,
+    p_residual_time: int = 15,
+    d_residual_time: int = 10,
+    scrap_clip_threshold: float = 20.0,
+) -> Dict[str, bool]:
+    """
+    一次性预热 route_config["routes"] 中所有路由的缓存。
+
+    n_wafer: 按各路由 ratio 字段拆分为 n_wafer1 / n_wafer2（与 ClusterTool.__init__ 逻辑一致）。
+    返回 {route_name: was_cache_miss}，True 表示本次实际计算并写入，False 表示已命中缓存。
+    单个路由失败时发出警告并继续，不中断整批。
+    """
+    routes_cfg = dict((route_config or {}).get("routes") or {})
+    results: Dict[str, bool] = {}
+    for route_name, route_entry in routes_cfg.items():
+        route_entry = dict(route_entry or {})
+        ratio = list(route_entry.get("ratio") or [1, 0])
+        ratio_sum = sum(ratio) or 1
+        n_wafer1 = int(n_wafer * ratio[0] / ratio_sum)
+        n_wafer2 = int(n_wafer - n_wafer1)
+        # 先检查缓存，避免重复计算已缓存路由
+        existing = load_net_cached(
+            route_name=str(route_name),
+            n_wafer1=n_wafer1,
+            n_wafer2=n_wafer2,
+            ttime=int(ttime),
+            cleaning_enabled=bool(cleaning_enabled),
+            p_residual_time=int(p_residual_time),
+            d_residual_time=int(d_residual_time),
+            scrap_clip_threshold=float(scrap_clip_threshold),
+            route_config=route_config,
+        )
+        if existing is not None:
+            results[route_name] = False
+            continue
+        try:
+            build_net_cached(
+                n_wafer1=n_wafer1,
+                n_wafer2=n_wafer2,
+                ttime=ttime,
+                cleaning_enabled=cleaning_enabled,
+                p_residual_time=p_residual_time,
+                d_residual_time=d_residual_time,
+                scrap_clip_threshold=scrap_clip_threshold,
+                route_config=route_config,
+                route_name=route_name,
+            )
+            results[route_name] = True
+        except Exception as exc:
+            warnings.warn(f"precompute_all_routes: 路由 {route_name!r} 失败: {exc}")
+            results[route_name] = False
+    return results

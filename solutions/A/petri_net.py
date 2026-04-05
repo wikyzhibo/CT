@@ -4,7 +4,7 @@ import numpy as np
 from config.cluster_tool.env_config import PetriEnvConfig
 from solutions.A.construct import BasedToken
 from solutions.A.construct.build_topology import infer_cascade_transport_by_scope
-from solutions.A.model_builder import build_net
+from solutions.A.model_builder import build_net, build_net_cached
 from solutions.A.deprecated.pn import Place
 
 CHAMBER = 1
@@ -62,13 +62,14 @@ class ClusterTool:
         self.n_wafer1 = int(self.n_wafer * ratio[0] / sum(ratio))
         self.n_wafer2 = int(self.n_wafer - self.n_wafer1)
 
-        info = build_net(n_wafer1=self.n_wafer1,
-                         n_wafer2=self.n_wafer2,
-                         ttime=self.ttime,
-                         p_residual_time=self.P_Residual_time,
-                         d_residual_time=self.D_Residual_time,
-                         cleaning_enabled=self._cleaning_enabled,
-                         route_config=self.single_route_config, route_name=self.single_route_name)
+        info = build_net_cached(n_wafer1=self.n_wafer1,
+                                n_wafer2=self.n_wafer2,
+                                ttime=self.ttime,
+                                p_residual_time=self.P_Residual_time,
+                                d_residual_time=self.D_Residual_time,
+                                cleaning_enabled=self._cleaning_enabled,
+                                route_config=self.single_route_config,
+                                route_name=self.single_route_name)
         self._base_proc_time_map = dict(info.get("process_time_map") or {})
         route_meta = dict(info.get("route_meta") or {})
 
