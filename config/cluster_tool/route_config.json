@@ -198,6 +198,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(78s)->LLC(0s)->PM3/PM4(110s)[88s/1片]->LLD(75s)->PM9/PM10(80)->LLB(20s)->CL(20s)->LP_done",
+      "max_wafer_in_system": 6,
       "route_stage": [["PM7","PM8"],["PM3","PM4"],["LLD"],["PM9","PM10"]],
       "sequence": [
         {
@@ -267,6 +268,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(99s)->PM9/PM10(73s)->LLC(110s)->PM2(80s)[420s/20片]->PM1(128s)->PM3(126s)->LLD(75s)->LLB(20s)->CL(20s)->LP_done",
+      "max_wafer_in_system": 8,
       "route_stage": [["PM7","PM8"],["PM9","PM10"],["LLC"],["PM2"],["PM1"],["PM3"],["LLD"]],
       "sequence": [
         {
@@ -352,6 +354,7 @@
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(87s)->LLC(41s)->PM1/PM6(60s)[339s/50片]->PM2/PM5(105s)->LLD(39s)->PM9/PM10(54.6s)->LLB(20s)->CL(20s)->LP_done",
       "route_stage": [["PM7","PM8"],["LLC"],["PM1","PM6"],["PM2","PM5"],["LLD"],["PM9","PM10"]],
+      "max_wafer_in_system": 8,
       "takt_cycle": [65],
       "sequence": [
         {
@@ -431,6 +434,7 @@
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(50s)->LLC(34s)->PM1/PM6(53s)[304s/50片]->PM2/PM3/PM5(107s)->LLD(34s)->LLB(20s)->CL(20s)->LP_done",
       "route_stage": [["PM7","PM8"],["LLC"],["PM1","PM6"],["PM2","PM3","PM5"],["LLD"]],
+      "max_wafer_in_system": 6,
       "takt_cycle": [30],
       "sequence": [
         {
@@ -502,6 +506,7 @@
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7/PM8(50s)->LLC/LLD(37s)->PM9/PM10(56s)[352s/25片]->LLB(20s)->CL(20s)->LP_done",
       "route_stage": [["PM7","PM8"],["LLC","LLD"],["PM9","PM10"]],
+      "max_wafer_in_system": 6,
       "takt_cycle": [50],
       "sequence": [
         {
@@ -639,8 +644,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LLA->PM7/PM8(70s)->LLC(0s)->PM1/PM2/PM3/PM4(600s)[300s/13片]->LLD(70s)->PM9/PM10(200s)->LLB(20s)",
-      "max_wafer1_in_system": 12,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 12,
       "ratio": [1,0],
       "route_stage": [["PM7","PM8"],["PM1","PM2","PM3","PM4"],["LLD"],["PM9","PM10"]],
       "sequence": [
@@ -717,8 +721,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LLA->PM7/PM8(70s)->LLC(0s)->PM1/PM2(300s)[300s/13片]->LLD(70s)->LLB(20s)",
-      "max_wafer1_in_system": 12,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 12,
       "ratio": [1,0],
       "route_stage": [["PM7","PM8"],["PM1","PM2"],["LLD"]],
       "sequence": [
@@ -782,8 +785,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LLA(20s)->[PM7(70s)->PM8(70s)->LLC(0s)->LLD(70s)]*5->LLB(20s)",
-      "max_wafer1_in_system": 3,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 3,
       "ratio": [1,0],
       "route_stage": [["PM7"],["PM8"],["LLD"]],
       "sequence": [
@@ -1015,8 +1017,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->LLC(0s)->PM2(3000s)->PM5(180s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 2,
       "ratio": [1,0],
       "route_stage": [["PM2"],["PM5"]],
       "sequence": [
@@ -1074,8 +1075,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->PM7(270s)->LLC(0s)->PM5(160s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 2,
       "ratio": [1,0],
       "route_stage": [["PM7"],["PM5"]],
       "sequence": [
@@ -1133,8 +1133,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "LP->AL(10s)->LLA->[PM7(270s)->LLC(0s)->PM5(160s)->LLD(0s)]*5->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 0,
+      "max_wafer_in_system": 2,
       "ratio": [1,0],
       "route_stage": [["PM7"],["PM5"]],
       "sequence": [
@@ -1199,8 +1198,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(3000s)->PM10(180s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM2/PM3/PM4(3000s)->LLD(0s)->PM10(180s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 1,
-      "max_wafer2_in_system": 4,
+      "max_wafer_in_system": 5,
       "takt_policy": "shared",
       "ratio": [1,4],
       "cycle_type": [1, 2, 2, 2, 2],
@@ -1306,8 +1304,7 @@
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(116s)->PM10(131s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM6(116s)->PM2/PM5(131s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
       "cycle_type": [1, 1, 2, 2, 2, 2],
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 4,
+      "max_wafer_in_system": 6,
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
       "takt_cycle": [65],
       "takt_policy": "shared",
@@ -1414,8 +1411,7 @@
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(105s)/PM10(105s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM2/PM3/PM4(105s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
       "cycle_type": [1, 1, 2, 2, 2, 2],
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 4,
+      "max_wafer_in_system": 6,
       "route_stage": [["PM7","PM1","PM6","PM10","PM2","PM5"]],
       "takt_cycle": [15,15,15,15,15,15],
       "takt_policy": "shared",
@@ -1504,8 +1500,7 @@
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->[PM7(115s)->PM10(130s)]*2->PM7(115s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->[PM1/PM6(115s)->PM2/PM5(130s)]*2->PM1/PM6(115s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
       "ratio": [2,4],
       "cycle_type": [1, 1, 2, 2, 2, 2],
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 4,
+      "max_wafer_in_system": 6,
       "takt_policy": "shared",
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
       "takt_cycle": [130,0,130,70,130,500,130,0,130,70,130,1000,130,0,130,70,130,500],
@@ -1637,8 +1632,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7(115s)->PM10(130s)->PM7(115s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM1/PM6(115s)->PM2/PM5(130s)->PM1/PM6(115s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 4,
+      "max_wafer_in_system": 6,
       "takt_policy": "shared",
       "route_stage": [["PM7","PM1","PM6"],["PM10","PM2","PM5"]],
       "ratio": [2,4],
@@ -1758,8 +1752,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7/PM10(423s)->LLC(0s)->PM1(138s)->LLD(0s)->PM7/PM10(802s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM2/PM3/PM4(423s)->PM1(138s)->PM2/PM3/PM4(802s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 3,
+      "max_wafer_in_system": 5,
       "ratio": [2,3],
       "cycle_type": [1, 1, 2, 2, 2],
       "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],
@@ -1898,8 +1891,7 @@
       "entry": "LLA",
       "exit": "LLB",
       "path": "dual-subpaths: path1=LP->AL(10s)->LLA->PM7/PM10(423s)->LLC(0s)->PM1(138s)->LLD(0s)->PM7/PM10(102s)->LLC(0s)->PM1(762s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done; path2=LP->AL(10s)->LLA->LLC(0s)->PM2/PM3/PM4(423s)->PM1(138s)->PM2/PM3/PM4(102s)->PM1(138s)->PM2/PM3/PM4(762s)->LLD(0s)->LLB(20s)->CL(20s)->LP_done",
-      "max_wafer1_in_system": 2,
-      "max_wafer2_in_system": 2,
+      "max_wafer_in_system": 4,
       "ratio": [2,2],
       "cycle_type": [1, 1, 2, 2],
       "route_stage": [["PM7","PM10","PM2","PM3","PM4"],["PM1"]],

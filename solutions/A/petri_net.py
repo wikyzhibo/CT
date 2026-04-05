@@ -54,8 +54,10 @@ class ClusterTool:
             [str(place_name) for place_name in list(stage or [])]
             for stage in list(route_stage_raw or [])
         ]
-        self.max_wafers1_in_system = route_entry.get("max_wafer1_in_system",12)
-        self.max_wafers2_in_system = route_entry.get("max_wafer2_in_system",0)
+        self.max_wafer_in_system = int(
+            route_entry.get("max_wafer_in_system")
+            or (route_entry.get("max_wafer1_in_system", 12) + route_entry.get("max_wafer2_in_system", 0))
+        )
         ratio = route_entry.get("ratio",[1,0])
         self.n_wafer1 = int(self.n_wafer * ratio[0] / sum(ratio))
         self.n_wafer2 = int(self.n_wafer - self.n_wafer1)
@@ -898,21 +900,6 @@ class ClusterTool:
                 heads[t_id] = tok
         return heads
 
-    # 作用：按在制上限判断 route_type 是否允许发片。
-    def _allow_start_for_route_type(self, route_type: int) -> bool:
-        """双子路径：route_type 1/2 分别受 max_wafers1_in_system / max_wafers2_in_system 约束。"""
-        if not self._multi_subpath:
-            return True
-        type_id = int(route_type)
-        if type_id == 1:
-            cap = int(self.max_wafers1_in_system)
-        elif type_id == 2:
-            cap = int(self.max_wafers2_in_system)
-        else:
-            raise RuntimeError(f"unsupported route_type for WIP cap: {type_id}")
-        current = int(self._entered_wafer_count_by_type.get(type_id, 0))
-        return int(current + 1) <= cap
-
     # 作用：返回指定 route_type 的节拍间隔需求。
     def _takt_required_interval(self, route_type: Optional[int] = None) -> Optional[int]:
         """
@@ -1371,8 +1358,8 @@ class ClusterTool:
             struct_enabled_cache[t_idx] = result
             return result
 
-        # release_control_places：单路线用全局 WIP；双子路径按类型上限；节拍入口由 route_meta 指定。
-        if self._multi_subpath or sum(self._entered_wafer_count_by_type.values()) < int(self.max_wafers1_in_system):
+        # release_control_places：统一用 max_wafer_in_system 控制全局 WIP；节拍入口由 route_meta 指定。
+        if sum(self._entered_wafer_count_by_type.values()) < int(self.max_wafer_in_system):
             for place_name in self._release_control_places:
                 control_place = self._place_by_name.get(place_name)
                 if control_place is None or len(control_place.tokens) == 0:
@@ -1380,16 +1367,6 @@ class ClusterTool:
                 head = control_place.tokens[0]
                 route_type = int(getattr(head, "route_type", 1) or 1)
                 if int(self._entry_delay_remaining(route_type)) > 0:
-                    continue
-                expected_place = self._wafer_type_to_release_place.get(
-                    route_type,
-                    str(self._release_control_places[0]) if self._release_control_places else str(place_name),
-                )
-                if expected_place != place_name:
-                    raise RuntimeError(
-                        f"wafer_type {route_type} maps to release place {expected_place} but queue head is on {place_name}"
-                    )
-                if not self._allow_start_for_route_type(route_type):
                     continue
                 release_target = self._token_next_target(head)
                 if release_target is None:

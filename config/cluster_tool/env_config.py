@@ -41,8 +41,7 @@ class PetriEnvConfig(BaseModel):
 
     D_Residual_time: int = 20
     P_Residual_time: int = 15
-    max_wafers1_in_system: int = 7
-    max_wafers2_in_system: int = 7
+    max_wafer_in_system: int = 12
 
     dual_arm: bool = False
     cleaning_enabled: bool = True
@@ -160,8 +159,7 @@ class PetriEnvConfig(BaseModel):
         lines.append("\n【基础配置】")
         lines.append(f"  n_wafer1: {self.n_wafer1}")
         lines.append(f"  n_wafer2: {self.n_wafer2}")
-        lines.append(f"  max_wafers1_in_system: {self.max_wafers1_in_system}")
-        lines.append(f"  max_wafers2_in_system: {self.max_wafers2_in_system}")
+        lines.append(f"  max_wafer_in_system: {self.max_wafer_in_system}")
 
         lines.append("\n【奖励参数】")
         lines.append(f"  done_event_reward: {self.done_event_reward}")
