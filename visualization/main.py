@@ -55,7 +55,6 @@ def set_windows_app_id():
 def build_adapter(
     adapter_name: str,
     device_mode: str = "cascade",
-    robot_capacity: int = 1,
     env_overrides: dict | None = None,
     step_verbose: bool = True,
     concurrent: bool = False,
@@ -175,13 +174,12 @@ def _ensure_runtime_adapter(
     want_concurrent = runtime_mode == "concurrent"
     if is_concurrent_adapter == want_concurrent and window._device_mode == target_mode:
         window._concurrent_runtime = want_concurrent
-        window._action_config_cascade_route.setEnabled(target_mode == "cascade")
         return True, ""
     if window._adapter_factory is None:
         return False, "当前窗口未注入适配器工厂，无法切换运行模式。"
     overrides = {"runtime_mode": runtime_mode} if want_concurrent else None
     try:
-        new_adapter = window._adapter_factory(target_mode, window._robot_capacity, overrides)
+        new_adapter = window._adapter_factory(target_mode, overrides)
         window.apply_runtime_adapter(
             new_adapter,
             target_mode,
@@ -487,7 +485,6 @@ def main() -> int:
     adapter = build_adapter(
         args.adapter,
         device_mode=selected_device,
-        robot_capacity=1,
         step_verbose=not args.quiet,
         concurrent=concurrent_mode,
     )
@@ -501,7 +498,7 @@ def main() -> int:
     window = PetriMainWindow(viewmodel, debug=args.debug)
     window._cascade_route_name = getattr(viewmodel.adapter.env.net, "single_route_name", None)
 
-    def adapter_factory(mode, robot_capacity=1, env_overrides=None):
+    def adapter_factory(mode, env_overrides=None):
         ov = dict(env_overrides or {})
         if mode == "cascade":
             rn = getattr(window, "_cascade_route_name", None)
@@ -510,7 +507,6 @@ def main() -> int:
         return build_adapter(
             args.adapter,
             device_mode=mode,
-            robot_capacity=robot_capacity,
             env_overrides=ov,
             step_verbose=not args.quiet,
             concurrent=window._concurrent_runtime,
@@ -523,7 +519,6 @@ def main() -> int:
         window.center_canvas.set_device_mode(selected_device)
         window._action_device_cascade.setChecked(selected_device == "cascade")
         window._action_device_single.setChecked(selected_device == "single")
-        window._action_config_cascade_route.setEnabled(selected_device == "cascade")
         window._refresh_status_message()
     window.set_model_apply_callback(lambda path, mode: apply_model_for_mode(path, mode, window))
     

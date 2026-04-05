@@ -40,11 +40,11 @@
   - `--concurrent`：启用并发三动作可视化；仅支持 `--device cascade`
   - `--single-route-code {0,1}`（single）；cascade 下 legacy 代号见训练文档；配置驱动路线以 `single_route_name` 为准
   - `--model/-m`, `--no-model`, `--debug`, `--quiet`
-- 配置菜单（级联）:
-  - **路径（级联）**：可选 `1-1`…`1-6`、`2-1`…`2-4`（与 `data/petri_configs/cascade_routes_1_star.json` 中 `routes` 键一致）。确认后重建环境与适配器；单动作与并发 runtime 都会消费所选 `single_route_name`。若已选模型文件会尝试按新拓扑重载，不兼容则卸载 Model A。
-  - 依赖启动时加载的 `data/petri_configs/cascade.yaml`（含 `single_route_config_path`）；仅 `device=cascade` 时菜单项可用。
+- 配置菜单:
+  - 仅保留「设置晶圆数量（UI 占位）」与「清洁」配置项。
+  - 不再提供机械手模式切换，不再提供级联路径切换入口。
 - 画布顶栏:
-  - 级联模式下在中间画布**上方**显示带边框区域：仅展示配置中 `routes[name].path`（**不**显示路线键名如 `1-6`，无额外标题行）；约 15px **粗体**，腔室名 / `(加工秒)` / `[清洁秒/片]` / `->` 分色。当前规则对单动作与并发级联 runtime 一致；单设备模式下该区域隐藏。
+  - 级联模式下在中间画布**上方**显示带边框区域：仅展示当前运行时配置的 `routes[name].path`（**不**显示路线键名如 `1-6`，无额外标题行）；约 15px **粗体**，腔室名 / `(加工秒)` / `[清洁秒/片]` / `->` 分色。当前规则对单动作与并发级联 runtime 一致；单设备模式下该区域隐藏。
 - 回放 JSON 契约（建议）:
   - 顶层字段: `schema_version`, `device_mode`, `sequence`, `reward_report`, `replay_env_overrides`
   - `sequence` 单步字段: `step`, `time`, `actions`（可兼容 `action`）
@@ -65,11 +65,11 @@
 8. 手动导出（甘特图/统计/动作）必须强制写入 `results/` 规范目录：`results/gantt`、`results/training_logs`、`results/action_sequences`。
 9. 启动时不会自动尝试任何默认 Model A 权重；仅在显式传 `--model` 或在 UI 菜单选择模型文件时加载。
 10. `--concurrent` 下 WAIT 只会显示并执行 `5s`；调试区单击单个变迁时，仅对应机械手执行该变迁，其余机械手固定执行 `WAIT_5s`。
-11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅与路径切换必须可用。
+11. 并发级联 runtime 与单动作级联 runtime 一样消费 `single_route_name/single_route_config`；路线横幅必须可用，但路径仅支持启动/回放覆盖，UI 内不提供热切换。
 12. 只要权重 `state_dict` 含 `head_tm2` 与 `head_tm3`（当前 A 方案 `DualHeadPolicyNet`），Model A 加载必须自动切到并发 runtime；若检测到 `head_tm1`（旧三头）必须报“不支持旧三头并发权重”。在线推理只输出 TM2/TM3；TM1 由网内规则执行；History 仍显示三列。
 13. Model B 回放必须优先按显式 `runtime_mode` 判断；只有缺少显式标记时，才允许用“显式三头动作字段 / 至少两个非 WAIT 动作”兜底识别并发。禁止继续把 `(a1, a2, a3)` 压缩成单动作执行。
 14. `device=cascade` 且单臂模式下，中心画布必须在 `LLA/LLB` 下方固定新增 `AL/CL/LP/LP_done`，并在 `LP/AL/CL/LP_done/LLA/LLB` 几何中心展示 `TM1 ARM`。这些腔室与 `TM1 ARM` 在当前实现中直接消费真实运行时状态，不再是纯 UI 占位。单动作级联 runtime 下，`LP1/LP2` 必须聚合显示为 `LP`，`LP_done` 必须保持 `LP_done` 名称，`TM1` 只通过 `TM1 ARM` 展示，不单独作为 chamber 渲染。
-15. `device=cascade` 且单臂模式下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.9`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 与 cascade 双臂布局禁止复用该缩放与自动扩距规则。
+15. `device=cascade` 下，`center_canvas` 固定使用 `cell_w=96`、`cell_h=84`、`chamber_scale=0.8`、`robot_scale=0.8` 作为基准布局参数；实际步距必须按“缩放后腔室尺寸 + 10px”自动抬高，避免腔室重叠。single 布局禁止复用该缩放与自动扩距规则。
 16. 并发 runtime（`PetriAdapter`）下，`LP`/`LP_done` 聚合状态**只会**在主循环遍历库所时通过 `_merge_alias_state` 各合并一次；禁止先对 `_start_place_names()`/`_end_place_names()` 全量 `_build_alias_state` 再对同名库所合并，否则界面上的 `LP`/`LP_done` 晶圆条数与容量会变为真实值的 **2 倍**。
 17. 级联构网使用的 `config/cluster_tool/route_config.json` 中 **`source.capacity` 与 `sink.capacity` 必须 ≥ 当前 `PetriEnvConfig.n_wafer`（或 `n_wafer1+n_wafer2`）**；否则终点 `LP_done` 满仓后 `t_TM1_LP_done` 无法投片，晶圆会停在 TM1（用户易误判为「从 CL 出来后进不了 LP_done」）。
 
@@ -98,6 +98,7 @@
 - `../viz.md`
 
 ## Change Notes
+- 2026-04-05: `visualization/main.py` / `visualization/main_window.py` / `visualization/widgets/center_canvas.py`：可视化前端固定为单臂布局，移除配置菜单中的「机械手模式」「路径」入口；`center_canvas` 删除 single/cascade 双臂绘制分支（`ARM1/ARM2`、`TM2 ARM1/2`、`TM3 ARM1/2`），仅保留 `ARM` 与 `TM1/TM2/TM3 ARM`。级联路线仍可通过启动参数或回放 `replay_env_overrides` 覆盖，UI 不再支持热切换。
 - 2026-04-04: `visualization/main.py` 取消“未传 `--model` 自动加载默认权重”路径；启动时仅在显式传 `--model` 或 UI 菜单选择时加载 Model A。并发权重加载收敛为 **仅 DualHead**：支持常见外层前缀包装（`module.`/`backbone.`/`policy_module.`），检测到 `head_tm1`（旧三头）时给出明确不兼容错误。
 - 2026-04-04: `visualization/` 目录清理与收敛：删除不可达适配器与脚本模块 `dfs_adapter.py`、`ga_adapter.py`、`pdr_adapter.py`、`scripted_adapter.py`，删除无调用工具模块 `config_editor.py`、`debug_tools.py`、`export_tools.py`、`smoke_test.py`；`transition_labels.py` 与 `route_path_display.py` 迁移到 `visualization/widgets/`；`algorithm_interface.py` 移除 `AlgorithmAdapter` 抽象基类，仅保留 `ActionInfo/StateInfo` 等 UI 数据契约类型，运行时保持 `petri` 单适配器路径不变。
 - 2026-04-04: `visualization/main.py` 的环境构造收敛到 `solutions.A.rl_env.make_env(...)`，与 `solutions.A.eval.export_inference_sequence.py` 共享同一套 `runtime_mode/device_mode + n_wafer/single_route_name/single_route_config/process_time_map` 过滤与校验；保留 `single_process_time_map` 兼容别名；CLI 与运行时行为不变。

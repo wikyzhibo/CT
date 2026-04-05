@@ -2,6 +2,12 @@
 
 ## 2026-04-05
 
+### 可视化：固定单臂布局并移除路径/机械手模式菜单（2026-04-05）
+
+- **What changed**：`visualization/main.py` 移除 `robot_capacity` 透传链路与 `_action_config_cascade_route` 依赖；`visualization/main_window.py` 的「配置」菜单移除「机械手模式」与「路径」，仅保留「设置晶圆数量（UI 占位）」与「清洁」，状态栏不再显示机械手模式；`visualization/widgets/center_canvas.py` 删除 single/cascade 双臂布局与双臂机器人绘制分支，仅保留单臂 `ARM` 与级联 `TM1 ARM`/`TM2 ARM`/`TM3 ARM`。
+- **Why**：当前前端需求固定为单臂展示，保留双臂菜单和双臂绘制分支会引入无效入口与死代码，且增加运行时状态切换复杂度。
+- **Impact**：UI 内不再支持机械手模式切换与路径热切换；级联路径仍可由启动参数或回放 `replay_env_overrides` 覆盖。single/cascade 的在线推理与 Model B 回放主路径保持不变。
+
 ### A 方案：`validate_all_routes` 新增轻量模式与路线级评估行输出（2026-04-05）
 
 - **What changed**：`solutions/A/eval/validate_all_routes.py` 的 `run_all_routes(...)` 新增 `lite: bool=False`，CLI 新增 `--lite`。轻量模式下训练调用 `train_single(..., draw_training_metrics_plot=False, draw_gantt=False)`，评估调用 `rollout_and_export(..., gantt_png_path=None)`；每条路线同一行动态刷新训练进度条，评估结束打印 `<route_name> [<profile>] [########################] eval_pass=T/F`。`solutions/A/ppo_trainer.py` 新增 `draw_training_metrics_plot`、`draw_gantt`、`show_batch_progress` 与 `batch_progress_callback` 开关，并在并发/单动作共用后处理链路中生效。

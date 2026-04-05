@@ -35,19 +35,12 @@ class CenterCanvas(QGraphicsView):
         self._robot_display_to_state: Dict[str, str] = {}
         self._latest_state: StateInfo | None = None
         self._device_mode = "cascade"
-        self._robot_capacity = 1
 
     def set_device_mode(self, mode: str) -> None:
         """切换设备布局（仅 UI 占位）。"""
         if mode not in {"cascade", "single"}:
             return
         self._device_mode = mode
-        if self._latest_state is not None:
-            self._build_layout(self._latest_state)
-
-    def set_robot_capacity(self, capacity: int) -> None:
-        """设置机械手容量（1/2），用于 UI 布局展示。"""
-        self._robot_capacity = 2 if int(capacity) == 2 else 1
         if self._latest_state is not None:
             self._build_layout(self._latest_state)
 
@@ -108,7 +101,7 @@ class CenterCanvas(QGraphicsView):
             max_x = max(max_x, x + chamber_w)
             max_y = max(max_y, y + chamber_h)
 
-        robot_centers = self._robot_centers(positions, cw, ch, chamber_w, chamber_h, robot_w)
+        robot_centers = self._robot_centers(positions, cw, ch, chamber_w, chamber_h)
         for name, chamber_names in self._robot_chambers.items():
             source_name = self._robot_display_to_state.get(name, name)
             source_robot = state.robot_states.get(source_name, RobotState(name=source_name, busy=False, wafers=[]))
@@ -131,7 +124,7 @@ class CenterCanvas(QGraphicsView):
         self.scene.setSceneRect(min_x - padding, min_y - padding, (max_x - min_x) + padding * 2, (max_y - min_y) + padding * 2)
 
     def _layout_metrics(self) -> dict[str, float]:
-        """不同模式使用不同布局度量；仅级联单臂启用缩放与扩展下半区。"""
+        """不同模式使用不同布局度量；级联模式启用单臂固定缩放。"""
         metrics = {
             "cell_w": float(ui_params.center_canvas.cell_w),
             "cell_h": float(ui_params.center_canvas.cell_h),
@@ -139,7 +132,7 @@ class CenterCanvas(QGraphicsView):
             "robot_scale": 1.0,
             "padding": 24.0,
         }
-        if self._device_mode == "cascade" and self._robot_capacity == 1:
+        if self._device_mode == "cascade":
             metrics["cell_w"] = 96.0
             metrics["cell_h"] = 84.0
             metrics["chamber_scale"] = 0.8
@@ -147,10 +140,10 @@ class CenterCanvas(QGraphicsView):
         return metrics
 
     def _layout_pitch(self, metrics: dict[str, float], chamber_w: float, chamber_h: float) -> tuple[float, float]:
-        """级联单臂布局按缩放后卡片尺寸自动抬高步距，避免手动调大 scale 后重叠。"""
+        """级联布局按缩放后卡片尺寸自动抬高步距，避免手动调大 scale 后重叠。"""
         pitch_w = float(metrics["cell_w"])
         pitch_h = float(metrics["cell_h"])
-        if self._device_mode == "cascade" and self._robot_capacity == 1:
+        if self._device_mode == "cascade":
             pitch_w = max(pitch_w, chamber_w + 10.0)
             pitch_h = max(pitch_h, chamber_h + 10.0)
         return pitch_w, pitch_h
@@ -165,63 +158,28 @@ class CenterCanvas(QGraphicsView):
                 "LP": (3, 1), "LP_done": (3, 2),
             }
             display_to_state = {name: name for name in positions}
-            if self._robot_capacity == 2:
-                robot_chambers = {
-                    "ARM1": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],
-                    "ARM2": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"],
-                }
-                self._robot_display_to_state = {"ARM1": "TM2", "ARM2": "TM3"}
-            else:
-                robot_chambers = {"ARM": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"]}
-                self._robot_display_to_state = {"ARM": "TM2"}
-            # 容量=2 时在中心横向展示双机械手，ARM2 当前可能为 UI 占位
-            if self._robot_capacity == 2:
-                return positions, display_to_state, robot_chambers
+            robot_chambers = {"ARM": ["PM1", "PM2", "PM3", "PM4", "PM5", "PM6", "LP", "LP_done"]}
+            self._robot_display_to_state = {"ARM": "TM2"}
             return positions, display_to_state, robot_chambers
-        elif self._device_mode == "cascade":
-            positions = {
-                "PM3": (0, 1), "PM4": (0, 2),
-                "PM2": (1, 0), "PM1": (2, 0),
-                "PM5": (1, 3), "PM6": (2, 3),
-                "LLC": (3, 1), "LLD": (3, 2),
-                "PM8": (4, 0), "PM7": (5, 0),
-                "PM9": (4, 3), "PM10": (5, 3),
-                "LLA": (6, 1), "LLB": (6, 2),
-            }
-            display_to_state = {name: name for name in positions}
-            if self._robot_capacity == 2:
-                robot_chambers = {
-                    "TM2 ARM1": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
-                    "TM2 ARM2": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
-                    "TM3 ARM1": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
-                    "TM3 ARM2": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
-                }
-                self._robot_display_to_state = {
-                    "TM2 ARM1": "TM2",
-                    "TM2 ARM2": "TM2",
-                    "TM3 ARM1": "TM3",
-                    "TM3 ARM2": "TM3",
-                }
-            else:
-                robot_chambers = {
-                    "TM1 ARM": ["LP", "AL", "CL", "LP_done", "LLA", "LLB"],
-                    "TM2 ARM": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
-                    "TM3 ARM": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
-                }
-                positions = {
-                    "PM3": (0, 1), "PM4": (0, 2),
-                    "PM2": (1, 0), "PM1": (2, 0),
-                    "PM5": (1, 3), "PM6": (2, 3),
-                    "LLC": (3, 1), "LLD": (3, 2),
-                    "PM8": (4, 0), "PM7": (5, 0),
-                    "PM9": (4, 3), "PM10": (5, 3),
-                    "LLA": (6, 1), "LLB": (6, 2),
-                    "AL": (7.2, 0), "CL": (7.2, 3),
-                    "LP": (8.4, 1), "LP_done": (8.4, 2),
-                }
-                display_to_state = {name: name for name in positions}
-                self._robot_display_to_state = {"TM1 ARM": "TM1", "TM2 ARM": "TM2", "TM3 ARM": "TM3"}
-            return positions, display_to_state, robot_chambers
+        positions = {
+            "PM3": (0, 1), "PM4": (0, 2),
+            "PM2": (1, 0), "PM1": (2, 0),
+            "PM5": (1, 3), "PM6": (2, 3),
+            "LLC": (3, 1), "LLD": (3, 2),
+            "PM8": (4, 0), "PM7": (5, 0),
+            "PM9": (4, 3), "PM10": (5, 3),
+            "LLA": (6, 1), "LLB": (6, 2),
+            "AL": (7.2, 0), "CL": (7.2, 3),
+            "LP": (8.4, 1), "LP_done": (8.4, 2),
+        }
+        display_to_state = {name: name for name in positions}
+        robot_chambers = {
+            "TM1 ARM": ["LP", "AL", "CL", "LP_done", "LLA", "LLB"],
+            "TM2 ARM": ["PM7", "PM8", "PM9", "PM10", "LLC", "LLD", "LLA", "LLB"],
+            "TM3 ARM": ["LLC", "LLD", "PM1", "PM2", "PM3", "PM4", "PM5", "PM6"],
+        }
+        self._robot_display_to_state = {"TM1 ARM": "TM1", "TM2 ARM": "TM2", "TM3 ARM": "TM3"}
+        return positions, display_to_state, robot_chambers
 
     @staticmethod
     def _clone_chamber_state(display_name: str, source: ChamberState | None) -> ChamberState:
@@ -284,17 +242,6 @@ class CenterCanvas(QGraphicsView):
     def _position_for_cell(self, row: float, col: float, cw: float, ch: float, item_w: float, item_h: float) -> tuple[float, float]:
         x = col * cw + (cw - item_w) / 2
         y = row * ch + (ch - item_h) / 2
-        if self._device_mode == "single" and self._robot_capacity == 2:
-            # 双机械手时轻微外扩四周腔室，避免中心拥挤
-            x_shift_map = {0: -28.0, 1: -12.0, 2: 12.0, 3: 28.0}
-            y_shift_map = {0: -8.0, 1: -2.0, 2: 2.0, 3: 8.0}
-            x += x_shift_map.get(col, 0.0)
-            y += y_shift_map.get(row, 0.0)
-        elif self._device_mode == "cascade" and self._robot_capacity == 2:
-            # 级联双臂时也做外扩，给中心四机械手留出空间
-            x_shift_map = {0: -24.0, 1: -10.0, 2: 10.0, 3: 24.0}
-            x += x_shift_map.get(col, 0.0)
-            y += (float(row) - 3.0) * 2.5
         return x, y
 
     def _robot_centers(
@@ -304,36 +251,12 @@ class CenterCanvas(QGraphicsView):
         ch: float,
         item_w: float,
         item_h: float,
-        robot_w: float,
     ) -> dict[str, tuple[float, float]]:
         centers: dict[str, tuple[float, float]] = {}
         if not self._robot_chambers:
             return centers
 
-        if self._device_mode == "single" and self._robot_capacity == 2 and {"ARM1", "ARM2"}.issubset(self._robot_chambers.keys()):
-            center_names = self._robot_chambers["ARM1"]
-            cx, cy = self._center_of_chambers(positions, center_names, cw, ch, item_w, item_h)
-            gap = 148.0
-            centers["ARM1"] = (cx - gap / 2, cy)
-            centers["ARM2"] = (cx + gap / 2, cy)
-            return centers
-
-        if (
-            self._device_mode == "cascade"
-            and self._robot_capacity == 2
-            and {"TM2 ARM1", "TM2 ARM2", "TM3 ARM1", "TM3 ARM2"}.issubset(self._robot_chambers.keys())
-        ):
-            tm2_cx, tm2_cy = self._center_of_chambers(positions, self._robot_chambers["TM2 ARM1"], cw, ch, item_w, item_h)
-            tm3_cx, tm3_cy = self._center_of_chambers(positions, self._robot_chambers["TM3 ARM1"], cw, ch, item_w, item_h)
-            # 横排时使用基于卡片宽度的安全间距，避免双臂互相重叠
-            arm_gap = float(robot_w + 15.0)
-            centers["TM2 ARM1"] = (tm2_cx - arm_gap / 2, tm2_cy)
-            centers["TM2 ARM2"] = (tm2_cx + arm_gap / 2, tm2_cy)
-            centers["TM3 ARM1"] = (tm3_cx - arm_gap / 2, tm3_cy)
-            centers["TM3 ARM2"] = (tm3_cx + arm_gap / 2, tm3_cy)
-            return centers
-
-        if self._device_mode == "cascade" and self._robot_capacity == 1:
+        if self._device_mode == "cascade":
             for name in ("TM1 ARM", "TM2 ARM", "TM3 ARM"):
                 chamber_names = self._robot_chambers.get(name)
                 if not chamber_names:

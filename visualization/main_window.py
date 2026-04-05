@@ -23,14 +23,13 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QApplication,
     QPushButton, QLineEdit, QTextEdit,
-    QScrollBar, QListWidget, QComboBox, QSpinBox, QSlider, QMessageBox,
+    QScrollBar, QListWidget, QSpinBox, QSlider, QMessageBox,
     QFileDialog, QLabel, QDialog, QDialogButtonBox, QFormLayout, QFrame,
 )
 
 from .algorithm_interface import ActionInfo
 from .theme import ColorTheme
 from .widgets.route_path_display import format_route_path_html
-from .widgets.transition_labels import CASCADE_ROUTE_OPTIONS
 from .ui_params import ui_params
 from .viewmodel import PetriViewModel
 from .widgets.stats_panel import StatsPanel
@@ -73,7 +72,7 @@ class PetriMainWindow(QMainWindow):
     # 不可拖动的控件类型
     NON_DRAGGABLE_WIDGETS = (
         QPushButton, QLineEdit, QTextEdit, QScrollBar,
-        QListWidget, QComboBox, QSpinBox, QSlider
+        QListWidget, QSpinBox, QSlider
     )
 
     def __init__(self, viewmodel: PetriViewModel, *, debug: bool = False):
@@ -92,7 +91,6 @@ class PetriMainWindow(QMainWindow):
         # Auto Mode State Tracking ('A' or 'B' or None)
         self._current_auto_mode = None
         self._device_mode = "single"
-        self._robot_capacity = 1
         self._wafer_count_route1: int | None = None
         self._wafer_count_route2: int | None = None
         self._cleaning_options: dict[str, bool] = {
@@ -145,7 +143,6 @@ class PetriMainWindow(QMainWindow):
 
         self.center_canvas = CenterCanvas(self.theme)
         self.center_canvas.set_device_mode(self._device_mode)
-        self.center_canvas.set_robot_capacity(self._robot_capacity)
 
         center_col_layout.addWidget(self.route_banner_frame)
         center_col_layout.addWidget(self.center_canvas, stretch=1)
@@ -161,7 +158,6 @@ class PetriMainWindow(QMainWindow):
 
         self._connect_signals()
         self._apply_stylesheet()
-        self._action_config_cascade_route.setEnabled(self._device_mode == "cascade")
         self._refresh_status_message()
         
         # 初始化时禁用模型按钮
@@ -217,23 +213,8 @@ class PetriMainWindow(QMainWindow):
         # 配置菜单
         config_menu = menu_bar.addMenu("配置")
         self._action_config_wafer = QAction("设置晶圆数量", self)
-        arm_mode_menu = config_menu.addMenu("机械手模式")
-        arm_mode_group = QActionGroup(self)
-        arm_mode_group.setExclusive(True)
-        self._action_arm_single = QAction("Single Arm", self, checkable=True)
-        self._action_arm_dual = QAction("Dual Arm", self, checkable=True)
-        self._action_arm_single.setChecked(True)
-        arm_mode_group.addAction(self._action_arm_single)
-        arm_mode_group.addAction(self._action_arm_dual)
-        arm_mode_menu.addAction(self._action_arm_single)
-        arm_mode_menu.addAction(self._action_arm_dual)
         config_menu.addAction(self._action_config_wafer)
         self._action_config_wafer.triggered.connect(self._set_wafer_count)
-        self._action_config_cascade_route = QAction("路径", self)
-        config_menu.addAction(self._action_config_cascade_route)
-        self._action_config_cascade_route.triggered.connect(self._open_cascade_route_dialog)
-        self._action_arm_single.triggered.connect(lambda: self._set_robot_capacity(1))
-        self._action_arm_dual.triggered.connect(lambda: self._set_robot_capacity(2))
         cleaning_menu = config_menu.addMenu("清洁")
         self._action_clean_idle_80 = QAction("闲置时间超过80s (清洗时间30s)", self, checkable=True)
         self._action_clean_switch = QAction("工艺切换 (清洗时间200s)", self, checkable=True)
@@ -287,7 +268,7 @@ class PetriMainWindow(QMainWindow):
         # 运行时切换底层 env/adapter
         if self._adapter_factory is not None:
             try:
-                new_adapter = self._adapter_factory(mode, self._robot_capacity)
+                new_adapter = self._adapter_factory(mode, {"runtime_mode": "single"})
                 self.apply_runtime_adapter(
                     new_adapter,
                     mode,
@@ -309,7 +290,6 @@ class PetriMainWindow(QMainWindow):
             self._device_mode = mode
             self._concurrent_runtime = False
             self.center_canvas.set_device_mode(mode)
-            self._action_config_cascade_route.setEnabled(mode == "cascade")
             self._update_route_banner_text()
         self._model_handler = None
         self._concurrent_model_handler = None
@@ -348,7 +328,6 @@ class PetriMainWindow(QMainWindow):
         self._action_device_single.setChecked(mode == "single")
         self._action_device_cascade.blockSignals(False)
         self._action_device_single.blockSignals(False)
-        self._action_config_cascade_route.setEnabled(mode == "cascade")
         self._update_route_banner_text()
         self._refresh_status_message()
 
@@ -416,58 +395,6 @@ class PetriMainWindow(QMainWindow):
         self.route_path_label.setTextFormat(Qt.TextFormat.PlainText)
         self.route_path_label.setText(fallback)
 
-    def _open_cascade_route_dialog(self) -> None:
-        if self._device_mode != "cascade":
-            QMessageBox.information(self, "路径", "请先切换到「级联设备」模式后再选择路径。")
-            return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("级联路径")
-        form = QFormLayout(dialog)
-        combo = QComboBox(dialog)
-        for n in CASCADE_ROUTE_OPTIONS:
-            combo.addItem(n)
-        current = self._cascade_route_name or getattr(self.viewmodel.adapter.net, "single_route_name", "") or ""
-        idx = combo.findText(str(current))
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
-        form.addRow("路线键名", combo)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dialog
-        )
-        form.addRow(buttons)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._cascade_route_name = combo.currentText()
-        self._rebuild_adapter_preserve_device("cascade")
-
-    def _rebuild_adapter_preserve_device(self, mode: str) -> None:
-        if self._adapter_factory is None:
-            return
-        try:
-            overrides = {"runtime_mode": "concurrent"} if self._concurrent_runtime else None
-            new_adapter = self._adapter_factory(mode, self._robot_capacity, overrides)
-            self.apply_runtime_adapter(
-                new_adapter,
-                mode,
-                concurrent_runtime=self._concurrent_runtime,
-                reset=True,
-            )
-        except Exception as e:
-            QMessageBox.warning(self, "路径切换失败", str(e))
-            return
-        self._model_handler = None
-        self._concurrent_model_handler = None
-        self._update_model_buttons_state()
-        if self._model_path_override is not None and self._model_apply_callback is not None:
-            ok, msg = self._model_apply_callback(str(self._model_path_override), mode)
-            if not ok:
-                self.set_model_handler(None)
-                QMessageBox.warning(self, "模型与当前拓扑不兼容", msg)
-        self._update_route_banner_text()
-        self._refresh_status_message()
-
     def _set_wafer_count(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("晶圆数量")
@@ -493,31 +420,6 @@ class PetriMainWindow(QMainWindow):
             return
         self._wafer_count_route1 = int(route1_spin.value())
         self._wafer_count_route2 = int(route2_spin.value())
-        self._refresh_status_message()
-
-    def _set_robot_capacity(self, capacity: int) -> None:
-        self._robot_capacity = 2 if int(capacity) == 2 else 1
-        self.center_canvas.set_robot_capacity(self._robot_capacity)
-        if self._adapter_factory is not None:
-            try:
-                overrides = {"runtime_mode": "concurrent"} if self._concurrent_runtime else None
-                new_adapter = self._adapter_factory(self._device_mode, self._robot_capacity, overrides)
-                self.apply_runtime_adapter(
-                    new_adapter,
-                    self._device_mode,
-                    concurrent_runtime=self._concurrent_runtime,
-                    reset=True,
-                )
-                self._model_handler = None
-                self._concurrent_model_handler = None
-                self._update_model_buttons_state()
-                if self._model_path_override is not None and self._model_apply_callback is not None:
-                    ok, msg = self._model_apply_callback(str(self._model_path_override), self._device_mode)
-                    if not ok:
-                        self.set_model_handler(None)
-                        QMessageBox.warning(self, "模型与机械手模式不兼容", msg)
-            except Exception as e:
-                QMessageBox.warning(self, "机械手模式切换失败", f"无法切换到容量 {self._robot_capacity}: {e}")
         self._refresh_status_message()
 
     def _pick_action_sequence_json(self) -> None:
@@ -546,7 +448,6 @@ class PetriMainWindow(QMainWindow):
             wafers_text = "未设置"
         else:
             wafers_text = f"R1={self._wafer_count_route1}, R2={self._wafer_count_route2}"
-        arm_mode_text = "Dual Arm" if self._robot_capacity == 2 else "Single Arm"
         model_text = str(self._model_path_override) if self._model_path_override else "未选择"
         if self._action_sequence_path is None:
             seq_text = f"未选择（默认目录: {self._action_sequence_default_dir}）"
@@ -561,7 +462,7 @@ class PetriMainWindow(QMainWindow):
             clean_labels.append("pm5/300s")
         clean_text = ",".join(clean_labels) if clean_labels else "关闭"
         self.statusBar().showMessage(
-            f"设备: {mode_text} | 运行时: {runtime_text} | 机械手模式: {arm_mode_text} | 晶圆数量: {wafers_text}（仅UI占位） | 清洁: {clean_text} | 模型: {model_text} | 动作序列: {seq_text}"
+            f"设备: {mode_text} | 运行时: {runtime_text} | 晶圆数量: {wafers_text}（仅UI占位） | 清洁: {clean_text} | 模型: {model_text} | 动作序列: {seq_text}"
         )
 
     def _on_cleaning_option_toggled(self, key: str, checked: bool) -> None:
@@ -1019,7 +920,7 @@ class PetriMainWindow(QMainWindow):
         try:
             runtime_mode = str(dict(overrides).get("runtime_mode", "")).lower()
             target_mode = "cascade" if runtime_mode == "concurrent" else self._device_mode
-            new_adapter = self._adapter_factory(target_mode, self._robot_capacity, overrides)
+            new_adapter = self._adapter_factory(target_mode, overrides)
             self.apply_runtime_adapter(
                 new_adapter,
                 target_mode,
